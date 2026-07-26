@@ -8,7 +8,6 @@
 
   if (document.getElementById('sg-panel')) return;
 
-  var collapsed = false;
   var data = {};
 
   function waitForBody(fn) {
@@ -53,34 +52,6 @@
       + '  </div>'
       + '</div>';
     document.body.appendChild(panel);
-
-    // 折叠按钮
-    var collapseBtn = document.createElement('button');
-    collapseBtn.id = 'sg-collapse-btn';
-    collapseBtn.textContent = '⚡';
-    collapseBtn.title = '智能调度';
-    collapseBtn.style.display = 'none';
-    document.body.appendChild(collapseBtn);
-
-    // 点击折叠按钮展开
-    collapseBtn.addEventListener('click', function () {
-      panel.style.display = 'block';
-      panel.classList.remove('collapsed');
-      collapseBtn.style.display = 'none';
-      collapsed = false;
-    });
-
-    // 标题栏点击折叠
-    document.getElementById('sg-header-bar').addEventListener('click', function () {
-      collapsed = !collapsed;
-      if (collapsed) {
-        panel.classList.add('collapsed');
-        collapseBtn.style.display = 'flex';
-      } else {
-        panel.classList.remove('collapsed');
-        collapseBtn.style.display = 'none';
-      }
-    });
 
     // 按钮事件
     document.getElementById('btn-auto').addEventListener('click', function () {
@@ -170,6 +141,11 @@
     else if (d.engine === 'nurture_only') {
       engText = '纯养号'; engCls = 'b';
     }
+    else if (d.engine === 'coor') {
+      var stageMap = {S0:'静默',S1:'纯养号',S2:'关注+养号',S3:'全开',S4:'私信独占'};
+      engText = stageMap[d.stage] || '调度中';
+      engCls = 'coor';
+    }
     else if (d.engine === 'manual') {
       var r = !!d.followRunning;
       engText = r ? '关注(手动)' : (d.chatRunning ? '私信(手动)' : '手动');
@@ -230,12 +206,6 @@
     if (badgeEl) {
       if (d.autoMode) { badgeEl.textContent = '●自动'; badgeEl.style.color = '#3fb950'; }
       else { badgeEl.textContent = '●手动'; badgeEl.style.color = '#8b949e'; }
-    }
-
-    // 折叠按钮状态
-    var collapseBtn = document.getElementById('sg-collapse-btn');
-    if (collapseBtn) {
-      collapseBtn.className = d.autoMode ? 'auto' : 'paused';
     }
 
     // 模块开关状态

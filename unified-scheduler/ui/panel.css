@@ -27,6 +27,7 @@
 #sg-panel .sg-row .val.b { color: #58a6ff; }
 #sg-panel .sg-row .val.y { color: #d29922; }
 #sg-panel .sg-row .val.r { color: #f85149; }
+#sg-panel .sg-row .val.coor { color: #bc8cff; }
 #sg-panel .sg-divider {
   height: 1px; background: #21262d; margin: 4px 0;
 }

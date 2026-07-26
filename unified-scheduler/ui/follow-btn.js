@@ -5,6 +5,7 @@
 
 (function () {
   'use strict';
+  return; // v3.0 停用：功能已合并到面板
 
   if (document.getElementById('sg-follow-btn')) return;
 
