@@ -1,0 +1,71 @@
+{
+  "manifest_version": 3,
+  "name": "智能调度中心",
+  "version": "3.0.0",
+  "description": "关注/养号/私信 智能轮换调度",
+  "action": {
+    "default_title": "智能调度中心"
+  },
+  "permissions": [
+    "storage",
+    "alarms",
+    "tabs"
+  ],
+  "host_permissions": [
+    "http://192.168.0.100:*/*",
+    "http://127.0.0.1:*/*",
+    "https://*.x.com/*",
+    "https://*.twitter.com/*",
+    "https://*.twimg.com/*"
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["chat_scripts.json"],
+      "matches": ["https://*.x.com/*", "https://*.twitter.com/*"]
+    }
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.x.com/*",
+        "https://*.twitter.com/*"
+      ],
+      "js": [
+        "shared/config.js",
+        "shared/id_extractor.js",
+        "shared/logger.js",
+        "shared/storage-keys.js",
+        "shared/engine-utils.js",
+        "follow/risk_control.js",
+        "follow/content_follow_v1522.js",
+        "follow/push_blogger.js",
+        "shared/ui_console.js",
+        "shared/config-sync.js",
+        "scheduler/stage-detector.js",
+        "scheduler/page-router.js",
+        "scheduler/coordinator.js",
+        "chat/content_chat.js",
+        "nurture/nurture-config.js",
+        "nurture/nurture-tracker.js",
+        "nurture/nurture-comments.js",
+        "nurture/nurture-engine.js",
+        "scheduler-core.js",
+        "ui/panel.js",
+        "ui/follow-btn.js"
+      ],
+      "css": [
+        "ui/panel.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}
