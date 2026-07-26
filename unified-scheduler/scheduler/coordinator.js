@@ -8,6 +8,7 @@
   var interval = null, wdTimer = null, lastTick = 0;
   var tickLock = false;
   var running = false;
+  var _noPageJump = false;
 
   function register(name, mod) {
     if (!mod || typeof mod.canRun !== 'function' || typeof mod.tick !== 'function') {
@@ -153,6 +154,16 @@
       }
 
       if (pageOwner !== desiredOwner) {
+        if (_noPageJump) {
+          try {
+            window.dispatchEvent(new CustomEvent('sg-coordinator-command', {
+              detail: { module: desiredOwner, action: 'start', stage: stage }
+            }));
+          } catch (e) {}
+          savePrev();
+          updatePanel({ currentStage: stage, desiredOwner: desiredOwner, noJump: true });
+          return;
+        }
         var targetUrl = PageRouter.homeUrlFor(desiredOwner);
         if (targetUrl) {
           PageRouter.jumpTo(targetUrl);
@@ -265,8 +276,9 @@
 
   function startObserver() {
     startInterval(10000);
-    running = false;
-    Logger.info('Coor', '观察者模式已启动');
+    running = true;
+    _noPageJump = true;
+    Logger.info('Coor', '调度模式已启动（V5 掌控页面跳转）');
   }
 
   function init() {

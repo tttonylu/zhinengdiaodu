@@ -17,6 +17,7 @@
   var tickLock = false;
   var g_stage = 'S0';
   var _lastCoorNurtureStart = 0;
+  var g_coorActive = false;
 
   // ==================== 工具 ====================
   function inRange(hS, mS, hE, mE) {
@@ -227,6 +228,14 @@
       saveSG();
     }
     if (!quotaFull && S.engine === 'nurture_only' && !S.nurtureOnly) { S.engine = 'idle'; saveSG(); }
+
+    // === Coordinator 接管（让步模式） ===
+    if (g_coorActive) {
+      S.engine = 'coor';
+      saveSG();
+      updatePanel();
+      return;
+    }
 
     // === 私信轮次日界重置 ===
     var today = shanghaiDate();
@@ -463,11 +472,15 @@
         if (d.module === 'follow')  stopFollow();
         if (d.module === 'chat')    stopChat();
       }
-      if (d.action === 'start' && d.module === 'nurture') {
-        if (Date.now() - _lastCoorNurtureStart > 30000) {
-          startNurture();
-          _lastCoorNurtureStart = Date.now();
+      if (d.action === 'start') {
+        if (d.module === 'nurture') {
+          if (Date.now() - _lastCoorNurtureStart > 30000) {
+            startNurture();
+            _lastCoorNurtureStart = Date.now();
+          }
         }
+        if (d.module === 'follow')  { startFollow(); }
+        if (d.module === 'chat')    { startChat(); }
       }
     });
     if (typeof Coordinator !== 'undefined') {
@@ -496,7 +509,8 @@
         tick: function () { return { tookPage: true, nextDelayMs: 0 }; }
       });
       Coordinator.startObserver();
-      Logger.info('调度', 'Coordinator 三模块建议模式已启动');
+      g_coorActive = true;
+      Logger.info('调度', 'Coordinator 三模块调度模式已启动');
     }
   }
 
