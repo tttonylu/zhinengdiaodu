@@ -107,7 +107,7 @@
     });
 
     // 监听调度器的 tick 事件
-    window.addEventListener('sg-scheduler-tick', function (e) {
+    window.addEventListener('sg-coordinator-tick', function (e) {
       data = e.detail || {};
       render();
     });

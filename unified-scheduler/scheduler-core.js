@@ -12,12 +12,8 @@
   var K = SKeys;
   var S = {};
   var prev = { followActive: false, nurturing: false, chatRunning: false };
-  var interval = null, wdTimer = null, lastTick = 0, followStalledTicks = 0;
-  var g_isChatTime = false, g_isWorkTime = false;
-  var tickLock = false;
   var g_stage = 'S0';
   var _lastCoorNurtureStart = 0;
-  var g_coorActive = false;
 
   // ==================== 工具 ====================
   function inRange(hS, mS, hE, mE) {
@@ -153,184 +149,7 @@
   }
 
   // ==================== 主循环 ====================
-
-  function alignPage() {
-    var url = window.location.href;
-    var myH = getMyHandle();
-
-    // 关注 active → 必须在博主粉丝页
-    if ((S.engine === 'follow' || S.engine === 'nurture') && S.followPhase === 'active' && S.currentBlogger) {
-      if (!url.includes('/' + S.currentBlogger + '/followers')) {
-        Logger.warn('调度', '页面漂移: follow → @' + S.currentBlogger);
-        window.location.href = 'https://x.com/' + S.currentBlogger + '/followers';
-        return true;
-      }
-    }
-    // 私信 running → 必须在 own followers
-    if (S.engine === 'chat' && S.chatPhase === 'running' && myH !== 'unknown') {
-      if (!url.includes('/' + myH + '/followers')) {
-        Logger.warn('调度', '页面漂移: chat → own/followers');
-        startChat();
-        return true;
-      }
-    }
-    return false;
-  }
-  function tick() {
-    if (tickLock) return;
-    tickLock = true;
-    lastTick = Date.now();
-    try {
-
-    var engFollowRunning = localStorage.getItem(K.LK_FOLLOW_RUNNING) === 'true';
-    var engWarmupNeeded = localStorage.getItem(K.LK_WARMUP_NEEDED) === 'true';
-    var engWarmupEnd = parseInt(localStorage.getItem(K.LK_WARMUP_END) || '0') || 0;
-    var engChatRunning = sessionStorage.getItem(K.SK_CHAT_AUTO_RUN) === 'true';
-    var followActive = engFollowRunning && !engWarmupNeeded;
-    var nurturing = engFollowRunning && engWarmupNeeded;
-    var dayCount = getDayCount();
-    g_isChatTime = inRange(8, 0, 18, 0);
-    g_isWorkTime = inRange(8, 0, 23, 0);
-    var canChat = dayCount >= 3 && g_isChatTime;
-    var quotaFull = getFollowedToday() >= getLimit();
-
-    // === 暂停期 ===
-    var pausedTill = parseInt(sessionStorage.getItem(K.SK_PAUSED_TILL) || '0') || 0;
-    if (pausedTill > Date.now()) { updatePanel(); return; }
-    if (pausedTill > 0) sessionStorage.removeItem(K.SK_PAUSED_TILL);
-
-    // === 处理跨页 pendingChat 首次加载 ===
-    if (S.pendingChat && S.followPhase === 'idle' && S.engine === 'follow') {
-      S.pendingChat = false;
-    }
-
-    // === 养号独立模式（跳过关注/私信，仅维持养号引擎） ===
-    if (S.nurtureOnly) {
-      if (S.engine !== 'nurture_only') {
-        stopFollow(); stopChat();
-        S.engine = 'nurture_only'; S.followPhase = 'idle'; S.chatPhase = 'idle';
-        startNurture();
-        saveSG();
-      }
-      updatePanel(); return;
-    }
-
-    // === 非工作时间 ===
-    if (!g_isWorkTime) {
-      if (S.engine !== 'idle') { stopAll(); S.engine = 'idle'; S.followPhase = 'idle'; S.chatPhase = 'idle'; saveSG(); }
-      updatePanel(); return;
-    }
-
-    // === 配额满 ===
-    if (quotaFull && S.engine !== 'nurture_only' && S.engine !== 'chat') {
-      stopFollow(); stopChat(); S.engine = 'nurture_only'; S.followPhase = 'idle';
-      startNurture();
-      saveSG();
-    }
-    if (!quotaFull && S.engine === 'nurture_only' && !S.nurtureOnly) { S.engine = 'idle'; saveSG(); }
-
-    // === Coordinator 接管（让步模式） ===
-    if (g_coorActive) {
-      S.engine = 'coor';
-      saveSG();
-      updatePanel();
-      return;
-    }
-
-    // === 私信轮次日界重置 ===
-    var today = shanghaiDate();
-    if (S.chatDate !== today) { S.chatRoundsToday = 0; S.chatDate = today; }
-
-    // === IDLE → 自动启动 ===
-    if (S.running && S.engine === 'idle' && !quotaFull) {
-      S.engine = 'follow'; S.followRound = 1; S.followPhase = 'active'; saveSG();
-      stopNurture();
-      startFollow(); updatePanel(); return;
-    }
-
-    // === 关注 / 养号 ===
-    if (S.engine === 'follow' || S.engine === 'nurture') {
-
-      // active → warmup 边沿检测（含跨页 prev）
-      if ((prev.followActive && nurturing) || (S.followPhase === 'active' && nurturing && !prev.followActive)) {
-        var we = engWarmupEnd || (Date.now() + 1800000);
-        S.followRound++;
-        S.followPhase = 'warmup'; S.warmupEndAt = we; S.engine = 'nurture';
-        S.currentBlogger = localStorage.getItem(K.LK_CURRENT_CREATOR) || S.currentBlogger;
-        startNurture();
-        saveSG();
-      }
-      // debug 模拟
-      if (window.SG_DEBUG && S.followPhase === 'active' && engFollowRunning && !nurturing) {
-        var we2 = Date.now() + 30000;
-        S.followRound++; S.followPhase = 'warmup'; S.warmupEndAt = we2; S.engine = 'nurture';
-        S.currentBlogger = localStorage.getItem(K.LK_CURRENT_CREATOR) || S.currentBlogger;
-        startNurture();
-        saveSG();
-      }
-
-      // warmup → 结束（含 debug 强制）
-      var expired = Date.now() >= S.warmupEndAt;
-      var debugEnd = window.SG_DEBUG && !engWarmupNeeded && !engFollowRunning;
-      if (S.followPhase === 'warmup' && (expired || debugEnd)) {
-        if (S.pendingChat && canChat && !quotaFull) {
-          S.currentBlogger = localStorage.getItem(K.LK_WARMUP_SAVED_CREATOR) || localStorage.getItem(K.LK_CURRENT_CREATOR) || S.currentBlogger;
-          stopFollow(); stopNurture(); S.suspendedBlogger = S.currentBlogger;
-          startChat();
-          S.engine = 'chat'; S.followPhase = 'idle'; S.pendingChat = false; S.followRound = 0;
-          saveSG(); updatePanel(); return;
-        } else {
-          S.followPhase = 'active'; S.engine = 'follow'; stopNurture(); saveSG();
-        }
-      }
-
-      // pendingChat 设定
-      if (S.followPhase === 'warmup' && S.followRound >= 2 && canChat && !S.pendingChat && !quotaFull) {
-        S.pendingChat = true; saveSG();
-      }
-      if (S.followRound >= 2 && canChat && !S.pendingChat && !quotaFull) {
-        S.pendingChat = true; saveSG();
-      }
-
-      // 异常
-      if (!engFollowRunning && !engWarmupNeeded) {
-        S.followPhase = 'idle'; S.engine = 'idle'; saveSG();
-      }
-
-      // 卡死检测
-      if (S.engine === 'follow' && !engFollowRunning && !nurturing && !S.pendingChat) {
-        followStalledTicks++;
-        if (followStalledTicks >= 3) { S.engine = 'idle'; followStalledTicks = 0; saveSG(); sessionStorage.setItem(K.SK_PAUSED_TILL, String(Date.now() + 180000)); }
-      } else { followStalledTicks = 0; }
-    }
-
-    // === 私信引擎 ===
-    if (S.engine === 'chat') {
-      if (prev.chatRunning && !engChatRunning) {
-        S.chatPhase = 'idle'; S.engine = 'follow'; S.followRound = 0; S.followPhase = 'active';
-        S.pendingChat = true;
-        S.chatRoundsToday++; S.chatLastEndAt = Date.now();
-        saveSG();
-        stopNurture();
-        startFollow(); updatePanel(); return;
-      }
-      if (!prev.chatRunning && engChatRunning) { S.chatPhase = 'running'; saveSG(); }
-    }
-
-    // === 页面漂移修正 ===
-    if (alignPage()) { saveSG(); updatePanel(); return; }
-
-    // === 更新 prev 快照 + 持久化 ===
-    prev.followActive = followActive;
-    prev.nurturing = nurturing;
-    prev.chatRunning = engChatRunning;
-    saveSG();
-
-    try { chrome.runtime.sendMessage({ action: 'ops_account_heartbeat', bot_id: getWorkerId() }); } catch (e) {}
-
-    updatePanel();
-    } finally { tickLock = false; }
-  }
+  // V5 tick 已退役 — 由 Coordinator 全权接管
 
   // ==================== 控制接口 ====================
   function schedulerStart() {
@@ -341,9 +160,10 @@
     chrome.runtime.sendMessage({ action: 'ops_account_register', bot_id: getWorkerId() }, function (r) {
       if (r && r.ok) Logger.info('调度', 'OPS注册: Day ' + r.account.day_count);
     });
-    saveSG(); tick();
+    saveSG();
+    if (typeof Coordinator !== 'undefined') Coordinator.start();
   }
-  function schedulerPause() { stopAll(); S.running = false; S.engine = 'idle'; S.followPhase = 'idle'; Logger.info('调度', '暂停'); saveSG(); updatePanel(); }
+  function schedulerPause() { stopAll(); S.running = false; S.engine = 'idle'; S.followPhase = 'idle'; Logger.info('调度', '暂停'); saveSG(); if (typeof Coordinator !== 'undefined') Coordinator.pause(); }
   function manualFollow() { stopChat(); stopNurture(); S.running = false; saveSG(); startFollow(); }
   function manualChat() { stopFollow(); stopNurture(); S.running = false; saveSG(); startChat(); }
   function manualNurture() { stopFollow(); stopChat(); S.running = false; saveSG(); startNurture(); }
@@ -356,7 +176,7 @@
       stopNurture(); S.engine = 'idle';
       Logger.info('调度', '养号独立模式: OFF');
     }
-    saveSG(); tick();
+    saveSG();
   }
 
   // ==================== 面板 ====================
@@ -384,7 +204,7 @@
         nurtureDaily: nuStats,
         warmupNeeded: localStorage.getItem(K.LK_WARMUP_NEEDED) === 'true',
         dayCount: getDayCount(), followedToday: getFollowedToday(), followLimit: getLimit(),
-        isChatTime: g_isChatTime, isWorkTime: g_isWorkTime,
+        isChatTime: inRange(8, 0, 18, 0), isWorkTime: inRange(8, 0, 23, 0),
         currentCreator: S.currentBlogger || localStorage.getItem(K.LK_CURRENT_CREATOR) || '',
         suspended: S.suspendedBlogger, url: window.location.href,
         stage: g_stage,
@@ -395,73 +215,9 @@
   // ==================== 初始化 ====================
   function init() {
     loadSG();
-
-    // 引擎接管
-    if (!S.running) {
-      localStorage.removeItem(K.LK_FOLLOW_RUNNING);
-      sessionStorage.setItem(K.SK_TAB_RUNNING, 'stopped_by_user');
-      sessionStorage.setItem(K.SK_CHAT_AUTO_RUN, 'false');
-      localStorage.setItem(K.LK_CHAT_STATUS, 'stopped');
-      localStorage.removeItem(K.LK_CHAT_RECOVERY);
-      S.engine = 'idle'; S.followPhase = 'idle'; S.followRound = 0; S.pendingChat = false; S.chatPhase = 'idle';
-    } else {
-      // —— 引擎互斥：按 S.engine 清对立引擎残留 flag ——
-      if (S.engine === 'chat') {
-        localStorage.removeItem(K.LK_FOLLOW_RUNNING);
-        sessionStorage.setItem(K.SK_TAB_RUNNING, 'stopped_by_user');
-        stopNurture();
-      }
-      if (S.engine === 'follow') {
-        sessionStorage.setItem(K.SK_CHAT_AUTO_RUN, 'false');
-        localStorage.setItem(K.LK_CHAT_STATUS, 'stopped');
-        localStorage.removeItem(K.LK_CHAT_RECOVERY);
-        stopNurture();
-      }
-      if (S.engine === 'nurture' || S.engine === 'nurture_only') {
-        localStorage.removeItem(K.LK_FOLLOW_RUNNING);
-        sessionStorage.setItem(K.SK_TAB_RUNNING, 'stopped_by_user');
-        sessionStorage.setItem(K.SK_CHAT_AUTO_RUN, 'false');
-        localStorage.setItem(K.LK_CHAT_STATUS, 'stopped');
-        localStorage.removeItem(K.LK_CHAT_RECOVERY);
-        startNurture();
-      }
-    }
-
-    // 脏数据清理
-    var efR = localStorage.getItem(K.LK_FOLLOW_RUNNING) === 'true';
-    var ewN = localStorage.getItem(K.LK_WARMUP_NEEDED) === 'true';
-    var ecR = sessionStorage.getItem(K.SK_CHAT_AUTO_RUN) === 'true';
-    var onFollow = window.location.href.includes('/followers');
-
-    if (S.running && !efR && !ewN && !ecR && !onFollow) { S.engine = 'idle'; S.followPhase = 'idle'; S.followRound = 0; S.pendingChat = false; }
-    if (S.running && efR && !ewN && !ecR && !onFollow && S.engine !== 'chat') { localStorage.removeItem(K.LK_FOLLOW_RUNNING); S.engine = 'idle'; S.followPhase = 'idle'; }
-    if (S.followPhase === 'active' && ewN) { S.followRound++; S.followPhase = 'warmup'; S.warmupEndAt = parseInt(localStorage.getItem(K.LK_WARMUP_END) || '0') || (Date.now() + 1800000); S.engine = 'nurture'; S.currentBlogger = localStorage.getItem(K.LK_CURRENT_CREATOR) || S.currentBlogger; }
-    if (S.followPhase === 'warmup' && S.warmupEndAt > 0 && Date.now() >= S.warmupEndAt) {
-      if (S.pendingChat && getDayCount() >= 3 && inRange(8, 0, 18, 0)) {
-        S.currentBlogger = localStorage.getItem(K.LK_WARMUP_SAVED_CREATOR) || localStorage.getItem(K.LK_CURRENT_CREATOR) || S.currentBlogger;
-        stopFollow(); S.suspendedBlogger = S.currentBlogger;
-        startChat(); S.engine = 'chat'; S.followPhase = 'idle'; S.pendingChat = false; S.followRound = 0;
-      } else { S.followPhase = 'active'; S.engine = 'follow'; }
-    }
-    if (efR && S.engine === 'idle') { S.engine = 'follow'; S.followPhase = 'active'; }
-    if (ecR && S.engine === 'idle') { S.engine = 'chat'; S.chatPhase = 'running'; }
-
     saveSG(); updatePanel();
 
-    interval = setInterval(function () { loadSG(); tick(); }, window.SG_DEBUG ? 2000 : 10000);
-    wdTimer = setInterval(function () {
-      if (Date.now() - lastTick > 30000 && !tickLock) {
-        lastTick = Date.now();
-        Logger.warn('调度', '看门狗重启');
-        tick();
-      }
-    }, 30000);
-    tick();
-
-    if (window.SG_DEBUG) console.log('[调度] DEBUG: 2s tick');
-    Logger.info('调度', '核心 V5 已加载');
-
-    // Coordinator 并行观察者 + 三模块建议模式
+    // Coordinator — 智能调度唯一大脑
     window.addEventListener('sg-coordinator-tick', function (e) {
       if (e.detail && e.detail.stage) g_stage = e.detail.stage;
     });
@@ -474,10 +230,7 @@
       }
       if (d.action === 'start') {
         if (d.module === 'nurture') {
-          if (Date.now() - _lastCoorNurtureStart > 30000) {
-            startNurture();
-            _lastCoorNurtureStart = Date.now();
-          }
+          if (Date.now() - _lastCoorNurtureStart > 30000) { startNurture(); _lastCoorNurtureStart = Date.now(); }
           if (window._lastModuleAction) window._lastModuleAction.nurture = Date.now();
         }
         if (d.module === 'follow')  { startFollow(); if (window._lastModuleAction) window._lastModuleAction.follow = Date.now(); }
@@ -488,41 +241,21 @@
       var msCheck = function () {
         try {
           var raw = localStorage.getItem('sg_module_switches');
-          if (raw) {
-            var sw = JSON.parse(raw);
-            return function (m) { return sw[m] !== false; };
-          }
+          if (raw) { var sw = JSON.parse(raw); return function (m) { return sw[m] !== false; }; }
         } catch (e) {}
         return function () { return true; };
       };
       var msOn = msCheck();
-
       window._lastModuleAction = { follow: Date.now(), chat: Date.now(), nurture: Date.now() };
-
-      window.addEventListener('matrix-nurture-log', function () {
-        if (window._lastModuleAction) window._lastModuleAction.nurture = Date.now();
-      });
-      window.addEventListener('matrix-follow-status', function () {
-        if (window._lastModuleAction) window._lastModuleAction.follow = Date.now();
-      });
-
-      Coordinator.register('nurture', {
-        canRun: function () { return msOn('nurture'); },
-        tick: function () { return { tookPage: true, nextDelayMs: 0 }; }
-      });
-      Coordinator.register('follow', {
-        canRun: function (s) { return msOn('follow') && s !== 'S0' && s !== 'S1' && s !== 'S4'; },
-        tick: function () { return { tookPage: true, nextDelayMs: 0 }; }
-      });
-      Coordinator.register('chat', {
-        canRun: function (s) { return msOn('chat') && s === 'S3'; },
-        tick: function () { return { tookPage: true, nextDelayMs: 0 }; }
-      });
-      Coordinator.startObserver();
-      g_coorActive = true;
-      Logger.info('调度', 'Coordinator 三模块调度模式已启动');
+      window.addEventListener('matrix-nurture-log', function () { if (window._lastModuleAction) window._lastModuleAction.nurture = Date.now(); });
+      window.addEventListener('matrix-follow-status', function () { if (window._lastModuleAction) window._lastModuleAction.follow = Date.now(); });
+      Coordinator.register('nurture', { canRun: function () { return msOn('nurture'); }, tick: function () { return { tookPage: true, nextDelayMs: 0 }; } });
+      Coordinator.register('follow',  { canRun: function (s) { return msOn('follow') && s !== 'S0' && s !== 'S1' && s !== 'S4'; }, tick: function () { return { tookPage: true, nextDelayMs: 0 }; } });
+      Coordinator.register('chat',    { canRun: function (s) { return msOn('chat') && s === 'S3'; }, tick: function () { return { tookPage: true, nextDelayMs: 0 }; } });
+      Coordinator.init();
+      Coordinator.start();
+      Logger.info('调度', '智能调度 V6 已启动（Coordinator 全权接管）');
     }
-  }
 
   // ==================== 消息监听 ====================
   if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {

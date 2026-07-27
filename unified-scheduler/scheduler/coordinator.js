@@ -8,7 +8,6 @@
   var interval = null, wdTimer = null, lastTick = 0;
   var tickLock = false;
   var running = false;
-  var _noPageJump = false;
 
   function register(name, mod) {
     if (!mod || typeof mod.canRun !== 'function' || typeof mod.tick !== 'function') {
@@ -81,19 +80,61 @@
     }
   }
 
+  function getV5State() {
+    try {
+      var Kk = (typeof SKeys !== 'undefined') ? SKeys : {};
+      var raw = {};
+      try { raw = JSON.parse(localStorage.getItem(Kk.LK_STATE) || '{}'); } catch (e) {}
+      var h = (localStorage.getItem(Kk.LK_MY_HANDLE) || '').replace('@','').replace('#guard','').toLowerCase();
+      if (!h) h = 'unknown';
+      var stats = {};
+      try { stats = JSON.parse(localStorage.getItem('matrix_stats_' + h) || '{}'); } catch (e) {}
+      var followed = stats.follows_today || 0;
+      var dayCnt = stats.day_count || 1;
+      var limit = 200;
+      try {
+        if (localStorage.getItem(Kk.LK_ANTIBAN_ENABLED) === 'true') {
+          var d = Math.max(0, dayCnt - 1);
+          limit = d === 0 ? (10 + Math.floor(Math.random() * 11)) : Math.min(50 * d, 200);
+        } else {
+          limit = (JSON.parse(localStorage.getItem(Kk.LK_CONSOLE_SETTINGS) || '{}')).followLimit || 200;
+        }
+      } catch (e) {}
+      return {
+        dayCount: dayCnt, followedToday: followed, followLimit: limit,
+        currentCreator: (localStorage.getItem(Kk.LK_CURRENT_CREATOR) || ''),
+        followRunning: localStorage.getItem(Kk.LK_FOLLOW_RUNNING) === 'true',
+        chatRunning: sessionStorage.getItem('dan_chat_auto_run') === 'true' || localStorage.getItem('dan_chat_status') === 'running',
+        nurtureRunning: sessionStorage.getItem('sg_nurture_running') === 'true',
+        url: window.location.href
+      };
+    } catch (e) { return { dayCount:1, followedToday:0, followLimit:200, currentCreator:'', followRunning:false, chatRunning:false, nurtureRunning:false, url:window.location.href }; }
+  }
+
   function updatePanel(ctx) {
     try {
+      var v5 = getV5State();
       var modStatus = {};
       for (var k in modules) {
         try { modStatus[k] = modules[k].status ? modules[k].status() : {}; } catch (e) {}
       }
       window.dispatchEvent(new CustomEvent('sg-coordinator-tick', { detail: {
+        engine: 'coor',
         stage: prev.stage,
         pageOwner: prev.pageOwner,
+        autoMode: running,
+        followRunning: v5.followRunning,
+        chatRunning: v5.chatRunning,
+        nurtureRunning: v5.nurtureRunning,
+        dayCount: v5.dayCount,
+        followedToday: v5.followedToday,
+        followLimit: v5.followLimit,
+        currentCreator: v5.currentCreator,
+        url: v5.url,
+        isWorkTime: (typeof StageDetector !== 'undefined') ? StageDetector.isWorkTime() : true,
+        isChatTime: (typeof StageDetector !== 'undefined') ? StageDetector.isChatTime() : false,
         modules: modStatus,
-        running: running,
-        url: window.location.href,
-        stageInfo: ctx || {}
+        ctx: ctx || {}
       }}));
     } catch (e) {}
   }
@@ -108,20 +149,9 @@
         prev.stage = result.stage;
       }
 
-      if (!running) {
-        for (var k in modules) {
-          var m = modules[k];
-          var shouldRun = (prev.stage !== 'S0' && prev.stage !== 'S4') ? (typeof m.canRun === 'function' ? m.canRun(prev.stage) : true) : false;
-          try {
-            window.dispatchEvent(new CustomEvent('sg-coordinator-command', {
-              detail: { module: k, action: shouldRun ? 'start' : 'stop', stage: prev.stage }
-            }));
-          } catch (e) {}
-        }
-        updatePanel({ currentStage: prev.stage }); return;
-      }
+      if (!running) { updatePanel(); return; }
 
-      if (!ensurePageRouterLoaded()) { updatePanel({ currentStage: prev.stage }); return; }
+      if (!ensurePageRouterLoaded()) { updatePanel(); return; }
 
       var stage = prev.stage;
       var priority = (function () {
@@ -154,16 +184,6 @@
       }
 
       if (pageOwner !== desiredOwner) {
-        if (_noPageJump) {
-          try {
-            window.dispatchEvent(new CustomEvent('sg-coordinator-command', {
-              detail: { module: desiredOwner, action: 'start', stage: stage }
-            }));
-          } catch (e) {}
-          savePrev();
-          updatePanel({ currentStage: stage, desiredOwner: desiredOwner, noJump: true });
-          return;
-        }
         var targetUrl = PageRouter.homeUrlFor(desiredOwner);
         if (targetUrl) {
           PageRouter.jumpTo(targetUrl);
@@ -241,9 +261,7 @@
           m._state = 'stopped';
           m._nextDelayUntil = 0;
           var homeUrl = PageRouter.homeUrlFor(k);
-          if (homeUrl && _noPageJump) {
-            try { window.dispatchEvent(new CustomEvent('sg-coordinator-command', { detail: { module: k, action: 'start', stage: prev.stage } })); } catch (e) {}
-          } else if (homeUrl) {
+          if (homeUrl) {
             PageRouter.jumpTo(homeUrl);
           }
           try { if (window._lastModuleAction) window._lastModuleAction[k] = Date.now(); } catch (e) {}
@@ -317,13 +335,6 @@
     }, 30000);
   }
 
-  function startObserver() {
-    startInterval(10000);
-    running = true;
-    _noPageJump = true;
-    Logger.info('Coor', '调度模式已启动（V5 掌控页面跳转）');
-  }
-
   function init() {
     startInterval(10000);
     Logger.info('Coor', '调度中心已加载');
@@ -337,7 +348,7 @@
 
   var Coordinator = {
     register: register, start: start, stop: stop, pause: pause, resume: resume,
-    init: init, startObserver: startObserver, getModule: getModule, startInterval: startInterval
+    init: init, getModule: getModule, startInterval: startInterval
   };
 
   if (typeof window !== 'undefined') { window.Coordinator = Coordinator; }
