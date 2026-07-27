@@ -249,9 +249,24 @@
       window._lastModuleAction = { follow: Date.now(), chat: Date.now(), nurture: Date.now() };
       window.addEventListener('matrix-nurture-log', function () { if (window._lastModuleAction) window._lastModuleAction.nurture = Date.now(); });
       window.addEventListener('matrix-follow-status', function () { if (window._lastModuleAction) window._lastModuleAction.follow = Date.now(); });
-      Coordinator.register('nurture', { canRun: function () { return msOn('nurture'); }, tick: function () { return { tookPage: true, nextDelayMs: 0 }; } });
-      Coordinator.register('follow',  { canRun: function (s) { return msOn('follow') && s !== 'S0' && s !== 'S1' && s !== 'S4'; }, tick: function () { return { tookPage: true, nextDelayMs: 0 }; } });
-      Coordinator.register('chat',    { canRun: function (s) { return msOn('chat') && s === 'S3'; }, tick: function () { return { tookPage: true, nextDelayMs: 0 }; } });
+      Coordinator.register('nurture', {
+        canRun: function () { return msOn('nurture'); },
+        start: function () { startNurture(); },
+        stop:  function () { stopNurture(); },
+        tick:  function () { return { tookPage: true, nextDelayMs: 0 }; }
+      });
+      Coordinator.register('follow', {
+        canRun: function (s) { return msOn('follow') && s !== 'S0' && s !== 'S1' && s !== 'S4'; },
+        start: function () { startFollow(); },
+        stop:  function () { stopFollow(); },
+        tick:  function () { return { tookPage: true, nextDelayMs: 0 }; }
+      });
+      Coordinator.register('chat', {
+        canRun: function (s) { return msOn('chat') && s === 'S3'; },
+        start: function () { startChat(); },
+        stop:  function () { stopChat(); },
+        tick:  function () { return { tookPage: true, nextDelayMs: 0 }; }
+      });
       Coordinator.init();
       Coordinator.start();
       Logger.info('调度', '智能调度 V6 已启动（Coordinator 全权接管）');
