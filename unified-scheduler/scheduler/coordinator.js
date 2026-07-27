@@ -189,6 +189,10 @@
         resultTick = { tookPage: false, nextDelayMs: 60000 };
       }
 
+      if (resultTick && resultTick.tookPage) {
+        try { if (window._lastModuleAction) window._lastModuleAction[desiredOwner] = Date.now(); } catch (e) {}
+      }
+
       if (resultTick && resultTick.nextDelayMs > 0) {
         mod._nextDelayUntil = now + resultTick.nextDelayMs;
       }
@@ -207,6 +211,34 @@
             prev.pageOwner = name2;
             break;
           }
+        }
+      }
+
+      // ========== 健康检查 ==========
+      var IDLE_HARD = 10 * 60 * 1000;
+      var IDLE_SOFT =  5 * 60 * 1000;
+      for (var k in modules) {
+        var m = modules[k];
+        if (m._state !== 'running') continue;
+        var lastAct = 0;
+        try { if (window._lastModuleAction) lastAct = window._lastModuleAction[k] || 0; } catch (e) {}
+        if (!lastAct) continue;
+        var idleMs = Date.now() - lastAct;
+        if (idleMs > IDLE_HARD) {
+          Logger.warn('Coor', k + ' 无动作 ' + Math.floor(idleMs / 60000) + ' 分钟 → 强制恢复');
+          try { m.stop(); } catch (e) {}
+          m._state = 'stopped';
+          m._nextDelayUntil = 0;
+          var homeUrl = PageRouter.homeUrlFor(k);
+          if (homeUrl && _noPageJump) {
+            try { window.dispatchEvent(new CustomEvent('sg-coordinator-command', { detail: { module: k, action: 'start', stage: prev.stage } })); } catch (e) {}
+          } else if (homeUrl) {
+            PageRouter.jumpTo(homeUrl);
+          }
+          try { if (window._lastModuleAction) window._lastModuleAction[k] = Date.now(); } catch (e) {}
+        } else if (idleMs > IDLE_SOFT) {
+          Logger.warn('Coor', k + ' 无反馈 ' + Math.floor(idleMs / 60000) + ' 分钟 → 释放延迟');
+          m._nextDelayUntil = 0;
         }
       }
 

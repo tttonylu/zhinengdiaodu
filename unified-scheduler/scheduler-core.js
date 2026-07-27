@@ -468,9 +468,9 @@
     window.addEventListener('sg-coordinator-command', function (e) {
       var d = e.detail;
       if (d.action === 'stop') {
-        if (d.module === 'nurture') stopNurture();
-        if (d.module === 'follow')  stopFollow();
-        if (d.module === 'chat')    stopChat();
+        if (d.module === 'nurture') { stopNurture(); if (window._lastModuleAction) window._lastModuleAction.nurture = Date.now(); }
+        if (d.module === 'follow')  { stopFollow();  if (window._lastModuleAction) window._lastModuleAction.follow  = Date.now(); }
+        if (d.module === 'chat')    { stopChat();    if (window._lastModuleAction) window._lastModuleAction.chat    = Date.now(); }
       }
       if (d.action === 'start') {
         if (d.module === 'nurture') {
@@ -478,9 +478,10 @@
             startNurture();
             _lastCoorNurtureStart = Date.now();
           }
+          if (window._lastModuleAction) window._lastModuleAction.nurture = Date.now();
         }
-        if (d.module === 'follow')  { startFollow(); }
-        if (d.module === 'chat')    { startChat(); }
+        if (d.module === 'follow')  { startFollow(); if (window._lastModuleAction) window._lastModuleAction.follow = Date.now(); }
+        if (d.module === 'chat')    { startChat();   if (window._lastModuleAction) window._lastModuleAction.chat   = Date.now(); }
       }
     });
     if (typeof Coordinator !== 'undefined') {
@@ -495,6 +496,8 @@
         return function () { return true; };
       };
       var msOn = msCheck();
+
+      window._lastModuleAction = { follow: Date.now(), chat: Date.now(), nurture: Date.now() };
 
       Coordinator.register('nurture', {
         canRun: function () { return msOn('nurture'); },
