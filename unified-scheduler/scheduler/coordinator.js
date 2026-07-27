@@ -220,6 +220,17 @@
       for (var k in modules) {
         var m = modules[k];
         if (m._state !== 'running') continue;
+        // 引擎自身 flag 兜底: 如果引擎还在跑就不算 idle
+        var engRunning = false;
+        try {
+          if (k === 'nurture') engRunning = sessionStorage.getItem('sg_nurture_running') === 'true';
+          if (k === 'follow')  engRunning = localStorage.getItem('matrix_follow_running') === 'true';
+          if (k === 'chat')    engRunning = sessionStorage.getItem('dan_chat_auto_run') === 'true' || localStorage.getItem('dan_chat_status') === 'running';
+        } catch (e) {}
+        if (engRunning) {
+          try { if (window._lastModuleAction) window._lastModuleAction[k] = Date.now(); } catch (e) {}
+          continue;
+        }
         var lastAct = 0;
         try { if (window._lastModuleAction) lastAct = window._lastModuleAction[k] || 0; } catch (e) {}
         if (!lastAct) continue;

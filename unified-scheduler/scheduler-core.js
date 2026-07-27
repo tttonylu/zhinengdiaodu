@@ -499,6 +499,13 @@
 
       window._lastModuleAction = { follow: Date.now(), chat: Date.now(), nurture: Date.now() };
 
+      window.addEventListener('matrix-nurture-log', function () {
+        if (window._lastModuleAction) window._lastModuleAction.nurture = Date.now();
+      });
+      window.addEventListener('matrix-follow-status', function () {
+        if (window._lastModuleAction) window._lastModuleAction.follow = Date.now();
+      });
+
       Coordinator.register('nurture', {
         canRun: function () { return msOn('nurture'); },
         tick: function () { return { tookPage: true, nextDelayMs: 0 }; }
