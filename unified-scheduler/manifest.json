@@ -1,23 +1,43 @@
 {
   "manifest_version": 3,
   "name": "智能调度中心",
-  "version": "3.0.0",
-  "description": "关注/养号/私信 智能轮换调度",
+  "version": "4.3.29",
+  "description": "智能调度 4.3.29：修复远程重锁关注配额后前端仍满配额的问题",
+
   "action": {
-    "default_title": "智能调度中心"
+    "default_title": "智能调度中心 4.3.27"
   },
   "permissions": [
     "storage",
     "alarms",
-    "tabs"
+    "tabs",
+    "browsingData",
+    "unlimitedStorage",
+    "declarativeNetRequest",
+    "declarativeNetRequestWithHostAccess"
   ],
   "host_permissions": [
     "http://192.168.0.100:*/*",
     "http://127.0.0.1:*/*",
+    "https://kongzhi1.kooldns.cn/*",
+    "https://haochi1.kooldns.cn/*",
     "https://*.x.com/*",
     "https://*.twitter.com/*",
     "https://*.twimg.com/*"
   ],
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "twimg_block",
+        "enabled": false,
+        "path": "rules/twimg-block.json"
+      }
+    ]
+  },
   "icons": {
     "16": "icons/icon16.png",
     "32": "icons/icon32.png",
@@ -29,7 +49,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["chat_scripts.json"],
+      "resources": ["chat_scripts.json", "chat_scripts_job.json", "obs/event-catalog.json"],
       "matches": ["https://*.x.com/*", "https://*.twitter.com/*"]
     }
   ],
@@ -40,24 +60,73 @@
         "https://*.twitter.com/*"
       ],
       "js": [
+        "shared/media-block-main.js",
+        "page-diag-bridge.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://*.x.com/*",
+        "https://*.twitter.com/*"
+      ],
+      "css": [
+        "shared/media-block.css"
+      ],
+      "js": [
+        "shared/media-block-sync.js"
+      ],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://*.x.com/*",
+        "https://*.twitter.com/*"
+      ],
+      "js": [
         "shared/config.js",
         "shared/id_extractor.js",
         "shared/logger.js",
+        "shared/debug-log.js",
+        "shared/telemetry.js",
+        "shared/diag-contract.js",
+        "obs/test-monitor.js",
         "shared/storage-keys.js",
+        "shared/time-util.js",
+        "shared/scheduler-gate.js",
+        "shared/soft-fill-mode.js",
         "shared/engine-utils.js",
+        "shared/challenge-guard.js",
+        "shared/remote-settings.js",
         "follow/risk_control.js",
+        "follow/pool-api.js",
+        "follow/soft-risk.js",
         "follow/content_follow_v1522.js",
+        "follow/follow-back-detect.js",
         "follow/push_blogger.js",
         "shared/ui_console.js",
         "shared/config-sync.js",
         "scheduler/stage-detector.js",
+        "scheduler/soft-risk-fallback-decision.js",
         "scheduler/page-router.js",
-        "scheduler/coordinator.js",
+        "scheduler/time-budget.js",
+        "scheduler/chat-strategy.js",
+        "chat/age-parse.js",
+        "chat/target-db.js",
+        "chat/promo-links.js",
+        "chat/chat-gates.js",
+        "chat/dm-pin.js",
+        "chat/inbox-watch.js",
         "chat/content_chat.js",
         "nurture/nurture-config.js",
         "nurture/nurture-tracker.js",
         "nurture/nurture-comments.js",
         "nurture/nurture-engine.js",
+        "repost/repost-tracker.js",
+        "repost/repost-engine.js",
+        "repost/profile-clone.js",
+        "repost/repost-panel.js",
         "scheduler-core.js",
         "ui/panel.js",
         "ui/follow-btn.js"

@@ -64,9 +64,29 @@ var NurtureComments = (function () {
   };
 
   function shanghaiHour() {
-    var s = new Date().toLocaleString('en-US', { timeZone: 'Asia/Shanghai', hour12: false });
-    var m = s.match(/(\d+):/);
-    return m ? parseInt(m[1]) : new Date().getHours();
+    try {
+      if (typeof TimeUtil !== 'undefined' && TimeUtil.shanghaiParts) {
+        var sp = TimeUtil.shanghaiParts();
+        if (sp && sp.h != null) return sp.h;
+      }
+    } catch (e0) {}
+    try {
+      var parts = new Intl.DateTimeFormat('en-GB', {
+        timeZone: 'Asia/Shanghai', hour: '2-digit', hourCycle: 'h23'
+      }).formatToParts(new Date());
+      for (var i = 0; i < parts.length; i++) {
+        if (parts[i].type === 'hour') {
+          var h = parseInt(parts[i].value, 10);
+          if (h === 24) h = 0;
+          return h;
+        }
+      }
+    } catch (e1) {}
+    try {
+      return new Date(Date.now() + 8 * 3600 * 1000).getUTCHours();
+    } catch (e2) {
+      return 12;
+    }
   }
 
   function pickFrom(arr) {
@@ -127,3 +147,4 @@ var NurtureComments = (function () {
     BANK: BANK,
     pick: pick,
   };
+})();

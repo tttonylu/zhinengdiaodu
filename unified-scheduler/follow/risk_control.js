@@ -24,21 +24,51 @@
     }
   };
 
+  function levelsFromRemote() {
+    try {
+      var raw = localStorage.getItem('sg_config_thresholds');
+      if (!raw) return null;
+      var t = JSON.parse(raw);
+      var g = t.risk_cooldown_gradient;
+      var arr = null;
+      if (Array.isArray(g)) arr = g;
+      else if (typeof g === 'string') {
+        try { arr = JSON.parse(g); } catch (e1) {
+          arr = String(g).split(/[,，\s]+/).map(function (x) { return parseInt(x, 10); }).filter(function (n) { return !isNaN(n) && n > 0; });
+        }
+      }
+      if (!arr || !arr.length) return null;
+      return arr.map(function (n) {
+        var x = parseInt(n, 10);
+        if (isNaN(x) || x <= 0) return 60000;
+        // 后台存秒；插件用毫秒。≥1000 视为已是毫秒
+        return x < 1000 ? x * 1000 : x;
+      });
+    } catch (e) { return null; }
+  }
+
   function getConfig() {
+    var cfg = defaultConfig;
     try {
       if (typeof MatrixConfig !== 'undefined' && typeof MatrixConfig.getConfigValue === 'function') {
-        return MatrixConfig.getConfigValue('risk', defaultConfig) || defaultConfig;
-      }
-      if (typeof self !== 'undefined' && self.MatrixConfig && typeof self.MatrixConfig.getConfigValue === 'function') {
-        return self.MatrixConfig.getConfigValue('risk', defaultConfig) || defaultConfig;
-      }
-      if (typeof window !== 'undefined' && window.MatrixConfig && typeof window.MatrixConfig.getConfigValue === 'function') {
-        return window.MatrixConfig.getConfigValue('risk', defaultConfig) || defaultConfig;
+        cfg = MatrixConfig.getConfigValue('risk', defaultConfig) || defaultConfig;
+      } else if (typeof self !== 'undefined' && self.MatrixConfig && typeof self.MatrixConfig.getConfigValue === 'function') {
+        cfg = self.MatrixConfig.getConfigValue('risk', defaultConfig) || defaultConfig;
+      } else if (typeof window !== 'undefined' && window.MatrixConfig && typeof window.MatrixConfig.getConfigValue === 'function') {
+        cfg = window.MatrixConfig.getConfigValue('risk', defaultConfig) || defaultConfig;
       }
     } catch (err) {
       console.warn('[Risk] load config fallback', err);
     }
-    return defaultConfig;
+    try {
+      var remoteLevels = levelsFromRemote();
+      if (remoteLevels && remoteLevels.length) {
+        cfg = JSON.parse(JSON.stringify(cfg || defaultConfig));
+        cfg.backoff = cfg.backoff || {};
+        cfg.backoff.levels = remoteLevels;
+      }
+    } catch (e2) {}
+    return cfg || defaultConfig;
   }
 
   function TokenBucket(capacity, refillPerSec) {

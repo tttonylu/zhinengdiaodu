@@ -1,0 +1,24 @@
+# 含账号密码，禁止提交
+docs/NAS_ACCESS.md
+**/NAS_ACCESS.md
+.env
+.env.*
+*.pem
+*.key
+test-env/scrm-monitor/.cookie_import_token.txt
+**/.cookie_import_token.txt
+
+# 调试抓包、一次性脚本
+.tmp*
+_tmp_*
+.tmp_hour_monitor/
+dashboard_live.html
+PUSH_BLOGGER_*
+
+# 历史快照与缓存（现网插件只看 unified-scheduler/）
+_archive/
+**/node_modules/
+**/chrome_profile/
+
+# 插件观测日志，不是源码
+unified-scheduler/obs/*.jsonl

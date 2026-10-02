@@ -1,5 +1,5 @@
 // =============================================================================
-// X-Matrix 中控台 (V18.2.1 | 日志监控面板)
+// X-Matrix 中控台 (V18.3.0 | 日志监控面板)
 // =============================================================================
 // 功能：
 //   - 拦截 console.log/warn/error，捕获 Chat 和 Follow 的日志
@@ -72,7 +72,11 @@
             var saved = localStorage.getItem(STATUS_KEY);
             if (saved) {
                 var parsed = JSON.parse(saved);
-                if (parsed.stats) stats = parsed.stats;
+                if (parsed.stats) {
+                    stats.chat    = parsed.stats.chat    || stats.chat;
+                    stats.follow  = parsed.stats.follow  || stats.follow;
+                    stats.nurture = parsed.stats.nurture || stats.nurture;
+                }
             }
         } catch (_) {}
     }
@@ -175,7 +179,7 @@
         panel.className = 'hidden';
         panel.innerHTML = [
             '<div class="ml-header">',
-            '  <span class="ml-header-title">🔍 X-Matrix Monitor V18.2.1</span>',
+            '  <span class="ml-header-title">🔍 X-Matrix Monitor V18.3.0</span>',
             '  <div class="ml-header-actions">',
             '    <button class="ml-header-btn active" data-filter="all">ALL</button>',
             '    <button class="ml-header-btn" data-filter="chat">CHAT</button>',
@@ -366,6 +370,9 @@
             case 'dm_no_decision':
                 addLog('chat', 'warn', '后端无决策 @' + data.target);
                 break;
+            case 'debug':
+                addLog('chat', 'info', data.message || data.step || 'debug');
+                break;
             default:
                 addLog('chat', 'info', type + (data.target ? ' @' + data.target : ''));
         }
@@ -436,6 +443,13 @@
 
                 if (typeof first === 'string' && first.indexOf('[Matrix-Chat]') === 0) {
                     addLog('chat', level, msg || first.replace('[Matrix-Chat]', '').trim());
+                } else if (typeof first === 'string' && (
+                    first.indexOf('[私信]') === 0 || first.indexOf('[战报]') === 0 ||
+                    first.indexOf('[话术]') === 0 || first.indexOf('[推广链接]') === 0 ||
+                    first.indexOf('[守箱]') === 0 || first.indexOf('[年龄识别]') === 0 ||
+                    first.indexOf('[诊断]') === 0 || first.indexOf('[赶工]') === 0
+                )) {
+                    addLog('chat', level, first + (msg ? ' ' + msg : ''));
                 } else if (typeof first === 'string' && first.indexOf('[Follow]') === 0) {
                     addLog('follow', level, msg || first.replace('[Follow]', '').trim());
                 } else if (typeof first === 'string' && (first.indexOf('[养号]') === 0 || first.indexOf('[Nurture]') === 0)) {
@@ -474,17 +488,21 @@
             return;
         }
         injectStyles();
-        createButton();
+        // v3：中间悬浮球停用，改由 #sg-panel「打开日志」调用 __matrix_console__.show
+        // createButton();
         createPanel();
         loadStatus();
         renderStats();
-        addLog('system', 'info', '日志监控已启动 (V18.2.1) ' + bjFull());
+        addLog('system', 'info', '日志监控已启动 (V18.3.0) ' + bjFull());
     }
 
     init();
 
     window.__matrix_console__ = {
-        show: function() { if (!panelVisible) togglePanel(); },
+        show: function() {
+            if (!document.getElementById(PANEL_ID)) createPanel();
+            if (!panelVisible) togglePanel();
+        },
         hide: function() { if (panelVisible) togglePanel(); },
         getLogs: function() { return logs.slice(); },
         getStats: function() { return JSON.parse(JSON.stringify(stats)); },

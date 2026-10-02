@@ -1,5 +1,5 @@
 // =============================================================================
-// X-Matrix 博主推送 (V18.2.1 号池模式适配版)
+// X-Matrix 博主推送 (V18.3.0 号池模式适配版)
 // 基于 1-Extension V12.5.1 改造：
 //   - 上报终点：Controller API → NAS号池 (192.168.0.100:5678/pool/push)
 //   - 批量队列 flushQueue 终点：sync_batch → pool_push_batch
@@ -405,6 +405,6 @@
         if (reportQueue.length > 0) flushQueue();
     });
 
-    console.log('[博主推送] push_blogger.js 已加载 (V18.2.1 号池模式)');
+    console.log('[博主推送] push_blogger.js 已加载 (V18.3.0 号池模式)');
 
 })();

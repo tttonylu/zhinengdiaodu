@@ -1,0 +1,50 @@
+{
+  "version": "1.3",
+  "mode": "random",
+  "active_script": "v1",
+  "random_pool": ["v1", "v2", "v3"],
+  "scripts": {
+    "v1": {
+      "name": "兼职粉1",
+      "description": "强钩+指定性",
+      "icebreaker": "突然ごめんね🙏\nスマホで動画見るだけで日給数万円の小仕事あるんだけど、やる？やらない？\nやる／やらない のどっちかで答えて👀",
+      "ad_template": "アルバイト募集中。\nTikTokの再生を増やすお手伝い、スマホで動画見るだけ。日給3万〜10万円くらい。\n詳細はLINEで:\n{LINK}",
+      "kick_message": "まだかな〜🥺\nLINE見てくれた？続きそっちで💕",
+      "final_kick_message": "最後にもう一度🙏\nLINE追加してね💕",
+      "reject_message": "了解です🙏\nまた何かあったらよろしく〜",
+      "foreigner_reject": ""
+    },
+    "v2": {
+      "name": "兼职粉2",
+      "description": "强钩+指定性",
+      "icebreaker": "いきなりごめんね💦\n動画見るだけで日給3万〜の簡単バイト、やる？やらない？\n返信は「やる」か「やらない」だけでOK👀",
+      "ad_template": "アルバイト募集中。\nTikTok再生のお手伝い、スマホ視聴だけでOK。1日3万〜10万円。\nLINEで詳細:\n{LINK}",
+      "kick_message": "お返事まだかな🥺\nLINEの方が説明しやすいよ💕",
+      "final_kick_message": "これで最後🙏\n気が向いたらLINEね💕",
+      "reject_message": "了解〜🙏\n無理しないでね",
+      "foreigner_reject": ""
+    },
+    "v3": {
+      "name": "兼职粉3",
+      "description": "强钩+指定性",
+      "icebreaker": "突然すみません🙏\nスマホ完結・動画見るだけ・日給数万の小仕事、やるかやらないか教えて！\n「やる」「やらない」のどっちかで👀",
+      "ad_template": "アルバイト募集中。\nTikTok動画の再生手伝い、携帯だけで報酬あり（日給3万〜10万）。\nLINE追加してね:\n{LINK}",
+      "kick_message": "まだかな？🥺\nLINE追加してくれたら続き送るよ💕",
+      "final_kick_message": "最後の連絡だよ🙏\nLINEで待ってるね💕",
+      "reject_message": "ごめんね💦\nまた機会があれば🙏",
+      "foreigner_reject": ""
+    }
+  },
+  "templates": {
+    "icebreaker": "突然ごめんね🙏\nスマホで動画見るだけで日給数万円の小仕事あるんだけど、やる？やらない？\nやる／やらない のどっちかで答えて👀",
+    "ad": "アルバイト募集中。\nTikTokの再生を増やすお手伝い、スマホで動画見るだけ。日給3万〜10万円くらい。\n詳細はLINEで:\n{LINK}",
+    "kick": "まだかな〜🥺\nLINE見てくれた？続きそっちで💕",
+    "final_kick": "最後にもう一度🙏\nLINE追加してね💕",
+    "reject": "了解です🙏\nまた何かあったらよろしく〜",
+    "foreigner_reject": ""
+  },
+  "dna_core": ["line.me", "http", "アルバイト", "TikTok", "小仕事", "日給", "やる", "やらない"],
+  "dna_aux": [],
+  "corpse_days": 3,
+  "kick_days": 0
+}

@@ -1,5 +1,5 @@
 // =============================================================================
-// X-Matrix-Bot 统一配置中心 (V18.2.1 号池模式)
+// X-Matrix-Bot 统一配置中心 (V18.3.0 号池模式)
 // 基础：1-Extension V12.5.1 生产版（deepMerge / 路径访问 / storage 覆盖）
 // 新增：任务锁机制防止异常中断后重复领号
 // 兼容：Service Worker（background.js）和 Content Script（content_*.js）
@@ -12,11 +12,17 @@
 //   - 更新配置并持久化：       await MatrixConfig.setConfigValue('pool.server', url)
 //   - 重置为默认：            await MatrixConfig.resetConfig()
 //
-// 版本：V18.2.1
+// 版本：V18.3.0
 // =============================================================================
 
 (function() {
     'use strict';
+
+    try {
+        if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getManifest) {
+            window.__SG_SCHED_BUILD__ = String(chrome.runtime.getManifest().version || '');
+        }
+    } catch (eBuildEarly) {}
 
     // ==================== 默认配置（号池模式）====================
     const DEFAULT_CONFIG = {
@@ -50,7 +56,8 @@
                 dmResult: '/api/plugin/dm/result',
                 dmSnapshot: '/api/plugin/dm/snapshot',
                 dmProgress: '/api/plugin/dm/progress',
-                dmBind: '/api/plugin/dm/bind'
+                dmBind: '/api/plugin/dm/bind',
+                dmRoster: '/api/plugin/dm/roster'
             }
         },
 
@@ -104,6 +111,7 @@
                 reposts:   { min:  1, max:  5 },
                 trends:    { min:  5, max: 10 },
                 profiles:  { min:  2, max:  5 },
+                enters:    { min:  8, max: 12 },
             },
             hourlyBudget: {
                 likes:     { min:  5, max: 15 },
@@ -111,10 +119,11 @@
                 reposts:   { min:  0, max:  2 },
                 trends:    { min:  1, max:  2 },
                 profiles:  { min:  0, max:  1 },
+                enters:    { min:  1, max:  2 },
             },
             actionGapSec:   { min: 10, max: 20 },
-            actionWeights:  { like: 0.60, comment: 0.04, repost: 0.03, trend: 0.04, profile: 0.02 },
-            activeHours:    { start: { hour: 8, minute: 0 }, end: { hour: 23, minute: 0 } },
+            actionWeights:  { like: 0.55, comment: 0.04, repost: 0.03, trend: 0.04, profile: 0.02, enter: 0.10 },
+            activeHours:    { start: { hour: 7, minute: 0 }, end: { hour: 21, minute: 0 } },
             likeCooldownMin: 3,
             segmentMinutes: 15,
         },
@@ -426,7 +435,7 @@ function getAntiBanLimit(dayIndex) {
         get debug() { return _config.debug; },
 
         // 版本信息
-        version: 'V18.2.1',
+        version: 'V18.3.0',
 
         // 默认配置引用（只读）
         defaults: deepClone(DEFAULT_CONFIG)
@@ -446,7 +455,7 @@ function getAntiBanLimit(dayIndex) {
         console.error('[配置] 自动加载失败:', e);
     });
 
-    console.log(`[配置] 统一配置模块已加载 (V18.2.1 号池模式)，环境: ${isServiceWorker() ? 'ServiceWorker' : 'ContentScript'}`);
+    console.log(`[配置] 统一配置模块已加载 (V18.3.0 号池模式)，环境: ${isServiceWorker() ? 'ServiceWorker' : 'ContentScript'}`);
 
 })();
 

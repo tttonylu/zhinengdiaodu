@@ -1,0 +1,7 @@
+/* 禁媒时隐藏时间线图/视频容器（不省流，但避免裂图占位；开闸时去掉 html.sg-media-blocked） */
+html.sg-media-blocked [data-testid="tweetPhoto"],
+html.sg-media-blocked [data-testid="videoPlayer"],
+html.sg-media-blocked [data-testid="videoComponent"],
+html.sg-media-blocked [data-testid="previewCard"] img {
+  display: none !important;
+}

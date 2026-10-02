@@ -1,18 +1,98 @@
 {
-  "version": "2.0",
+  "version": "2.1",
   "mode": "random",
   "active_script": "v1",
   "random_pool": ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10"],
   "scripts": {
-    "v1": { "name": "话术1", "description": "标准版", "icebreaker": "ヤロー / どうも😳", "ad_template": "もしデートできるなら、メッセージちょうだいね〜♡💕\n{LINK}", "kick_message": "まだかなー🥺\nこっちの方が話しやすいよ！待ってる💕", "reject_message": "", "foreigner_reject": "" },
-    "v2": { "name": "话术2", "description": "被动求确认", "icebreaker": "こんちわ〜😊", "ad_template": "デートできそうだったら教えてくれると嬉しいな💕\n{LINK}", "kick_message": "お返事待ってるね〜😊\nこっちで話そっか💕", "reject_message": "", "foreigner_reject": "" },
-    "v3": { "name": "话术3", "description": "自言自语+提议", "icebreaker": "おっす！🙌", "ad_template": "デートしてみたいな〜 良かったらメッセージ待ってるね😊\n{LINK}", "kick_message": "連絡くれないかな？🥺\nこっちの方がすぐ返せるよ！", "reject_message": "", "foreigner_reject": "" },
-    "v4": { "name": "话术4", "description": "心理暗示", "icebreaker": "やっほー✌️", "ad_template": "デートしたいなって思ったら連絡してね♡\n{LINK}", "kick_message": "待ちくたびれちゃった😭\nこっちでお話しよ💕", "reject_message": "", "foreigner_reject": "" },
-    "v5": { "name": "话术5", "description": "先问再邀", "icebreaker": "はいはーい🤗", "ad_template": "デートできそう？もしそうならメッセージ待ってるよ😊\n{LINK}", "kick_message": "まだ〜？🥺\nLINEの方が話しやすいんだ〜待ってる💕", "reject_message": "", "foreigner_reject": "" },
-    "v6": { "name": "话术6", "description": "反问试探", "icebreaker": "やあ😳", "ad_template": "デートしてみない？メッセージ待ってるね♡\n{LINK}", "kick_message": "あれ？まだかな😳\nこっちで待ってるよ💕", "reject_message": "", "foreigner_reject": "" },
-    "v7": { "name": "话术7", "description": "晚上型", "icebreaker": "こんばんは😊", "ad_template": "暇なときデートどうかな？連絡ちょうだい💕\n{LINK}", "kick_message": "もしよかったら、こっちでも話さない？😊💕", "reject_message": "", "foreigner_reject": "" },
-    "v8": { "name": "话术8", "description": "LINE直邀", "icebreaker": "お疲れ様🙌", "ad_template": "LINEで話さない？デートできる人探してるんだ〜💕\n{LINK}", "kick_message": "返信遅くなりそうだからこっちで話そう💕\n待ってるね！", "reject_message": "", "foreigner_reject": "" },
-    "v9": { "name": "话术9", "description": "初次直球", "icebreaker": "初めまして🤗", "ad_template": "デートしてくれる？気軽にメッセージちょうだいね♡\n{LINK}", "kick_message": "ねぇ、まだ〜？🥺\nこっちの方がいいよ💕", "reject_message": "", "foreigner_reject": "" },
-    "v10": { "name": "话术10", "description": "轻松邀约", "icebreaker": "どもども😳", "ad_template": "よかったらデートしようよ〜メッセージ待ってる😊\n{LINK}", "kick_message": "おーい😳\nこっちの方が便利だよ！待ってる💕", "reject_message": "", "foreigner_reject": "" }
+    "v1": {
+      "name": "话术1",
+      "description": "大人余裕·标准版",
+      "icebreaker": "いきなりごめんなさい💦\n同世代より、大人の余裕がある人がいいなーって探してて、メッセージしちゃいました🫣\nちなみに、今おいくつですか？👀",
+      "ad_template": "教えてくれてありがとう💕\n大人の方とゆっくり話したいな…LINEで待ってるね♡\n{LINK}",
+      "kick_message": "まだかなー🥺\nこっちの方が話しやすいよ、待ってる💕",
+      "reject_message": "ごめんね💦\n25歳以上の大人の方とゆっくり話したいって思ってて…また機会があれば🙏",
+      "foreigner_reject": ""
+    },
+    "v2": {
+      "name": "话术2",
+      "description": "大人余裕·落ち着き",
+      "icebreaker": "突然メッセージ失礼します💦\n同い年より、落ち着いてる大人の方がタイプで探してました🫣\nよかったら、今おいくつですか？👀",
+      "ad_template": "教えてくれて嬉しいな💕\n大人同士でゆっくり話せたらいいな…LINEで待ってるね♡\n{LINK}",
+      "kick_message": "お返事待ってるね〜😊\nこっちの方が話しやすいよ、待ってる💕",
+      "reject_message": "ごめんね💦\n大人の方と話したいって思ってて、25歳以上で探してるんだ…またね🙏",
+      "foreigner_reject": ""
+    },
+    "v3": {
+      "name": "话术3",
+      "description": "大人余裕·余裕ある人",
+      "icebreaker": "いきなりすみません💦\n同世代より余裕のある大人の人に惹かれてて、思わず送っちゃいました🫣\nちなみに年齢、教えてもらえる？👀",
+      "ad_template": "ありがとう💕\n余裕のある大人の方と話したいな…気軽にLINEで待ってるね♡\n{LINK}",
+      "kick_message": "連絡くれないかな？🥺\nこっちの方がすぐ返せるよ、待ってる💕",
+      "reject_message": "ごめんね💦\n大人の方とゆっくり話したいから25歳以上で探してて…また機会があれば🙏",
+      "foreigner_reject": ""
+    },
+    "v4": {
+      "name": "话术4",
+      "description": "大人余裕·穏やか",
+      "icebreaker": "突然すみません💦\n同世代より、穏やかで大人っぽい人が好みで探してました🫣\n今おいくつですか？教えてもらえる？👀",
+      "ad_template": "教えてくれてありがとう💕\n穏やかな大人の方と話したいな…LINEで待ってるね♡\n{LINK}",
+      "kick_message": "待ちくたびれちゃった😭\nこっちでお話しよ、待ってる💕",
+      "reject_message": "ごめんね💦\n25歳以上の大人の方と話したいって思ってて…またね🙏",
+      "foreigner_reject": ""
+    },
+    "v5": {
+      "name": "话术5",
+      "description": "大人余裕·自然体",
+      "icebreaker": "いきなりごめんなさい💦\n同世代より自然体で余裕がある人がいいなって思って、送っちゃいました🫣\nちなみに何歳ですか？👀",
+      "ad_template": "ありがとう💕\n自然体な大人の方とゆっくり話したい…LINEで待ってるね♡\n{LINK}",
+      "kick_message": "まだ〜？🥺\nこっちの方が話しやすいんだ、待ってる💕",
+      "reject_message": "ごめんね💦\n大人の方と落ち着いて話したいから25歳以上で探してて…また機会があれば🙏",
+      "foreigner_reject": ""
+    },
+    "v6": {
+      "name": "话术6",
+      "description": "大人余裕·大人っぽい",
+      "icebreaker": "突然メッセージ失礼します💦\n同い年より大人っぽくて余裕がある人がタイプで、探してました🫣\n今おいくつですか？👀",
+      "ad_template": "教えてくれて嬉しい💕\n大人っぽい方とゆっくり話したいな…LINEで待ってるね♡\n{LINK}",
+      "kick_message": "あれ？まだかな😳\nこっちで待ってるよ💕",
+      "reject_message": "ごめんね💦\n大人の方と話したいって思ってて…25歳以上で探してるんだ、またね🙏",
+      "foreigner_reject": ""
+    },
+    "v7": {
+      "name": "话术7",
+      "description": "大人余裕·落ち着き重視",
+      "icebreaker": "いきなりすみません💦\n同世代より落ち着いた大人の方が好みで、メッセージしちゃいました🫣\nちなみに、今おいくつですか？👀",
+      "ad_template": "ありがとう💕\n落ち着いた大人の方と話したいな…LINEで待ってるね♡\n{LINK}",
+      "kick_message": "もしよかったら、こっちでも話さない？😊\n待ってる💕",
+      "reject_message": "ごめんね💦\n25歳以上の大人の方とゆっくり話したいって思ってて…また機会があれば🙏",
+      "foreigner_reject": ""
+    },
+    "v8": {
+      "name": "话术8",
+      "description": "大人余裕·LINE直球",
+      "icebreaker": "突然ごめんなさい💦\n同世代より余裕のある大人の人がいいなって探してて、送っちゃいました🫣\n年齢教えてもらえる？👀",
+      "ad_template": "教えてくれてありがとう💕\n大人の方とLINEでゆっくり話したい…待ってるね♡\n{LINK}",
+      "kick_message": "返信遅くなりそうだからこっちで話そう💕\n待ってるね！",
+      "reject_message": "ごめんね💦\n大人の方と話したいから25歳以上で探してて…またね🙏",
+      "foreigner_reject": ""
+    },
+    "v9": {
+      "name": "话术9",
+      "description": "大人余裕·素直",
+      "icebreaker": "いきなりごめんなさい💦\n同世代より大人の余裕がある人がタイプで、素直に送っちゃいました🫣\n今おいくつですか？👀",
+      "ad_template": "ありがとう💕\n大人の方と気軽に話したいな…LINEで待ってるね♡\n{LINK}",
+      "kick_message": "ねぇ、まだ〜？🥺\nこっちの方がいいよ、待ってる💕",
+      "reject_message": "ごめんね💦\n25歳以上の大人の方とゆっくり話したいって思ってて…また機会があれば🙏",
+      "foreigner_reject": ""
+    },
+    "v10": {
+      "name": "话术10",
+      "description": "大人余裕·轻松",
+      "icebreaker": "突然メッセージ失礼します💦\n同世代より余裕があって大人な人がいいなって思って、送りました🫣\nちなみに年齢、教えてくれる？👀",
+      "ad_template": "教えてくれて嬉しい💕\n大人の方とゆっくり話せたらいいな…LINEで待ってるね♡\n{LINK}",
+      "kick_message": "おーい😳\nこっちの方が便利だよ！待ってる💕",
+      "reject_message": "ごめんね💦\n大人の方と落ち着いて話したいから25歳以上で探してて…またね🙏",
+      "foreigner_reject": ""
+    }
   }
 }

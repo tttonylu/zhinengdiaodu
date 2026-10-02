@@ -1,5 +1,5 @@
 // =============================================================================
-// X-Matrix-Bot 用户ID自动提取器 (V18.2.1 号池模式适配版)
+// X-Matrix-Bot 用户ID自动提取器 (V18.3.0 号池模式适配版)
 // 基于 1-Extension V12.5.1 改造：
 //   - 移除所有远程上报（GuardAgent / NAS / Controller）
 //   - 仅本地写入 localStorage.matrix_my_handle = "@handle#guard"
@@ -17,7 +17,7 @@
     window.__matrix_id_extractor_injected__ = true;
 
     // ================= 诊断日志 =================
-    console.log('[ID提取器] id_extractor.js 已加载 (V18.2.1)');
+    console.log('[ID提取器] id_extractor.js 已加载 (V18.3.0)');
 
     // 延迟执行，等待页面完全加载
     setTimeout(extractAndStore, 3000);
@@ -46,7 +46,11 @@
             }
 
             // 过滤无效 handle
-            const INVALID_HANDLES = ['home', 'explore', 'notifications', 'messages', 'search', 'i', 'settings', 'compose'];
+            const INVALID_HANDLES = [
+              'home', 'explore', 'notifications', 'messages', 'search', 'i', 'settings', 'compose',
+              'account', 'login', 'signup', 'logout', 'unknown', 'null', 'undefined',
+              'plugin_smoke', 'smoke', 'test', 'guest', 'demo', 'admin', 'root'
+            ];
             if (/^\d+$/.test(handle) || INVALID_HANDLES.includes(handle.toLowerCase())) {
                 console.log('[ID提取器] 跳过无效 handle:', handle);
                 return;

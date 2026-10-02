@@ -1,171 +1,132 @@
-# 智能调度中心 v3.0 路线图
+# 智能调度中心 · 路线图
 
-> 版本：v3.0.0 · 2026-07-26
-> 主线：**自动化稳定性 / 规模化管理 / 模块化方便改**
-> 起跳基准：25 worker × 25 账号 日进粉 6-10（手动模式），v3.0 以提升/稳定该指标为验收基线
-> 扩规模门槛（M3 放行）：G1 24h 无人工 + G2 全 worker 看板可见 + G3 后台改阈值不动代码
+> 版本：v3.0.2 · 修订 2026-10-01  
+> 代码：`unified-scheduler/` + `test-env/x-pool-service` + `test-env/x-ops-console`  
+> **文档工程：** 宪法 = [`智能调度插件技术指导.md`](智能调度插件技术指导.md)；细则 = [`调度工作手册.md`](调度工作手册.md)；改码 = [`工作指导.md`](工作指导.md)
 
 ---
 
-## 0. 三步破局思路（v3.0 主线执行顺序）
+## 1. 当前方向（唯一主线）
+
+**把矩阵跑稳**：单一调度控制面 + 后台配置真正驱动插件 + 三引擎小修，然后扩机。
 
 ```
-Step 1  数据底座先行 (M0)          ← 这是工作室盲飞期 exit gate
-  └─ audit_logs + 单号损益表 + worker 注册/心跳锁
-       ↓ 暴露"死亡队列"和"零回复 worker"
-
-Step 2  数据出来后做根因决策 (M1)    ← 针对性补业务模块
-  └─ C6 消极反馈识别 + B6 评论模板上后台 + 看板上线
-       ↓ 死亡率降到 5% 以内，转化漏斗可见
-
-Step 3  工程化重构 (M2，可与 M0/M1 并行)
-  └─ 三仓合并 + 配置抽离 + 阈值上后台
-       ↓ 老板能在后台改策略不动代码
-
-最终放行 M3：扩规模门槛验收 (G1+G2+G3)
+┌─────────────────────────────────────────────────────────┐
+│  OPS 后台 (:15680)                                       │
+│  /api/config/all · /api/nurture/comments · /api/scripts │
+└───────────────────────┬─────────────────────────────────┘
+                        │ config-sync (1min)
+┌───────────────────────▼─────────────────────────────────┐
+│  插件 unified-scheduler                                  │
+│  scheduler-core → follow / nurture / chat                 │
+└───────────────────────┬─────────────────────────────────┘
+                        │ pool_pop / pool_done …
+┌───────────────────────▼─────────────────────────────────┐
+│  号池 (:15678)                                           │
+└─────────────────────────────────────────────────────────┘
 ```
 
----
+**验收三准则（矩阵放行门槛）：**
 
-## 1. 里程碑总览
-
-| 里程碑 | 名 | 主线归属 | 估时 | 关键交付 | 准入 | 准出 |
-|---|---|---|---|---|---|---|
-| M0 | 数据底座 | 一+二 P0 | 2 周 | audit_logs / worker 注册锁 / 单号损益表初版 | 现状可用 monorepo 决策已拍 | 至少能看到 25 worker 当日死亡+漏斗行 |
-| M1 | 业务模块补丁 | 一+三 P0+P1 | 2 周 | C6 消极反馈 / B6 评论上后台 / worker 看板上线 | M0 准出 | 死亡率降到 5% 内 / 看板能看到全部 worker |
-| M2 | 工程化重构 | 三 P1 | 2 周 | 三仓合并 / bg 抽硬编码 / 阈值后台改 | M0 准出 | 后台改阈值 ≤30s 反映到 worker |
-| M3 | 扩规模门槛验收 | 验收 | 1 周 | G1+G2+G3 全达 | M1+M2 准出 | 连续 72h×3 次试验无人工且封号不高于手动 |
-
-总估时 5-7 周（M2 可与 M0/M1 并行，实际挤压在 5 周内）。
-
----
-
-## 2. M0 数据底座（2 周，主线一+二 P0）
-
-### 工作分解
-| ID | 任务 | 后端 | 插件 | 验收 |
-|---|---|---|---|---|
-| M0-T1 | x-pool-service 加 `workers` 表 + 注册接口 | ✓ | | 注册 25 worker 0 重复 |
-| M0-T2 | x-pool-service 加 `pool/lease` + 续约锁 + `pool/heartbeat` | ✓ | | 1 worker 重复领号 0 次 |
-| M0-T3 | x-ops-console 加 `audit_logs` 表 + migration | ✓ | | 任何审计事件 1s 入库 |
-| M0-T4 | x-ops-console 加 POST/GET `/api/plugin/audit[/batch]` | ✓ | | 失败本地入队重发 |
-| M0-T5 | background.js 加 `report_audit[/batch]` action + 失败入队 | | ✓ | 插件重启审计事件 0 丢失 |
-| M0-T6 | 三引擎调用点接入 audit 上报（不破坏 Idle/Follow/Chat/Nurture 流程） | | ✓ | 每 follow_batch_end/dm_round_sent/nurture_action 至少 1 条 |
-| M0-T7 | ops-console 单号损益页（24h + 7d 两档） | ✓ | | 看到 25 行 |
-| M0-T8 | ops-console worker 看板（活/死/动作量/劣反馈计数色阶） | ✓ | | 一屏看 25 worker |
-
-### M0 准出条件
-- 25 worker 注册+心跳 0 重复领号事件
-- 单号损益页能显示当日 24h 行
-- 看板能看到全部 worker 活/死灯
-- 审计上报失败本地入队重发，插件重启 0 丢失
-
----
-
-## 3. M1 业务模块补丁（2 周，主线一+三）
-
-### 工作分解
-| ID | 任务 | 后端 | 插件 | 验收 |
-|---|---|---|---|---|
-| M1-T1 | content_chat.js 加 C6 消极反馈识别块（关键词+行为检测） | | ✓ | 命中即拉冷 24h + report_audit |
-| M1-T2 | C6 上报链路：拉冷→audit→看板账户损益行标"消极反馈" | ✓ | ✓ | 任意拉黑 5s 内入库 |
-| M1-T3 | ops-console 加 `/api/nurture/comments` GET/POST + 迁移硬编码模板 | ✓ | | 后台增改一模板 ≤30s 生 |
-| M1-T4 | nurture-comments.js 改：API 拉 + chrome.storage 兜底（30min 同步 + 离线用 BANK） | | ✓ | API 宕走兜底，业务不停 |
-| M1-T5 | ops-console 加阈值编辑页 → 写 matrix_config_overrides | ✓ | | 改 followLimit 全 worker 30s 内生效 |
-| M1-T6 | background.js 加 fetch 指数退避重试 + 5s timeout 抽到 config | | ✓ | 网络抖动 3 次重试后报错 |
-| M1-T7 | scheduler-core.js 补 D6 卡死场景化重启（已有 3-tick 触发） | | ✓ | 卡死场景 90s 内归 idle + 180s 冷却 |
-| M1-T8 | 看板补"死亡队列"页 + "零回复 worker" 页（基于 M0 数据） | ✓ | | 一屏看到 TOP 死亡队列 |
-
-### M1 准出条件
-- C6 命中即自动拉冷 + 写 audit 5s 内
-- 评论模板后台增改 30s 内对全 worker 生效
-- 阈值后台改 30s 内对全 worker 生效
-- 死亡率从 5-15% 降到 5% 以内（基线：M0 完成后 4 周观测对比）
-
----
-
-## 4. M2 工程化重构（2 周，主线三 P1，可与 M0/M1 并行）
-
-### 工作分解
-| ID | 任务 | 验收 |
+| # | 准则 | 含义 |
 |---|---|---|
-| M2-T1 | 根仓 git init + initialize master | 一次提交完成 |
-| M2-T2 | services/x-pool-service 接入（合并 test-env + 号池 两副本） | 单副本入仓 |
-| M2-T3 | services/x-ops-console 接入（合并 test-env + DAN 副本） | 单副本入仓 |
-| M2-T4 | extension/unified-scheduler 整体入仓（17 文件 + manifest） | 路径准确 |
-| M2-T5 | 删除 test-env/号池/DAN 三套旧副本（仅保留 DAN/x-ops-console 作旧版参考 stub） | monorepo 无重复 |
-| M2-T6 | 根 README.md + workspace package.json | 起本地 dev 三栈一句话能跑 |
-| M2-T7 | background.js 抽 POOL_SERVER/OPS_SERVER/timeout 到 shared/config.js | 0 硬编码服务器路径 |
-| M2-T8 | monorepo 文档最终化（README + 三 service 各自 README） | 接手 30min 上手 |
-
-### M2 准出条件
-- 单一副本 monorepo 跑得动
-- 配置 0 硬编码服务器路径
-- 新人 30min 内能起本地三栈（号池+后台+扩展）
+| S1 | 不假死 | 无「旗标 running 但引擎已死、调度不再轮转」 |
+| S2 | 不互抢 | 自动模式仅调度启停，两引擎不同时抢导航 |
+| S3 | 能接上 | 刷新 / 软导航后应跑模块在合理时间内恢复 |
 
 ---
 
-## 5. M3 扩规模门槛验收（1 周）
+## 2. 已完成（代码侧）
 
-### 验收清单
-| 准则 | 验收试验 | 通过线 |
-|---|---|---|
-| G1 24h 无人工 | 连续 72h 试验 ×3 次 | 0 次人工介入 + 封号率 ≤ 手动模式 |
-| G2 全 worker 看板 | ops-console 一屏看 25→50 worker | 所有 worker 活/死灯+动作量+存活率可见 |
-| G3 后台改阈值 | 任选 1 阈值后台改 | ≤30s 反映到全部 worker |
+### 2.1 调度控制面（S0）
 
-### M3 通过后的下一步
-- 启动 50 worker → 100 worker 阶梯扩规模试验
-- v3.1 启动候选：IP/设备指纹代理池、话术多占位、CI 流水线
+| 项 | 说明 |
+|---|---|
+| 单一控制面 | `scheduler-gate.js`：自动模式禁止引擎自启 / 未授权跳页 |
+| 命令启停 | `sg-follow/chat/nurture-command` 驱动真循环 |
+| 幽灵 running | `coEngineAlive` + terminal phase 交回调度 |
+| 池空 / 停止 | `coStop`、冷却、轮转 |
+| 软导航补活 | `coRehydrateEngines`：重注入只补循环、不连环跳页 |
+| 领号不重复 pop | 有未完成任务时 `startFollow` 只恢复 |
 
----
+### 2.2 关注引擎
 
-## 6. 风险登记表
+| 项 | 说明 |
+|---|---|
+| 多语言已关注识别 | 简/繁/日/英，避免误点取关 |
+| 号池切换逻辑 | 切换用 `pool_done` 而非 `pool_fail` 回流半成品 |
+| 进度持久化 | 按博主记录已处理粉丝 |
+| 单飞锁 | 防止双 `runEngine` 并行点击 |
 
-| ID | 风险 | 描述 | 对策 | 缓解时点 |
-|---|---|---|---|---|
-| R1 | 工程先于业务 | monorepo 先做完业务没动 | 严格 M0 数据底座先于 M2 | M0 必做完再开始 M2 |
-| R2 | IP/设备未隔离 | 25 同机多 profile 扎堆被封 | v3.0 不解决，留 v3.1 代理池 | M3 后评估 |
-| R3 | 话术被平台识别 | 日文 icebreaker 模板雷同 | C6 + 单号损益表暴露后做话术指纹 | M1 后观测 |
-| R4 | 号源质量差 | pool 领到的号死亡率高 | 任务锁 + matrix_dead_handles + 死号占比入 audit | M0/T6 |
-| R5 | audit 写爆后端 | 25 worker × 高频审计写入压垮 sqlite | 异步批量上报 + 写入失败本地入队 | M0/T4 |
-| R6 | C6 关键词误判 | 拉黑识别关键词撞回复正常 | 双判（关键词+无再回复超 N 分钟）+ 看 audit 流校准 | M1/T1 |
-| R7 | monorepo 合并丢代码 | 删副本误删线上版本 | 合并前每副本 git tag 留版本 | M2/T2 |
-| R8 | 跨机时钟漂移 | 各 worker 机器时间不一致导致 heartbeat 错误 | 以服务端时间为准；客户端只带 ts 做参考 | M0/T2 |
+### 2.3 养号引擎
 
----
+| 项 | 说明 |
+|---|---|
+| 评论弹层 | 对齐号池版：支持弹层或跳转详情页写回复 |
 
-## 7. v3.1 待办池（v3.0 不做）
+### 2.4 后台 → 插件配置（矩阵前置）
 
-| 项 | 主线 | 入池原因 |
-|---|---|---|
-| 话术 {LINK} 多占位 / 分渠道链接 | 一 | v3.0 暂不动话术（决策项 2） |
-| IP/设备指纹代理池 | 一 | R2，必须等 M3 后单号损益表暴露 |
-| Playwright e2e / 插件 jest 单测 | 三 | 决策项 8，v3.0 不做 CI |
-| CI 流水线 | 三 | 同上 |
-| 跨资源竞标/优先级 | 二 | v3.0 任务锁已够用，再细化推后 |
-| 调度策略可视化编排 | 三 | v3.0 后台改阈值已够 |
-| 话术骨架重设计 | 一 | 内容需 v3.0 上线后数据驱动 |
-| 代号审计/合规协议文档 | 一 | 决策项 6 改为 audit_logs 技术化，合规协议留后 |
+| 后台字段 | 插件消费 |
+|---|---|
+| `follow_daily_limit` / 首日 / **次日** / 爬坡 | Day1=first(20)，Day2=day2(50)，Day3+=day2+(day-2)*step |
+| `follow_interval_min/max_sec` | `RemoteSettings.followIntervalSec` → 关注间隔 |
+| `nurture_daily/hourly_*` | Tracker 在 `sg-config-synced` 时重套预算上限 |
+| `chat_rounds_per_day` / `chat_cooldown_hours` | 调度轮转私信 |
+| `modules` / `stagePolicy` | S1 读 dayMax；默认可 nurture+follow |
+| `follow_only_japanese` | → `matrix_console_settings.onlyJapanese` |
+| `follow_antiban_enabled` | → 与远程爬坡同形的阶梯 |
+| `/api/nurture/comments` | `sg_nurture_comments` |
+| `/api/scripts/pool` | 私信话术（既有） |
 
----
-
-## 8. 关键节点对齐时间线（建议）
-
-| 周次 | M0 | M1 | M2 | M3 |
-|---|---|---|---|---|
-| W1 | T1-T4 | | T1-T3 (git 初始化) | |
-| W2 | T5-T8 准出 | | T4-T6 (合并副本) | |
-| W3 | | T1-T3 | T7-T8 准出 | |
-| W4 | | T4-T8 准出 | | |
-| W5 | | | | G1 启动 ×3 试验 |
-| W6 | | | | M3 验收 → 放行扩规模 |
-| W7 | | | | （缓冲） |
+实现文件：`shared/config-sync.js`、`shared/remote-settings.js`、`nurture-tracker.js`、`stage-detector.js`。
 
 ---
 
-## 9. 引用
+## 3. 待验收 / 待做
 
-- 需求详见 `REQUIREMENTS.md`
-- 架构详见 `ARCHITECTURE.md`
-- 接口契约详见 `API_CONTRACT.md`
+### 3.1 现场手测（阻塞矩阵扩机）
+
+- [ ] S1：自动模式连续 ≥4h 无假死（短测 ≥30min 见 [`obs/4.1.45-上线验收单.md`](../unified-scheduler/obs/4.1.45-上线验收单.md)）
+- [ ] S2：≥30min 无 follow+chat 互跳
+- [ ] S3：F5 / 切 tab 后应跑模块恢复；暂停后 F5 仍暂停
+- [ ] 后台改限额/间隔 → 插件 1 分钟内生效
+- [x] 上线环境：OPS `scrm_gate_mode=soft`、废日私信条数上限、`chat_kick_min_hours=2`（2026-09-13）
+
+### 3.2 矩阵下一阶段（调度验收后）
+
+| 项 | 说明 |
+|---|---|
+| ~~按账号差异化配置~~ | ✅ 已做：`/api/config/all?bot_id=` + 账号详情页 |
+| ~~`onlyJapanese` / 防封后台化~~ | ✅ 已做：`follow_only_japanese` / `follow_antiban_enabled` |
+| ~~诊断 `whyIdle`~~ | ✅ 已做：面板「原因」行 |
+| 任务监控总览（B 一期） | ✅ 大升级已做：`/monitor` + `/api/monitor/overview`（2026-08-11） |
+| `POOL_SERVER` / `OPS_SERVER` 可配置 | ✅ 插件 3.1.0 面板「服务器」+ storage |
+| 心跳统一打 OPS | ✅ full 心跳已有；`send_report`→lite 已接通 |
+
+### 3.3 业务增强（不挡主线）
+
+- 私信 C6 消极反馈识别
+- 评论模板 CRUD 后台管理
+- monorepo 目录收敛（`services/` + `extension/`）
+
+---
+
+## 4. 不做清单（硬边界）
+
+| 项 | 原因 |
+|---|---|
+| worker 注册 / lease / heartbeat 锁 | 曾实现后删除；打断调度 |
+| worker 看板 / 全量 audit 底座 | 非调度前置 |
+| 单号损益 / LINE 点击归因 | 全矩阵共用同一 LINE，业务上追不到 |
+| 调度未稳前扩 50/100 机 | 只会放大故障 |
+
+---
+
+## 5. 引用
+
+- **工作指导（改代码前必读）：`工作指导.md`**
+- 需求：`REQUIREMENTS.md`
+- 架构：`ARCHITECTURE.md`
+- 接口：`API_CONTRACT.md`
+- 运行时：`RUNTIME.md`
+- NAS：`NAS_ACCESS.md`（本地私密，勿提交）
