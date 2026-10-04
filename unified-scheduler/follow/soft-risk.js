@@ -118,7 +118,7 @@
           if (mods && mods.chat === false) modOn = false;
         } catch (eMod) {}
         if (!modOn) fill = { mode: 'off', allowChat: false, reason: 'chat_module_off', day: day };
-        else if (day < 3) fill = { mode: 'nurture_only', allowChat: false, reason: 'day_lt_3', day: day };
+        // 4.3.32：取消私信天数限制，Day1 即可私信（原 day<3 限制已移除）
         else if (!chatTimeOkFb) fill = { mode: 'nurture_only', allowChat: false, reason: 'outside_chat_hours', day: day };
         else fill = { mode: 'chat_fill', allowChat: true, reason: '', day: day };
       }
@@ -155,7 +155,6 @@
       localStorage.setItem('sg_state', JSON.stringify(sgSt));
       try { sessionStorage.setItem('sg_debt_only', 'false'); } catch (eDebt) {}
       try {
-        sessionStorage.removeItem('sg_soft_risk_pulse_ran');
         sessionStorage.removeItem('sg_soft_risk_pulse_retry');
         sessionStorage.removeItem('sg_soft_risk_pulse_reason');
         sessionStorage.removeItem('sg_soft_chat2_prepared');

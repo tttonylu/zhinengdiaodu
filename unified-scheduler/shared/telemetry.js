@@ -25,9 +25,9 @@
       { id: 'scheduler.diag_freeze', label_zh: '诊断告警(上报)', category: 'scheduler', severity: 'warn', upload: true, push: false },
       { id: 'scheduler.diag_unfreeze', label_zh: '解除诊断冻结', category: 'scheduler', severity: 'info', upload: true, push: false },
       { id: 'scheduler.diag_auto_repaired', label_zh: '诊断自愈', category: 'scheduler', severity: 'info', upload: true, push: false },
-      { id: 'chat.round_plan', label_zh: '守箱计划名单', category: 'chat', severity: 'info', upload: true, push: false },
-      { id: 'chat.round_progress', label_zh: '守箱逐条进度', category: 'chat', severity: 'info', upload: true, push: false },
-      { id: 'chat.round_result', label_zh: '守箱轮结果', category: 'chat', severity: 'info', upload: true, push: false },
+      { id: 'chat.round_plan', label_zh: '私信轮计划名单', category: 'chat', severity: 'info', upload: true, push: false },
+      { id: 'chat.round_progress', label_zh: '私信轮逐条进度', category: 'chat', severity: 'info', upload: true, push: false },
+      { id: 'chat.round_result', label_zh: '私信轮结果', category: 'chat', severity: 'info', upload: true, push: false },
       { id: 'chat.task_queue_keep', label_zh: '保留任务队列', category: 'chat', severity: 'info', upload: true, push: false }
     ]
   };

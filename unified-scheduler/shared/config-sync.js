@@ -9,16 +9,16 @@
 
   var SYNC_INTERVAL_MS = 1 * 60 * 1000;
   var DEFAULT_THRESHOLDS = {
-    follow_daily_limit: '260',
-    follow_first_day_limit: '20',
-    follow_day2_limit: '50',
-    follow_step_per_day: '50',
-    follow_day1_min: '15', follow_day1_max: '20',
-    follow_day2_min: '45', follow_day2_max: '50',
-    follow_day3_min: '90', follow_day3_max: '100',
-    follow_day4_min: '150', follow_day4_max: '160',
-    follow_day5_min: '200', follow_day5_max: '210',
-    follow_day6_min: '250', follow_day6_max: '260',
+    follow_daily_limit: '310',
+    follow_first_day_limit: '85',
+    follow_day2_limit: '145',
+    follow_step_per_day: '55',
+    follow_day1_min: '80', follow_day1_max: '90',
+    follow_day2_min: '135', follow_day2_max: '155',
+    follow_day3_min: '190', follow_day3_max: '215',
+    follow_day4_min: '240', follow_day4_max: '270',
+    follow_day5_min: '285', follow_day5_max: '300',
+    follow_day6_min: '290', follow_day6_max: '310',
     follow_interval_min_sec: '2',
     follow_interval_max_sec: '4',
     follow_retry_delay_sec: '300',
@@ -57,12 +57,15 @@
     stage_tick_interval_ms: '10000',
     stage_watchdog_ms: '30000',
     nav_min_interval_ms: '13000',
-    media_load_mode: 'on',
+    media_load_mode: 'off',
     follow_only_japanese: 'true',
     follow_antiban_enabled: 'false'
   };
   var DEFAULT_MODULES = { nurture: true, follow: true, chat: true, scheduler: true, repost: true };
   var _timer = null;
+  var _retryTimer = null;
+  var _retryCount = 0;
+  var RETRY_BACKOFFS = [5000, 15000, 30000]; // 失败后快速重试：5s → 15s → 30s → 回归1分钟常态
 
   function getBotId() {
     try {
@@ -124,6 +127,7 @@
       if (rolled) {
         stats.follows_today = 0;
         delete stats.daily_limit; // 跨日重抽 DayN 随机配额
+        try { delete stats.follows_reset_day; } catch (eClrRd) {}
       } else if (stats.follows_today == null) {
         stats.follows_today = 0;
       }
@@ -133,10 +137,14 @@
         var parsedFt = parseInt(followsToday, 10);
         if (!isNaN(parsedFt) && parsedFt >= 0) ft = parsedFt;
       }
+      // 同日刚远程重锁清零：禁止 OPS today_follow_count 把本地又抬满
+      var resetDay = toShanghaiDayKey(stats.follows_reset_day);
+      var skipOpsBoost = !!(resetDay && resetDay === today && !rolled);
       // 跨日：用 OPS 对齐；同日只允许 OPS 抬高本地（禁止把已确认关注抹成更小）
       if (ft != null && rolled) {
         stats.follows_today = ft;
-      } else if (ft != null && ft > localFollows) {
+        try { delete stats.follows_reset_day; } catch (eDelR) {}
+      } else if (ft != null && ft > localFollows && !skipOpsBoost) {
         stats.follows_today = ft;
       }
       stats.date = today;
@@ -330,14 +338,15 @@
         postType: String(thresholds.repost_post_type || 'text_or_image'),
         banVideo: true,
         postsPerHandle: 1,
-        cooldownMin: Math.max(30, pi(thresholds.repost_cooldown_min, 30)),
+        cooldownMin: Math.max(30, pi(thresholds.repost_cooldown_min, 40)),
         cooldownMax: pi(thresholds.repost_cooldown_max, 90),
         dailyCap: pi(thresholds.repost_daily_cap, 50),
-        dailyQuota: pi(thresholds.repost_daily_quota, 2),
+        day14Quota: pi(thresholds.repost_day14_quota, 2),
+        day5Quota: pi(thresholds.repost_day5_quota, 1),
         maxMinutes: pi(thresholds.repost_max_minutes, 60),
         followWorkEnd: thresholds.repost_follow_work_end === undefined
-          ? false
-          : truthy(thresholds.repost_follow_work_end, false),
+          ? true
+          : truthy(thresholds.repost_follow_work_end, true),
         startHour: pi(thresholds.repost_start_hour, 6),
         startMin: pi(thresholds.repost_start_min, 0),
         eveEndHour: pi(thresholds.repost_eve_end_hour, 23),
@@ -453,8 +462,8 @@
       followLimit: pi(thresholds.follow_daily_limit, 260),
       limits: {
         followDailyLimit: pi(thresholds.follow_daily_limit, 260),
-        followFirstDayLimit: pi(thresholds.follow_first_day_limit, 20),
-        followDay2Limit: pi(thresholds.follow_day2_limit, 50),
+        followFirstDayLimit: pi(thresholds.follow_first_day_limit, 50),
+        followDay2Limit: pi(thresholds.follow_day2_limit, 100),
         followStepPerDay: pi(thresholds.follow_step_per_day, 50)
       },
       intervals: intervals,
@@ -471,9 +480,10 @@
       }
     };
 
-    var mediaMode = String(thresholds.media_load_mode || 'on').toLowerCase();
-    if (mediaMode !== 'on' && mediaMode !== 'off' && mediaMode !== 'auto') mediaMode = 'on';
-    // 4.3.14：用户停禁图 — OPS 若仍写 auto，插件侧按 on 放行（避免旧阈值继续拦媒体撞页）
+    var mediaMode = String(thresholds.media_load_mode || 'off').toLowerCase();
+    if (mediaMode !== 'on' && mediaMode !== 'off' && mediaMode !== 'auto') mediaMode = 'off';
+    // 4.3.14：用户停禁图 — OPS 若仍写 auto，插件侧按 on 放行（避免旧配置继续拦媒体撞页）
+    // 4.4.0：重启禁图 — auto 仍按 on 兼容旧配置；新默认 off
     if (mediaMode === 'auto') mediaMode = 'on';
 
     chrome.storage.local.set({
@@ -574,17 +584,32 @@
     });
   }
 
+  function scheduleRetry() {
+    if (_retryTimer) { try { clearTimeout(_retryTimer); } catch (e) {} _retryTimer = null; }
+    // _retryCount: 1=第1次失败（5s后重试）, 2=第2次失败（15s）, 3+=第3次+（30s封顶）
+    var idx = Math.min(_retryCount - 1, RETRY_BACKOFFS.length - 1);
+    var delay = RETRY_BACKOFFS[idx] || SYNC_INTERVAL_MS;
+    _retryTimer = setTimeout(function () {
+      _retryTimer = null;
+      try { fetchRemote(); } catch (e) {}
+    }, delay);
+    console.log('[ConfigSync] 拉取失败，' + Math.round(delay / 1000) + 's 后重试 (第' + _retryCount + '次重试)');
+  }
+
   function fetchRemote() {
     var botId = getBotId();
     try {
       chrome.runtime.sendMessage({ action: 'fetch_remote_config', bot_id: botId }, function (res) {
-        if (chrome.runtime.lastError) { applyDefaults(); return; }
-        if (!res || !res.ok) { applyDefaults(); return; }
+        if (chrome.runtime.lastError) { applyDefaults(); _retryCount++; scheduleRetry(); return; }
+        if (!res || !res.ok) { applyDefaults(); _retryCount++; scheduleRetry(); return; }
+        _retryCount = 0;
         applyPayload(res);
         fetchNurtureComments();
       });
     } catch (e) {
       applyDefaults();
+      _retryCount++;
+      scheduleRetry();
     }
   }
 

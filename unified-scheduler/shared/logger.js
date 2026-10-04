@@ -87,29 +87,95 @@ var Logger = (function () {
 (function () {
   'use strict';
 
-  var MAX_ERRORS = 20;
+  var MAX_ERRORS = 50;
+  var MSG_LIMIT = 4000;
+  var STACK_LIMIT = 8000;
+
+  // 板块映射：错误来源文件名 → 分板块责任归属（§A–§K）
+  var BOARD_RULES = [
+    { re: /(background\.js|^chrome-extension:|service[_ -]?worker)/, board: 'H', name: 'OPS 后台 / 心跳' },
+    { re: /(scheduler-core|scheduler[\\/]|stage-detector|page-router|time-budget|chat-strategy|soft-risk-fallback-decision|coordinator|diag-contract)/, board: 'A', name: '调度控制面' },
+    { re: /(content_follow|follow[\\/]|risk_control|push_blogger|follow-back-detect|pool-api|soft-risk)/, board: 'B', name: '关注引擎' },
+    { re: /(content_chat|chat[\\/]|target-db|promo-links|chat-gates|dm-pin|inbox-watch|age-parse)/, board: 'C', name: '私信引擎' },
+    { re: /(nurture|养号)/, board: 'D', name: '养号' },
+    { re: /(repost|profile-clone|转帖)/, board: 'E', name: '转帖' },
+    { re: /(config-sync|remote-settings|storage-keys|config\.js|soft-fill-mode|scheduler-gate)/, board: 'F', name: '配置同步' },
+    { re: /(^ui[\\/]|panel\.js|follow-btn|telemetry|logger|debug-log|page-diag|test-monitor|event-catalog|obs[\\/])/, board: 'G', name: '面板与观测' },
+    { re: /(challenge-guard|media-block|challenge|heal)/, board: 'K', name: '自愈 / 多开' },
+    { re: /(scrm)/, board: 'J', name: 'SCRM' },
+    { re: /(pool)#/i, board: 'I', name: '号池' }
+  ];
+
+  function resolveBoard(src, stack) {
+    var hay = String((src || '') + ' ' + (stack || ''));
+    for (var i = 0; i < BOARD_RULES.length; i++) {
+      if (BOARD_RULES[i].re.test(hay)) {
+        return { board: BOARD_RULES[i].board, board_name: BOARD_RULES[i].name };
+      }
+    }
+    return { board: 'G', board_name: '面板与观测' };
+  }
+
+  function runtimeContext() {
+    var ctx = {
+      url: (function () { try { return window.location.href; } catch (e) { return ''; } })(),
+      version: (function () {
+        try { return chrome.runtime.getManifest().version; } catch (e) { return ''; }
+      })(),
+      handle: (function () {
+        try {
+          var h = localStorage.getItem('matrix_my_handle');
+          if (h && h !== 'unknown') return String(h).replace(/[@#]/g, '');
+          var el = document.querySelector('a[data-testid="AppTabBar_Profile_Link"]');
+          if (el) {
+            var m = (el.href || '').match(/x\.com\/([^\/\?]+)/i);
+            if (m && m[1]) return String(m[1]).toLowerCase();
+          }
+        } catch (e) {}
+        return '';
+      })()
+    };
+    return ctx;
+  }
 
   function captureError(msg, src, line, col, stack) {
     try {
-      var raw = localStorage.getItem('sg_error_log');
-      var errLog = raw ? JSON.parse(raw) : [];
-      errLog.push({
+      var fullMsg = String(msg || 'Unknown error');
+      var fullStack = String(stack || '');
+      if (fullMsg.length > MSG_LIMIT) fullMsg = fullMsg.slice(0, MSG_LIMIT) + '…[trunc]';
+      if (fullStack.length > STACK_LIMIT) fullStack = fullStack.slice(0, STACK_LIMIT) + '…[trunc]';
+      var board = resolveBoard(src, fullStack);
+      var ctx = runtimeContext();
+      var entry = {
         t: Date.now(),
-        msg: String(msg || 'Unknown error').substring(0, 200),
-        src: String(src || '').substring(0, 120),
+        msg: fullMsg,
+        src: String(src || '').slice(0, 300),
         line: line || 0,
         col: col || 0,
-        stack: String(stack || '').substring(0, 300)
-      });
+        stack: fullStack,
+        board: board.board,
+        board_name: board.board_name,
+        url: ctx.url,
+        version: ctx.version,
+        handle: ctx.handle
+      };
+      var raw = localStorage.getItem('sg_error_log');
+      var errLog = raw ? JSON.parse(raw) : [];
+      errLog.push(entry);
       if (errLog.length > MAX_ERRORS) errLog = errLog.slice(-MAX_ERRORS);
       localStorage.setItem('sg_error_log', JSON.stringify(errLog));
       try {
         if (typeof SgTelemetry !== 'undefined' && SgTelemetry.emit) {
           SgTelemetry.emit('system.logger_error', {
-            msg: String(msg || '').substring(0, 200),
+            msg: fullMsg,
             src: src,
             line: line,
-            stack: String(stack || '').substring(0, 300)
+            stack: fullStack,
+            board: board.board,
+            board_name: board.board_name,
+            url: ctx.url,
+            version: ctx.version,
+            handle: ctx.handle
           }, { severity: 'error' });
         }
       } catch (eT) {}

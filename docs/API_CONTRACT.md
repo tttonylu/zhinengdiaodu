@@ -74,12 +74,14 @@
 | POST | `/api/plugin/account/daily-stats` | 日统计 |
 | POST | `/api/plugin/activity/report` · `/check` | 活动 |
 | POST/GET | `/api/plugin/dm/*` | 私信记录 / 轮次 / next / result |
-| POST | `/api/plugin/dm/roster` | 粉丝台账快照（封口上传：汇总 + items[]；失败不挡本地开人；OPS 另仓落库） |
+| POST | `/api/plugin/dm/roster` | 粉丝台账快照（封口上传：汇总 + items[]；失败不挡本地开人；OPS 落库见 [`OPS-DM-ROSTER.md`](OPS-DM-ROSTER.md)） |
 | GET | `/api/plugin/dm/roster/:bot` | （OPS 侧）按 bot 抓取台账副本；本仓插件不强制轮询 |
 | POST | `/api/accounts/:id/reset-dm` | 重置该号 OPS 私信进度（`dm_records`+leads 阶段）；body 可选 `wipe_plugin` 下发 `reset_chat_local` |
 | POST | `/api/accounts/batch-reset-dm` | 批量同上；body `{ ids, wipe_plugin? }` |
 
 远程指令白名单（claim）：`start` · `pause` · `reset_profile_media` · `reset_follow_daily_limit` · `reset_chat_local` · `clear_dead_handles`。
+
+`reset_follow_daily_limit`（≥4.3.30）：清零本地 `follows_today`、按 DayN 立刻重抽 `daily_limit`、清 `followNextDelayUntil` / `quota_exhausted`；写 `follows_reset_day` 挡住同日 OPS `today_follow_count` 回灌。
 
 ---
 

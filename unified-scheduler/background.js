@@ -11,6 +11,7 @@ const FALLBACK_OPS_SERVER = 'https://kongzhi1.kooldns.cn';
 const FAILOVER_STICKY_MS = 120000; // 外网成功后 sticky 2 分钟，再试内网
 const LAN_TRY_MS = 2500;
 const WAN_TRY_MS = 8000;
+const STICKY_STORAGE_KEY = 'sg_failover_sticky'; // SW 回收后恢复线路记忆
 
 var cachedPoolServer = DEFAULT_POOL_SERVER;
 var cachedOpsServer = DEFAULT_OPS_SERVER;
@@ -19,6 +20,34 @@ var failoverSticky = {
   pool: { base: '', until: 0 },
   ops: { base: '', until: 0 },
 };
+
+// ====== failover sticky 持久化（防 SW 回收丢记忆） ======
+function loadFailoverSticky() {
+  try {
+    chrome.storage.local.get([STICKY_STORAGE_KEY], function (r) {
+      try {
+        var saved = r && r[STICKY_STORAGE_KEY] ? JSON.parse(r[STICKY_STORAGE_KEY]) : null;
+        if (saved && saved.pool) failoverSticky.pool = saved.pool;
+        if (saved && saved.ops) failoverSticky.ops = saved.ops;
+        var now = Date.now();
+        var poolAlive = failoverSticky.pool.until > now ? failoverSticky.pool.base : '(expired)';
+        var opsAlive = failoverSticky.ops.until > now ? failoverSticky.ops.base : '(expired)';
+        console.log('[调度-SW] failover sticky 已恢复 pool=', poolAlive, 'ops=', opsAlive);
+      } catch (eParse) {
+        console.warn('[调度-SW] failover sticky 解析失败:', eParse);
+      }
+    });
+  } catch (e) {}
+}
+
+function saveFailoverSticky() {
+  try {
+    chrome.storage.local.set({ [STICKY_STORAGE_KEY]: JSON.stringify({
+      pool: failoverSticky.pool,
+      ops: failoverSticky.ops,
+    }) });
+  } catch (e) {}
+}
 
 function normalizeServerUrl(u, fallback) {
   var s = String(u || '').trim().replace(/\/$/, '');
@@ -39,8 +68,8 @@ function refreshServersFromStorage() {
     chrome.storage.local.get(['pool_server', 'ops_server'], function (r) {
       cachedPoolServer = normalizeServerUrl(r.pool_server, DEFAULT_POOL_SERVER);
       cachedOpsServer = normalizeServerUrl(r.ops_server, DEFAULT_OPS_SERVER);
-      failoverSticky.pool = { base: '', until: 0 };
-      failoverSticky.ops = { base: '', until: 0 };
+      // 启动时加载 sticky 持久化状态（SW 被回收后恢复）
+      loadFailoverSticky();
       console.log('[调度-SW] servers pool=', cachedPoolServer, 'ops=', cachedOpsServer,
         'fallback pool=', FALLBACK_POOL_SERVER, 'ops=', FALLBACK_OPS_SERVER);
     });
@@ -53,13 +82,15 @@ try {
     if (changes.pool_server) {
       cachedPoolServer = normalizeServerUrl(changes.pool_server.newValue, DEFAULT_POOL_SERVER);
       failoverSticky.pool = { base: '', until: 0 };
+      saveFailoverSticky();
     }
     if (changes.ops_server) {
       cachedOpsServer = normalizeServerUrl(changes.ops_server.newValue, DEFAULT_OPS_SERVER);
       failoverSticky.ops = { base: '', until: 0 };
+      saveFailoverSticky();
     }
   });
-} catch (e) {}
+} catch (eStCh) {}
 
 function cloneFetchOpts(options, timeoutMs) {
   var src = options || {};
@@ -103,6 +134,7 @@ function markFailoverSuccess(kind, base, preferred) {
     base: base,
     until: Date.now() + (base !== preferred && isLanUrl(preferred) ? FAILOVER_STICKY_MS : 15000),
   };
+  saveFailoverSticky();
 }
 
 function fetchJsonWithFailover(kind, path, options) {
@@ -129,9 +161,9 @@ function fetchJsonWithFailover(kind, path, options) {
           }
           return j;
         }).catch(function () {
-          // HTTP 通了但非 JSON：仍算到达，避免误切
-          markFailoverSuccess(kind, base, preferred);
-          return { ok: false, error: 'bad_json', via: base };
+          // HTTP 通了但非 JSON：说明不是我们的服务（如路由器页/网关错误页），继续试下一个
+          console.warn('[' + tag + '] ' + base + path + ' -> bad_json, 尝试下一地址');
+          return attempt();
         });
       })
       .catch(function (e) {
@@ -301,6 +333,49 @@ function notifyContent(command, tabId, done) {
       });
     });
   });
+}
+
+// ==================== 遥测队列（顶层，供 alarms 与 message 监听共用） ====================
+function queueTelemetryBatch(events) {
+  if (!events || !events.length) return;
+  try {
+    chrome.storage.local.get(['sg_telemetry_queue'], function (r) {
+      var queue = Array.isArray(r.sg_telemetry_queue) ? r.sg_telemetry_queue : [];
+      queue.push({ ts: Date.now(), events: events });
+      if (queue.length > 100) queue = queue.slice(-100);
+      chrome.storage.local.set({ sg_telemetry_queue: queue });
+    });
+  } catch (e) {}
+}
+
+function flushTelemetryQueue() {
+  try {
+    chrome.storage.local.get(['sg_telemetry_queue'], function (r) {
+      var queue = Array.isArray(r.sg_telemetry_queue) ? r.sg_telemetry_queue.slice() : [];
+      if (!queue.length) return;
+      var item = queue.shift();
+      opsFetch('/api/plugin/log/batch', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ events: item.events || [] }),
+      }).then(function (res) {
+        if (res && res.ok) {
+          flushTelemetryQueue();
+        } else {
+          chrome.storage.local.get(['sg_telemetry_queue'], function (r2) {
+            var q2 = Array.isArray(r2.sg_telemetry_queue) ? r2.sg_telemetry_queue : [];
+            q2.unshift(item);
+            chrome.storage.local.set({ sg_telemetry_queue: q2 });
+          });
+        }
+      }).catch(function () {
+        chrome.storage.local.get(['sg_telemetry_queue'], function (r2) {
+          var q2 = Array.isArray(r2.sg_telemetry_queue) ? r2.sg_telemetry_queue : [];
+          q2.unshift(item);
+          chrome.storage.local.set({ sg_telemetry_queue: q2 });
+        });
+      });
+    });
+  } catch (e) {}
 }
 
 // ==================== 消息监听 ====================
@@ -680,47 +755,7 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
     flushTelemetryQueue();
   }
 
-  function queueTelemetryBatch(events) {
-    if (!events || !events.length) return;
-    try {
-      chrome.storage.local.get(['sg_telemetry_queue'], function (r) {
-        var queue = Array.isArray(r.sg_telemetry_queue) ? r.sg_telemetry_queue : [];
-        queue.push({ ts: Date.now(), events: events });
-        if (queue.length > 100) queue = queue.slice(-100);
-        chrome.storage.local.set({ sg_telemetry_queue: queue });
-      });
-    } catch (e) {}
-  }
-
-  function flushTelemetryQueue() {
-    try {
-      chrome.storage.local.get(['sg_telemetry_queue'], function (r) {
-        var queue = Array.isArray(r.sg_telemetry_queue) ? r.sg_telemetry_queue.slice() : [];
-        if (!queue.length) return;
-        var item = queue.shift();
-        opsFetch('/api/plugin/log/batch', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ events: item.events || [] }),
-        }).then(function (res) {
-          if (res && res.ok) {
-            flushTelemetryQueue();
-          } else {
-            chrome.storage.local.get(['sg_telemetry_queue'], function (r2) {
-              var q2 = Array.isArray(r2.sg_telemetry_queue) ? r2.sg_telemetry_queue : [];
-              q2.unshift(item);
-              chrome.storage.local.set({ sg_telemetry_queue: q2 });
-            });
-          }
-        }).catch(function () {
-          chrome.storage.local.get(['sg_telemetry_queue'], function (r2) {
-            var q2 = Array.isArray(r2.sg_telemetry_queue) ? r2.sg_telemetry_queue : [];
-            q2.unshift(item);
-            chrome.storage.local.set({ sg_telemetry_queue: q2 });
-          });
-        });
-      });
-    } catch (e) {}
-  }
+  // queueTelemetryBatch / flushTelemetryQueue 已移至顶层（供 alarms 与 message 监听共用）
 
   // ----- OPS 活动上报 -----
   if (request.action === 'ops_activity_report') {
@@ -890,10 +925,19 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
     return true;
   }
   if (request.action === 'ops_dm_check') {
-    opsFetch('/api/plugin/dm/check', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request.payload || {}),
-    }).then(function (d) { sendResponse(d); }).catch(function () { sendResponse({ ok: false }); });
+    // 4.6.30：只读校验，网络失败 2s 后退避重试 1 次（§C2-16 / H2）；后端业务性 ok:false 不重试直接透传
+    var dmCheckBody = JSON.stringify(request.payload || {});
+    var dmCheckOpts = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: dmCheckBody };
+    var dmCheckT0 = Date.now();
+    opsFetch('/api/plugin/dm/check', dmCheckOpts).then(function (d) { sendResponse(d); }).catch(function () {
+      // 快失败（瞬时断网/连接拒绝）才值得重试；慢失败（failover 已耗尽内外网）重试也赶不上前端 9s 超时
+      if (Date.now() - dmCheckT0 > 5000) { sendResponse({ ok: false }); return; }
+      setTimeout(function () {
+        opsFetch('/api/plugin/dm/check', dmCheckOpts)
+          .then(function (d2) { sendResponse(d2); })
+          .catch(function () { sendResponse({ ok: false }); });
+      }, 2000);
+    });
     return true;
   }
   if (request.action === 'ops_dm_next') {
@@ -1113,9 +1157,10 @@ function resolvePurgeSeed() {
 function readMediaLoadMode() {
   return new Promise(function (resolve) {
     chrome.storage.local.get(['sg_media_load_mode'], function (st) {
-      var mode = String((st && st.sg_media_load_mode) || 'on').toLowerCase();
-      if (mode !== 'on' && mode !== 'off' && mode !== 'auto') mode = 'on';
+      var mode = String((st && st.sg_media_load_mode) || 'off').toLowerCase();
+      if (mode !== 'on' && mode !== 'off' && mode !== 'auto') mode = 'off';
       // 4.3.14：停禁图 — auto 按 on
+      // 4.4.0：重启禁图 — auto 仍按 on 兼容旧配置；新默认 off
       if (mode === 'auto') mode = 'on';
       mediaLoadModeCache = mode;
       resolve(mode);
@@ -1140,8 +1185,8 @@ function purgeXCache(opts) {
         resolve({ ok: true, skipped: true, reason: 'rate_limit_purge', at: lastAt });
         return;
       }
-      var mode = String((st && st.sg_media_load_mode) || 'on').toLowerCase();
-      if (mode !== 'on' && mode !== 'off' && mode !== 'auto') mode = 'on';
+      var mode = String((st && st.sg_media_load_mode) || 'off').toLowerCase();
+      if (mode !== 'on' && mode !== 'off' && mode !== 'auto') mode = 'off';
       if (mode === 'auto') mode = 'on';
       var includeTwimg = opts.includeTwimg;
       if (includeTwimg == null) {
@@ -1414,7 +1459,7 @@ function persistMediaGateState(extra) {
   extra = extra || {};
   var payload = {
     sg_media_gate_ref: mediaGateRef,
-    sg_media_load_mode: mediaLoadModeCache || 'on'
+    sg_media_load_mode: mediaLoadModeCache || 'off'
   };
   if (extra.dnrBlocked != null) payload.sg_media_dnr_blocked = !!extra.dnrBlocked;
   if (extra.dnrOk != null) payload.sg_media_dnr_ok = !!extra.dnrOk;
@@ -1673,8 +1718,8 @@ ensureInstallationId().then(function () {
   return new Promise(function (resolve) {
     chrome.storage.local.get(['sg_media_gate_ref', 'sg_media_load_mode'], function (st) {
       mediaGateRef = Math.max(0, parseInt((st && st.sg_media_gate_ref) || '0', 10) || 0);
-      var mode = String((st && st.sg_media_load_mode) || 'on').toLowerCase();
-      if (mode !== 'on' && mode !== 'off' && mode !== 'auto') mode = 'on';
+      var mode = String((st && st.sg_media_load_mode) || 'off').toLowerCase();
+      if (mode !== 'on' && mode !== 'off' && mode !== 'auto') mode = 'off';
       if (mode === 'auto') mode = 'on';
       mediaLoadModeCache = mode;
       // 写回 on，清掉旧 auto 缓存

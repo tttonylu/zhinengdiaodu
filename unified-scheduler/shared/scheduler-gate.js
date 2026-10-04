@@ -140,7 +140,7 @@ var SchedulerGate = (function () {
       var n = parseInt(t.nav_min_interval_ms, 10);
       if (isFinite(n) && n >= 2000 && n <= 120000) return n;
     } catch (e) {}
-    return 13000;
+    return 30000; // 4.6.23：13s→30s，减少连环跳转/握手数
   }
 
   var _lastNavAt = 0;

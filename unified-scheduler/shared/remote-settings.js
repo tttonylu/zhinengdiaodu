@@ -26,12 +26,12 @@ var RemoteSettings = (function () {
     var t = thresholds() || {};
     var day = Math.max(1, int(dayCount, 1));
     var defaults = {
-      1: [15, 20],
-      2: [45, 50],
-      3: [90, 100],
-      4: [150, 160],
-      5: [200, 210],
-      6: [250, 260]
+      1: [80, 90],
+      2: [135, 155],
+      3: [190, 215],
+      4: [240, 270],
+      5: [285, 300],
+      6: [290, 310]
     };
     var slot = day >= 6 ? 6 : day;
     var dft = defaults[slot];
@@ -40,10 +40,10 @@ var RemoteSettings = (function () {
     // 兼容旧键：无新区间时用 first/day2/step 粗算中心再扩成窄区间
     if (t['follow_day' + slot + '_min'] == null && t['follow_day' + slot + '_max'] == null) {
       if (slot === 1 && t.follow_first_day_limit != null) {
-        var f = int(t.follow_first_day_limit, 20);
+        var f = int(t.follow_first_day_limit, 50);
         min = Math.max(1, f - 5); max = f;
       } else if (slot === 2 && t.follow_day2_limit != null) {
-        var d2 = int(t.follow_day2_limit, 50);
+        var d2 = int(t.follow_day2_limit, 100);
         min = Math.max(1, d2 - 5); max = d2;
       }
     }
@@ -130,11 +130,6 @@ var RemoteSettings = (function () {
     return truthy(t.follow_antiban_enabled, false);
   }
 
-  /** 守箱已废除：恒 false（忽略 OPS/LS） */
-  function chatInboxWatchEnabled() {
-    return false;
-  }
-
   /** 话术池：dating=交友 · job=兼职粉；非法值回落 dating */
   function chatScriptPool() {
     var v = String((thresholds() || {}).chat_script_pool || 'dating').toLowerCase().trim();
@@ -153,7 +148,6 @@ var RemoteSettings = (function () {
     dmDailyLimit: dmDailyLimit,
     onlyJapanese: onlyJapanese,
     antiBanEnabled: antiBanEnabled,
-    chatInboxWatchEnabled: chatInboxWatchEnabled,
     chatScriptPool: chatScriptPool
   };
 

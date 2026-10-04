@@ -58,7 +58,7 @@
     return __sgChatCmd('getExtensionVersion', [], 3000);
   };
 
-  /** 一键解卡：守箱关→跟进队列；守箱开→Force 扫箱 */
+  /** 一键解卡：私信解冻+续跑 */
   window.__sgUnstickInbox = function (mins) {
     return __sgChatCmd('unstickInboxAndPulse', [mins || 20], 25000);
   };

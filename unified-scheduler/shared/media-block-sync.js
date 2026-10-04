@@ -31,15 +31,15 @@
   function syncFromStorage() {
     try {
       chrome.storage.local.get(['sg_media_load_mode', 'sg_media_gate_ref'], function (st) {
-        var mode = String((st && st.sg_media_load_mode) || 'on').toLowerCase();
-        if (mode !== 'on' && mode !== 'off' && mode !== 'auto') mode = 'on';
+        var mode = String((st && st.sg_media_load_mode) || 'off').toLowerCase();
+        if (mode !== 'on' && mode !== 'off' && mode !== 'auto') mode = 'off';
         if (mode === 'auto') mode = 'on';
         var ref = parseInt((st && st.sg_media_gate_ref) || '0', 10) || 0;
         var allow = mode === 'on' || ref > 0;
         push(mode, allow);
       });
     } catch (e) {
-      push('on', true);
+      push('off', false);
     }
   }
 
@@ -77,7 +77,7 @@
         }
         try {
           chrome.storage.local.get(['sg_media_load_mode', 'sg_media_gate_ref'], function (st) {
-            var mode = String((st && st.sg_media_load_mode) || 'on').toLowerCase();
+            var mode = String((st && st.sg_media_load_mode) || 'off').toLowerCase();
             if (mode === 'auto') mode = 'on';
             var ref = parseInt((st && st.sg_media_gate_ref) || '0', 10) || 0;
             finish(mode === 'on' || ref > 0);

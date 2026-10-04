@@ -35,6 +35,26 @@ var NurtureTracker = (function () {
 
   function val(v, d) { return (v != null) ? v : d; }
 
+  /** 上海自然日 YYYY-MM-DD，用于跨日零点重置 */
+  function shanghaiDateKey() {
+    try {
+      return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' });
+    } catch (e) {
+      var d = new Date(Date.now() + 8 * 3600 * 1000);
+      return d.toISOString().slice(0, 10);
+    }
+  }
+
+  function toShanghaiDateKey(ts) {
+    if (!ts) return '';
+    try {
+      return new Date(ts).toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' });
+    } catch (e) {
+      var d = new Date(ts + 8 * 3600 * 1000);
+      return d.toISOString().slice(0, 10);
+    }
+  }
+
   /** 兼容后台单值(30) 与 {min,max} */
   function rangeOf(field, dMin, dMax) {
     if (field == null) return { min: dMin, max: dMax };
@@ -204,8 +224,10 @@ var NurtureTracker = (function () {
   // ==================== 时段管理 ====================
   function maybeReset() {
     var now = Date.now();
-    // 跨天
-    if (now - dailyStart > 86400000) resetDaily();
+    // 跨天（上海自然日零点重置）
+    var today = shanghaiDateKey();
+    var lastDate = toShanghaiDateKey(dailyStart);
+    if (today !== lastDate) resetDaily();
     // 跨小时
     if (now - hourlyStart > 3600000) resetHourly();
     // 跨分片

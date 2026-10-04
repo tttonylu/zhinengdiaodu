@@ -66,9 +66,7 @@
     if (String(opts.softRiskMode || '') === 'nurture') {
       return { mode: 'nurture_only', allowChat: false, reason: 'sticky_nurture', day: day };
     }
-    if (day < 3) {
-      return { mode: 'nurture_only', allowChat: false, reason: 'day_lt_3', day: day };
-    }
+    // 4.3.32：取消私信天数限制，Day1 即可私信（原 day < 3 限制已移除）
     if (!chatTimeOk()) {
       return { mode: 'nurture_only', allowChat: false, reason: 'outside_chat_hours', day: day };
     }

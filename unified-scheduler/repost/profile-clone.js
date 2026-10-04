@@ -25,6 +25,7 @@
   var _aborted = false;
   var _applyNudgeTimer = null;
   var _applyNudgeCount = 0;
+  var _lastUploadErr = '';
 
   function K() {
     return typeof SKeys !== 'undefined' ? SKeys : {};
@@ -637,6 +638,58 @@
     return best;
   }
 
+  /** 为 twimg 头像/横幅生成多组候选 URL，避免单尺寸 404 */
+  function buildImgFallbacks(url, kind) {
+    var list = [];
+    if (!url) return list;
+    var s = String(url);
+    function push(x) {
+      if (!x || list.indexOf(x) >= 0) return;
+      list.push(x);
+    }
+    try {
+      if (s.indexOf('//') === 0) s = 'https:' + s;
+      var u = new URL(s, location.href);
+      var base = u.origin + u.pathname;
+      var query = u.search;
+      push(s);
+      if (query) push(base);
+      if (query.indexOf('name=') < 0) push(base + (query ? '&' : '?') + 'name=orig');
+
+      if (/profile_images/i.test(base)) {
+        var avVariants = ['_400x400', '_bigger', '_normal', '_200x200', '_x96', '_mini', '_reasonably_small'];
+        var avRe = /_(normal|bigger|mini|reasonably_small|x96|200x200|400x400)\.(jpg|jpeg|png|webp)$/i;
+        avVariants.forEach(function (v) {
+          var r = base.replace(avRe, v + '.$2');
+          if (r !== base) {
+            push(r);
+            push(r + '?name=orig');
+          }
+        });
+        var stripped = base.replace(avRe, '.$2');
+        if (stripped !== base) {
+          push(stripped);
+          push(stripped + '?name=orig');
+        }
+      } else if (/profile_banners/i.test(base)) {
+        var banVariants = ['1500x500', '600x200', '300x100'];
+        var banRe = /\/(\d{2,4}x\d{2,4})(\?|$)/;
+        banVariants.forEach(function (v) {
+          var r = base.replace(banRe, '/' + v + '$2');
+          if (r !== base) {
+            push(r);
+            push(r + '?name=orig');
+          }
+        });
+        var banStripped = base.replace(banRe, '');
+        if (banStripped !== base) push(banStripped);
+      }
+    } catch (e) {
+      push(s);
+    }
+    return list;
+  }
+
   function hasJapanese(s) {
     return /[\u3040-\u30ff\u3400-\u9fff\uff66-\uff9f]/.test(String(s || ''));
   }
@@ -1096,36 +1149,49 @@
       blob = urlOrBlob;
     } else {
       url = String(urlOrBlob || '');
-      if (!url) return null;
+      if (!url) {
+        _lastUploadErr = 'url_empty';
+        return null;
+      }
       if (kind === 'avatar' && /profile_banners/i.test(url)) {
         console.warn('[资料克隆] 拒绝：banner URL 误入 avatar 槽');
+        _lastUploadErr = 'url_type_avatar_reject';
         return null;
       }
       if (kind === 'banner' && /profile_images/i.test(url) && !/profile_banners/i.test(url)) {
         console.warn('[资料克隆] 拒绝：avatar URL 误入 banner 槽');
+        _lastUploadErr = 'url_type_banner_reject';
         return null;
       }
       var gateHeld = false;
       try {
-        var go = await mediaGateOpen('profile_clone_apply');
-        if (go && go.ok !== false) gateHeld = true;
+        var gateResult = await mediaGateOpen('profile_clone_apply');
+        if (gateResult && gateResult.ok !== false) gateHeld = true;
         if (gateHeld && typeof window.__sgWaitMediaAllow === 'function') {
           try { await window.__sgWaitMediaAllow(4000); } catch (eWa) {}
         }
         if (!gateHeld) {
-          console.warn('[资料克隆] 开闸失败，跳过 URL 拉图', kind);
-          return null;
-        }
-        try {
-          blob = await fetchBlob(url);
-        } catch (e1) {
-          blob = null;
-        }
-        if ((!blob || blob.size < 500) && url.indexOf('name=') < 0) {
+        console.warn('[资料克隆] 开闸失败，跳过 URL 拉图', kind);
+        _lastUploadErr = 'gate_fail';
+        return null;
+      }
+        var fallbacks = buildImgFallbacks(url, kind);
+        var lastFetchErr = '';
+        for (var fi = 0; fi < fallbacks.length; fi++) {
+          var tryUrl = fallbacks[fi];
           try {
-            var u2 = url + (url.indexOf('?') >= 0 ? '&' : '?') + 'name=orig';
-            blob = await fetchBlob(u2);
-          } catch (e2) {}
+            blob = await fetchBlob(tryUrl);
+            if (blob && blob.size >= 500) {
+              try { console.log('[资料克隆] 下载成功', kind, tryUrl.slice(0, 80), blob.size); } catch (eL) {}
+              break;
+            }
+          } catch (eFetch) {
+            blob = null;
+            lastFetchErr = String((eFetch && eFetch.message) || eFetch).slice(0, 60);
+          }
+        }
+        if ((!blob || blob.size < 500) && lastFetchErr && !_lastUploadErr) {
+          _lastUploadErr = 'fetch_fail:' + lastFetchErr;
         }
       } finally {
         if (gateHeld) {
@@ -1134,7 +1200,8 @@
       }
     }
     if (!blob || blob.size < 500) {
-      console.warn('[资料克隆] 图太小', kind, blob && blob.size);
+      console.warn('[资料克隆] 图太小/下载失败', kind, blob && blob.size, 'err=', _lastUploadErr);
+      if (!_lastUploadErr) _lastUploadErr = 'blob_small';
       return null;
     }
     return blob;
@@ -1170,6 +1237,7 @@
     var input = await waitForPageFileInput(kind, 8000);
     if (!input) {
       try { console.warn('[资料克隆] 页面无', kind, 'file input'); } catch (e0) {}
+      _lastUploadErr = 'page_no_input';
       return false;
     }
     try {
@@ -1180,9 +1248,12 @@
     var ok = await assignFile(input, blob, kind === 'banner' ? 'banner.jpg' : 'avatar.jpg');
     if (!ok) {
       console.warn('[资料克隆] 注入 file 失败(页面input)', kind);
+      _lastUploadErr = 'page_assign_fail';
       return false;
     }
-    return await finishMediaAfterAssign(kind);
+    var done = await finishMediaAfterAssign(kind);
+    if (!done) _lastUploadErr = 'page_finish_fail';
+    return done;
   }
 
   /** 兜底：点相机/编辑按钮再找 file input */
@@ -1205,6 +1276,7 @@
     }
     if (!btn) {
       console.warn('[资料克隆] 无编辑按钮', kind, btnSel);
+      _lastUploadErr = 'btn_no_button';
       return false;
     }
     try { btn.click(); } catch (eC) {}
@@ -1219,32 +1291,42 @@
     }
     if (!input) {
       console.warn('[资料克隆] 无 file input(按钮路径)', kind);
+      _lastUploadErr = 'btn_no_input';
       return false;
     }
 
     var ok = await assignFile(input, blob, kind === 'banner' ? 'banner.jpg' : 'avatar.jpg');
     if (!ok) {
       console.warn('[资料克隆] 注入 file 失败(按钮)', kind);
+      _lastUploadErr = 'btn_assign_fail';
       return false;
     }
-    return await finishMediaAfterAssign(kind);
+    var done = await finishMediaAfterAssign(kind);
+    if (!done) _lastUploadErr = 'btn_finish_fail';
+    return done;
   }
 
   async function uploadProfileMedia(kind, urlOrBlob) {
     var blob = await resolveMediaBlob(kind, urlOrBlob);
-    if (!blob) return false;
+    if (!blob) {
+      if (!_lastUploadErr) _lastUploadErr = 'blob_null';
+      return false;
+    }
 
     // 1) 主路径：直接选页面上的横幅/头像 input（独立版原逻辑）
     if (await uploadViaPageFileInput(kind, blob)) {
       try { console.log('[资料克隆] 上传成功(页面input)', kind); } catch (e1) {}
+      _lastUploadErr = '';
       return true;
     }
     // 2) 兜底：点编辑按钮
     if (await uploadViaEditButton(kind, blob)) {
       try { console.log('[资料克隆] 上传成功(编辑按钮)', kind); } catch (e2) {}
+      _lastUploadErr = '';
       return true;
     }
-    console.warn('[资料克隆] 上传失败', kind);
+    console.warn('[资料克隆] 上传失败', kind, 'err=', _lastUploadErr);
+    if (!_lastUploadErr) _lastUploadErr = 'upload_fail';
     return false;
   }
 
@@ -1400,7 +1482,7 @@
       terminalOk = true;
     } else if (result && result.ok && result.mediaPartial) {
       // 补图未完成：禁止跳首页，否则会与下一轮 scrape 形成「源号↔主页」死循环
-      markTextPartial(job && job.payload, 'media_upload_fail');
+      markTextPartial(job && job.payload, 'media_upload_fail:' + (_lastUploadErr || 'unknown'));
       mediaPartial = true;
       try { console.log('[资料克隆] mediaPartial，不拉养号，等待下次直进 apply/重刮'); } catch (eMp) {}
     } else if (result && result.ok) {
@@ -1452,8 +1534,8 @@
     var gateHeld = false;
     try {
       // L3：先开闸 → 等 MAIN allow → 等 DOM 出图 → 刮 URL → fetch → finally 关闸
-      var go = await mediaGateOpen('profile_clone');
-      if (go && go.ok !== false) gateHeld = true;
+      var gateResult = await mediaGateOpen('profile_clone');
+      if (gateResult && gateResult.ok !== false) gateHeld = true;
       if (gateHeld && typeof window.__sgWaitMediaAllow === 'function') {
         try { await window.__sgWaitMediaAllow(5000); } catch (eWa) {}
       }

@@ -1,4 +1,4 @@
-// X-Matrix-Bot 插件版 - 私信聊天 (V3.7.29 — 仅年龄分流/inbox_done可覆盖)
+﻿// X-Matrix-Bot 插件版 - 私信聊天 (V3.7.29 — 仅年龄分流/inbox_done可覆盖)
 (function() {
 
     function safeAppendToHead(el) {
@@ -1868,6 +1868,8 @@
         try {
             if (sessionStorage.getItem('sg_debt_only') === 'true') return 0;
         } catch (eD) {}
+        // 4.6.28：每趟统计分类结果，方便排查
+        var stat = { pending: 0, skipped: 0, deferred: 0, freeze: 0, fleet: 0, reject: 0, completed: 0, already: 0, other: 0 };
         var cells = document.querySelectorAll('[data-testid="UserCell"]');
         for (var i = 0; i < cells.length; i++) {
             var profileLink = cells[i].querySelector('a[role="link"]');
@@ -1882,22 +1884,21 @@
             if (isFleetHandle(userHandle)) {
                 rejectFleetHandle(userHandle);
                 iceQueueAdd(userHandle, extractUserCellDisplayName(cells[i]), 'skipped', 'fleet', 'fleet');
+                stat.fleet++;
+                stat.skipped++;
                 continue;
             }
             try { discoverTarget(userHandle, extractUserCellDisplayName(cells[i])); } catch (eDisc) {}
 
             var cls = classifyFanRosterAction(userHandle, rejectDB, completedBackend, sg);
             if (iceQueueAdd(userHandle, extractUserCellDisplayName(cells[i]), cls.status, cls.reason, cls.kind)) {
-                if (cls.status === 'pending') added++;
-                if (cls.reason === 'freeze') {
-                    try {
-                        if (typeof SgTelemetry !== 'undefined') {
-                            SgTelemetry.emit('chat.outbound_freeze_skip', { target: userHandle });
-                        }
-                    } catch (eFz) {}
-                }
+                if (cls.status === 'pending') { added++; stat.pending++; }
+                else if (cls.status === 'skipped') { stat.skipped++; stat[cls.reason] = (stat[cls.reason] || 0) + 1; }
+                else if (cls.status === 'deferred') { stat.deferred++; }
+                if (cls.reason === 'freeze') stat.freeze++;
             }
         }
+        console.log('[粉丝队列] 本屏登记 ' + cells.length + ' 人 → pending=' + stat.pending + ' skipped=' + stat.skipped + '（freeze=' + stat.freeze + '/fleet=' + stat.fleet + '/reject=' + (stat.reject||0) + '/completed=' + (stat.completed||0) + '） deferred=' + stat.deferred);
         return added;
     }
 
@@ -2054,7 +2055,6 @@
         // 守箱开且有债才进收件箱；粉丝队列默认不进 CHAT（chatGo 亦会闸）
         if (!isInboxCapReached() && hasDebtForInboxPivot()) {
             setChatPhase('inbox');
-            sessionStorage.removeItem('dan_inbox_watch_started_at');
             var goOk = chatGo('/i/chat', false);
             if (!goOk) {
                 console.warn('[私信] 进 CHAT 被拦截，改粉丝队列完结');
@@ -2275,7 +2275,6 @@
         setChatPhase('inbox');
         try {
             resetChatHandoffState('soft_outbound_to_inbox');
-            try { clearInboxTaskQueue('force_new_lease'); } catch (eQ) {}
         } catch (eSs) {}
         showToast('破冰完成 → 扫箱（兼容开关）', '#faad14', 2200);
         try { ensureInboxListRootView(); } catch (eRoot) {}
@@ -2286,13 +2285,8 @@
         }
     }
 
-    // ---- C3 守箱任务队列：先登记 → seal → 逐条完成 → 再下一条 ----
-    var INBOX_TASK_QUEUE_KEY = 'dan_inbox_task_queue';
-    var INBOX_ROSTER_LS_KEY = 'dan_inbox_roster';
-    var INBOX_PHASE_KEY = 'dan_inbox_phase';
     var CHAT_PROGRESS_KEY = 'sg_chat_last_progress_at';
     var CHAT_LEASE_KEY = 'sg_chat_lease';
-    var INBOX_QUEUE_BATCH_MAX = 10;
 
     function noteChatProgress(why) {
         try {
@@ -2303,55 +2297,9 @@
             if (typeof SgDiagContract !== 'undefined' && SgDiagContract.noteAction) {
                 var chPh = '';
                 try { chPh = getChatPhase(); } catch (eCh) { chPh = ''; }
-                var mod = chPh === 'inbox' ? 'chat_inbox' : 'chat_outbound';
-                var st = chPh === 'inbox' ? getInboxPhase() : 'running';
-                SgDiagContract.noteAction(mod, st, why || 'progress');
+                SgDiagContract.noteAction('chat_outbound', 'running', why || 'progress');
             }
         } catch (eDiag) {}
-    }
-
-    function getInboxPhase() {
-        try { return sessionStorage.getItem(INBOX_PHASE_KEY) || 'idle'; } catch (e) { return 'idle'; }
-    }
-
-    function setInboxPhase(ph) {
-        try { sessionStorage.setItem(INBOX_PHASE_KEY, String(ph || 'idle')); } catch (e) {}
-        noteChatProgress('phase_' + (ph || 'idle'));
-    }
-
-    function mirrorInboxRoster(q) {
-        try {
-            q = q || loadInboxTaskQueue();
-            localStorage.setItem(INBOX_ROSTER_LS_KEY, JSON.stringify({
-                pulseId: q.pulseId || '',
-                sealed: !!q.sealed,
-                sealedAt: q.sealedAt || 0,
-                items: q.items || [],
-                phase: getInboxPhase(),
-                mirroredAt: Date.now()
-            }));
-        } catch (e) {}
-    }
-
-    function beginChatLease(intent) {
-        var pulseId = '';
-        // 优先沿用 A2 已写入的租约 pulse，避免 clear 掉 dan_inbox_queue_pulse 后另起 id
-        try {
-            var leaseExist = JSON.parse(sessionStorage.getItem(CHAT_LEASE_KEY) || 'null');
-            if (leaseExist && leaseExist.pulseId) pulseId = String(leaseExist.pulseId);
-        } catch (eL0) {}
-        if (!pulseId) {
-            try { pulseId = sessionStorage.getItem('dan_inbox_queue_pulse') || ''; } catch (e0) {}
-        }
-        if (!pulseId) {
-            pulseId = 'lease_' + Date.now().toString(36) + '_' + Math.floor(Math.random() * 1e4);
-        }
-        try { sessionStorage.setItem('dan_inbox_queue_pulse', pulseId); } catch (e1) {}
-        var lease = { pulseId: pulseId, intent: intent || 'inbox', startedAt: Date.now() };
-        try { sessionStorage.setItem(CHAT_LEASE_KEY, JSON.stringify(lease)); } catch (e2) {}
-        noteChatProgress('lease_start');
-        // round_start 仅由 A2 coStart / forceInboxPulse 上报，避免双发噪音
-        return lease;
     }
 
     function clearChatLeaseLocal() {
@@ -2363,437 +2311,6 @@
                 sessionStorage.removeItem('sg_chat_round_start_emitted_pulse');
             }
         } catch (eD) {}
-    }
-
-    function inboxQueuePulseId() {
-        var id = sessionStorage.getItem('dan_inbox_queue_pulse') || '';
-        if (!id) {
-            id = 'inb_' + Date.now().toString(36) + '_' + Math.floor(Math.random() * 1e4);
-            try { sessionStorage.setItem('dan_inbox_queue_pulse', id); } catch (e) {}
-        }
-        return id;
-    }
-
-    function loadInboxTaskQueue() {
-        try {
-            var q = JSON.parse(sessionStorage.getItem(INBOX_TASK_QUEUE_KEY) || 'null');
-            if (!q || typeof q !== 'object') {
-                // 会话丢了：尝试从 localStorage 镜像恢复密封名单
-                try {
-                    var mir = JSON.parse(localStorage.getItem(INBOX_ROSTER_LS_KEY) || 'null');
-                    if (mir && mir.sealed && Array.isArray(mir.items) && mir.items.length) {
-                        q = { pulseId: mir.pulseId || inboxQueuePulseId(), sealed: true, sealedAt: mir.sealedAt || 0, items: mir.items };
-                        saveInboxTaskQueue(q);
-                        if (mir.pulseId) try { sessionStorage.setItem('dan_inbox_queue_pulse', mir.pulseId); } catch (eP) {}
-                        return q;
-                    }
-                } catch (eM) {}
-                return { pulseId: inboxQueuePulseId(), sealed: false, items: [] };
-            }
-            if (!Array.isArray(q.items)) q.items = [];
-            if (!q.pulseId) q.pulseId = inboxQueuePulseId();
-            return q;
-        } catch (e) {
-            return { pulseId: inboxQueuePulseId(), sealed: false, items: [] };
-        }
-    }
-
-    function saveInboxTaskQueue(q) {
-        try { sessionStorage.setItem(INBOX_TASK_QUEUE_KEY, JSON.stringify(q || { pulseId: '', sealed: false, items: [] })); } catch (e) {}
-        try { mirrorInboxRoster(q); } catch (e2) {}
-    }
-
-    /** 密封且仍有未执行条目时禁止 clear（除非 force_new_lease / round_done / lease_abort） */
-    function clearInboxTaskQueue(why) {
-        why = why || '';
-        var force = why === 'force_new_lease' || why === 'round_done' || why === 'lease_abort';
-        if (!force) {
-            try {
-                var qGuard = loadInboxTaskQueue();
-                var stG = inboxQueueStats(qGuard);
-                var phG = getInboxPhase();
-                if (qGuard.sealed && (stG.pending + stG.doing + stG.deferred) > 0) {
-                    console.warn('[守箱] 拒绝 clear 密封未执行名单 why=' + why + ' pending=' + stG.pending + ' deferred=' + stG.deferred);
-                    try {
-                        if (typeof SgTelemetry !== 'undefined') {
-                            SgTelemetry.emit('chat.task_queue_keep', {
-                                kind: 'inbox', why: 'refuse_clear_' + why, sealed: true,
-                                pending: stG.pending, doing: stG.doing, deferred: stG.deferred, phase: phG
-                            });
-                        }
-                    } catch (eK) {}
-                    return false;
-                }
-                if (phG === 'executing' || phG === 'sealed') {
-                    if ((stG.pending + stG.doing + stG.deferred) > 0) {
-                        console.warn('[守箱] 拒绝 clear 相位=' + phG + ' why=' + why);
-                        return false;
-                    }
-                }
-            } catch (eG) {}
-        }
-        try {
-            sessionStorage.removeItem(INBOX_TASK_QUEUE_KEY);
-            sessionStorage.removeItem('dan_inbox_queue_seal_toast');
-            // pulseId 属指挥租约：force_new_lease 只清队列，保留 A2 已发的 id，避免 start/plan 断链
-            if (why === 'round_done' || why === 'lease_abort') {
-                sessionStorage.removeItem('dan_inbox_queue_pulse');
-                try { sessionStorage.removeItem(CHAT_LEASE_KEY); } catch (eLease) {}
-            }
-            if (force || why === 'round_done') {
-                sessionStorage.removeItem(INBOX_PHASE_KEY);
-                try { localStorage.removeItem(INBOX_ROSTER_LS_KEY); } catch (eLs) {}
-            }
-        } catch (e) {}
-        try {
-            if (typeof SgTelemetry !== 'undefined') {
-                SgTelemetry.emit('chat.task_queue_cleared', { kind: 'inbox', why: why || '' });
-            }
-        } catch (eT) {}
-        return true;
-    }
-
-    function inboxQueueStats(q) {
-        q = q || loadInboxTaskQueue();
-        var s = { total: 0, pending: 0, doing: 0, done: 0, skipped: 0, failed: 0, deferred: 0, sealed: !!q.sealed };
-        var items = q.items || [];
-        s.total = items.length;
-        for (var i = 0; i < items.length; i++) {
-            var st = (items[i] && items[i].status) || 'pending';
-            if (s[st] != null) s[st]++;
-            else s.pending++;
-        }
-        return s;
-    }
-
-    function inboxQueueFindIndex(q, handle) {
-        handle = normalizeChatHandle(handle);
-        for (var i = 0; i < (q.items || []).length; i++) {
-            if (normalizeChatHandle(q.items[i].handle) === handle) return i;
-        }
-        return -1;
-    }
-
-    function inboxQueueAdd(handle, kind, status, reason, extra) {
-        handle = normalizeChatHandle(handle);
-        if (!handle) return false;
-        var q = loadInboxTaskQueue();
-        if (inboxQueueFindIndex(q, handle) >= 0) return false;
-        if (getInboxPhase() === 'idle' || getInboxPhase() === 'done') setInboxPhase('scanning');
-        var item = {
-            handle: handle,
-            kind: kind || 'ad',
-            status: status || 'pending',
-            reason: reason || '',
-            peerId: (extra && extra.peerId) || '',
-            createdAt: Date.now(),
-            doneAt: 0,
-            pulseId: q.pulseId || inboxQueuePulseId()
-        };
-        q.items.push(item);
-        saveInboxTaskQueue(q);
-        noteChatProgress('queue_add');
-        try {
-            if (typeof SgTelemetry !== 'undefined') {
-                SgTelemetry.emit('chat.task_queue_item_add', {
-                    kind: 'inbox', handle: handle, item_kind: item.kind, status: item.status, reason: item.reason || '', pulseId: item.pulseId
-                });
-            }
-        } catch (eT) {}
-        return true;
-    }
-
-    function inboxQueueMark(handle, status, reason) {
-        handle = normalizeChatHandle(handle);
-        if (!handle) return false;
-        var q = loadInboxTaskQueue();
-        var idx = inboxQueueFindIndex(q, handle);
-        if (idx < 0) {
-            inboxQueueAdd(handle, 'ad', status || 'done', reason || '');
-            q = loadInboxTaskQueue();
-            idx = inboxQueueFindIndex(q, handle);
-            if (idx < 0) return false;
-        }
-        q.items[idx].status = status || 'done';
-        if (reason) q.items[idx].reason = reason;
-        if (status === 'done' || status === 'skipped' || status === 'failed' || status === 'deferred') {
-            q.items[idx].doneAt = Date.now();
-        }
-        saveInboxTaskQueue(q);
-        noteChatProgress('queue_mark_' + (status || 'done'));
-        try {
-            if (typeof SgTelemetry !== 'undefined') {
-                SgTelemetry.emit('chat.task_item_done', {
-                    kind: 'inbox',
-                    handle: handle,
-                    status: q.items[idx].status,
-                    reason: q.items[idx].reason || '',
-                    pulseId: q.pulseId
-                });
-                if (status === 'done' || status === 'skipped' || status === 'failed' || status === 'deferred') {
-                    SgTelemetry.emit('chat.round_progress', {
-                        pulseId: q.pulseId,
-                        handle: handle,
-                        status: q.items[idx].status,
-                        reason: q.items[idx].reason || ''
-                    });
-                }
-            }
-        } catch (eT) {}
-        return true;
-    }
-
-    function inboxQueueSeal(reason) {
-        var q = loadInboxTaskQueue();
-        if (q.sealed) return q;
-        q.sealed = true;
-        q.sealedAt = Date.now();
-        saveInboxTaskQueue(q);
-        setInboxPhase('sealed');
-        noteChatProgress('queue_seal');
-        var st = inboxQueueStats(q);
-        var handles = (q.items || []).filter(function (it) { return it.status === 'pending'; }).map(function (it) { return it.handle; });
-        try {
-            if (typeof SgTelemetry !== 'undefined') {
-                SgTelemetry.emit('chat.task_queue_built', {
-                    kind: 'inbox',
-                    reason: reason || 'seal',
-                    count: st.total,
-                    pending: st.pending,
-                    handles: handles.slice(0, 30),
-                    pulseId: q.pulseId
-                });
-                SgTelemetry.emit('chat.round_plan', {
-                    kind: 'inbox',
-                    reason: reason || 'seal',
-                    pulseId: q.pulseId,
-                    pending: st.pending,
-                    count: st.total,
-                    handles: handles.slice(0, 30)
-                });
-            }
-        } catch (eT) {}
-        try {
-            if (sessionStorage.getItem('dan_inbox_queue_seal_toast') !== q.pulseId) {
-                sessionStorage.setItem('dan_inbox_queue_seal_toast', q.pulseId);
-                showToast('📋 守箱已登记 ' + st.pending + ' 人（共' + st.total + '）→ 逐条执行', '#1d9bf0', 2800);
-            }
-        } catch (eToast) {}
-        console.log('[守箱队列] seal reason=' + (reason || '') + ' pending=' + st.pending + ' total=' + st.total);
-        // 保持 sealed，待 startInboxTaskFromQueue 开人时再进 executing（OPS 可观测）
-        return q;
-    }
-
-    function inboxQueueNextPending() {
-        var q = loadInboxTaskQueue();
-        for (var i = 0; i < (q.items || []).length; i++) {
-            if (q.items[i].status === 'pending' || q.items[i].status === 'doing') return q.items[i];
-        }
-        return null;
-    }
-
-    /** 下一租约/重复 start 续跑：把 deferred 提升回 pending，避免「有名单却永远不执行」 */
-    function inboxQueuePromoteDeferred(why) {
-        var q = loadInboxTaskQueue();
-        var n = 0;
-        for (var i = 0; i < (q.items || []).length; i++) {
-            if (q.items[i] && q.items[i].status === 'deferred') {
-                q.items[i].status = 'pending';
-                q.items[i].reason = why || 'promoted';
-                q.items[i].doneAt = 0;
-                n++;
-            }
-        }
-        if (n > 0) {
-            saveInboxTaskQueue(q);
-            noteChatProgress('promote_deferred');
-            try {
-                if (typeof SgTelemetry !== 'undefined') {
-                    SgTelemetry.emit('chat.task_queue_item_add', {
-                        kind: 'inbox', handle: '', item_kind: 'promote_deferred', status: 'pending',
-                        reason: why || 'promoted', pulseId: q.pulseId, count: n
-                    });
-                }
-            } catch (eT) {}
-            console.log('[守箱队列] promote deferred→pending n=' + n + ' why=' + (why || ''));
-        }
-        return n;
-    }
-
-    function inboxQueueHasOpenWork() {
-        var st = inboxQueueStats();
-        return (st.pending + st.doing) > 0;
-    }
-
-    function inboxQueueDeferRemaining(why) {
-        var q = loadInboxTaskQueue();
-        var n = 0;
-        for (var i = 0; i < (q.items || []).length; i++) {
-            if (q.items[i].status === 'pending' || q.items[i].status === 'doing') {
-                q.items[i].status = 'deferred';
-                q.items[i].reason = why || 'session_cap';
-                q.items[i].doneAt = Date.now();
-                n++;
-            }
-        }
-        saveInboxTaskQueue(q);
-        if (n > 0) {
-            noteChatProgress('queue_defer');
-            try {
-                if (typeof SgTelemetry !== 'undefined') {
-                    SgTelemetry.emit('chat.task_queue_deferred', { kind: 'inbox', count: n, why: why || 'session_cap', pulseId: q.pulseId });
-                }
-            } catch (eT) {}
-        }
-        return n;
-    }
-
-    function harvestInboxCandidatesToQueue() {
-        var added = 0;
-        var actionable = pickActionableInboxRows() || [];
-        reportInboxListSignal(actionable);
-        var urgent = {};
-        for (var j = 0; j < actionable.length; j++) {
-            if (actionable[j] && actionable[j].handle && (actionable[j].unread || actionable[j].replied)) {
-                urgent[normalizeChatHandle(actionable[j].handle)] = true;
-            }
-        }
-        // 先登记可视未读 orphan，再登记债（避免假 kick 债占满 5 开会话帽导致蓝点永远排不到）
-        var orphans = listOrphanUnreadRows(urgent) || [];
-        for (var k = 0; k < orphans.length; k++) {
-            var o = orphans[k];
-            var oh = normalizeChatHandle(o.handle || o.rowHandle || '') || '';
-            if (!oh && o.peerId) oh = 'p' + String(o.peerId).replace(/\D/g, '');
-            if (!oh) continue;
-            try {
-                var rejectDB = getDB('dan_reject_users');
-                if (rejectDB && rejectDB.has && rejectDB.has(oh)) {
-                    inboxQueueAdd(oh, 'orphan_unread', 'skipped', 'reject', { peerId: o.peerId || '' });
-                    continue;
-                }
-            } catch (eRej) {}
-            try {
-                var ex = loadTargetDB()[oh];
-                // 仅 blocked/婉拒跳过；done/墓碑仍入队（收养时会 revive）
-                if (ex && (ex.blockedAt || ex.rejectSentAt)) {
-                    inboxQueueAdd(oh, 'orphan_unread', 'skipped', 'reject', { peerId: o.peerId || '' });
-                    continue;
-                }
-            } catch (eEx) {}
-            if (inboxQueueAdd(oh, 'orphan_unread', 'pending', '', { peerId: o.peerId || '' })) added++;
-        }
-        for (var i = 0; i < actionable.length; i++) {
-            var a = actionable[i];
-            if (!a || !a.handle) continue;
-            // reject / blocked 不会出现在 actionable；kick_not_ready 也不在可行动债里
-            var kind = 'ad';
-            if (a.unread) kind = 'orphan_unread';
-            else if (a.kickReady) kind = 'kick';
-            else if (a.replied) kind = 'ad';
-            else if (a.probeable) kind = 'probe';
-            else continue; // 非 urgent 探测不入主队列（避免空开）
-            if (!(a.replied || a.unread || a.kickReady || a.needsAdRepair)) continue;
-            if (inboxQueueAdd(a.handle, kind, 'pending', '', { peerId: a.peerId || '' })) added++;
-        }
-        return added;
-    }
-
-    function findInboxRowByHandle(handle) {
-        handle = normalizeChatHandle(handle);
-        if (!handle) return null;
-        var actionable = pickActionableInboxRows() || [];
-        for (var i = 0; i < actionable.length; i++) {
-            if (normalizeChatHandle(actionable[i].handle) === handle && actionable[i].row) return actionable[i];
-        }
-        var orphans = listOrphanUnreadRows({}) || [];
-        for (var j = 0; j < orphans.length; j++) {
-            var oh = normalizeChatHandle(orphans[j].handle || orphans[j].rowHandle || '');
-            if (!oh && orphans[j].peerId) oh = 'p' + String(orphans[j].peerId).replace(/\D/g, '');
-            if (oh === handle && orphans[j].row) {
-                return {
-                    handle: handle,
-                    row: orphans[j].row,
-                    round: (loadTargetDB()[handle] || {}).round || 0,
-                    unread: true,
-                    replied: false,
-                    peerId: orphans[j].peerId || ''
-                };
-            }
-        }
-        return null;
-    }
-
-    function startInboxTaskFromQueue(fromObserver) {
-        var item = inboxQueueNextPending();
-        if (!item) return false;
-        if (getInboxPhase() !== 'executing') setInboxPhase('executing');
-        var handle = normalizeChatHandle(item.handle);
-        inboxQueueMark(handle, 'doing', '');
-
-        // 再次核对 reject / blocked；orphan_unread 允许 done 墓碑走 revive 收养
-        try {
-            var rejectDB = getDB('dan_reject_users');
-            var entr = loadTargetDB()[handle] || {};
-            var isOrphanUnread = item.kind === 'orphan_unread';
-            if ((rejectDB && rejectDB.has && rejectDB.has(handle)) || entr.blockedAt || entr.rejectSentAt) {
-                inboxQueueMark(handle, 'skipped', 'reject');
-                return inboxQueueHasOpenWork() ? startInboxTaskFromQueue(fromObserver) : 'scan_done';
-            }
-            if (entr.done && !isOrphanUnread) {
-                inboxQueueMark(handle, 'skipped', 'reject');
-                return inboxQueueHasOpenWork() ? startInboxTaskFromQueue(fromObserver) : 'scan_done';
-            }
-        } catch (eRej2) {}
-
-        if (item.kind === 'orphan_unread') {
-            // 收养/复活路径：找行后 adoptAndOpen（含 done 墓碑清掉）
-            var orphanRow = findInboxRowByHandle(handle);
-            if (orphanRow && orphanRow.row) {
-                var opened = adoptAndOpenUnreadRow({
-                    row: orphanRow.row,
-                    handle: handle,
-                    peerId: item.peerId || orphanRow.peerId || '',
-                    displayName: orphanRow.displayName || '',
-                    unreadSource: 'queue'
-                }, fromObserver);
-                if (opened) return true;
-            }
-        }
-
-        var best = findInboxRowByHandle(handle);
-        if (best && best.row) {
-            showToast('📬 守箱队列 → @' + handle, '#1d9bf0', 1400);
-            return openInboxListRow(best, fromObserver, 'task_queue');
-        }
-        // 无 DOM 行：尝试 peerId 直开
-        var entry = loadTargetDB()[handle];
-        if (entry && entry.peerId && openDmConversationDirect(handle)) {
-            noteInboxOpenForPulse('task_queue_direct', handle);
-            reportChatMetric('inbox_open', { target: handle, round: entry.round || 1, from_observer: !!fromObserver, via: 'task_queue_direct' });
-            showToast('📬 守箱队列直开 → @' + handle, '#1d9bf0', 1400);
-            return true;
-        }
-        // 虚拟列表滚丢：每脉冲允许回顶再找一次
-        if (sessionStorage.getItem('dan_inbox_row_miss_retry') !== '1') {
-            try {
-                sessionStorage.setItem('dan_inbox_row_miss_retry', '1');
-                var scMiss = getInboxListScroller();
-                if (scMiss) scMiss.scrollTop = 0;
-                sessionStorage.removeItem('dan_inbox_list_pass_done');
-                inboxQueueMark(handle, 'pending', 'row_miss_retry');
-                reportChatMetric('inbox.row_miss_retry', { target: handle });
-                if (sessionStorage.getItem('dan_inbox_scroll_running') !== '1') {
-                    sessionStorage.setItem('dan_inbox_scroll_running', '1');
-                    setTimeout(function () {
-                        sessionStorage.removeItem('dan_inbox_scroll_running');
-                        if (sessionStorage.getItem('dan_auto_run') === 'true') runInboxWatchTick();
-                    }, 1800);
-                }
-                return 'scrolling';
-            } catch (eMiss) {}
-        }
-        inboxQueueMark(handle, 'skipped', 'row_miss');
-        return inboxQueueHasOpenWork() ? startInboxTaskFromQueue(fromObserver) : false;
     }
 
     /** 从粉丝页 UserCell 提取显示名（首行；第二行为 @handle） */
@@ -2915,7 +2432,11 @@
                     resolve(null);
                     return;
                 }
-                var timer = setTimeout(function () { resolve(null); }, 4000);
+                // 4.6.30：9s 超时——须 ≥ 后台 failover 外网上限 8s，否则内网超时→外网 failover 期间前端先到期白等（§C2-16）
+                var timer = setTimeout(function () {
+                    console.log('[私信] OPS 轮次校验前端超时(9s) target=' + normalizeChatHandle(targetHandle));
+                    resolve(null);
+                }, 9000);
                 chrome.runtime.sendMessage({
                     action: 'ops_dm_check',
                     payload: { bot_id: getWorkerId(), target_handle: normalizeChatHandle(targetHandle) }
@@ -3022,8 +2543,15 @@
                 if (typeof Logger !== 'undefined' && Logger.info) Logger.info('调度', '私信定格 ' + handles.length + ' 人');
             } catch (eL) {}
             try {
+                var fzLabel = '17点';
+                try {
+                    if (typeof TimeUtil !== 'undefined' && TimeUtil.chatFreezeMinutes) {
+                        var fzM = TimeUtil.chatFreezeMinutes();
+                        fzLabel = Math.floor(fzM / 60) + '点';
+                    }
+                } catch (eFzL) {}
                 document.dispatchEvent(new CustomEvent('matrix-diagnostic', {
-                    detail: { text: '私信定格 ' + handles.length + ' 人，17点后新粉今日跳过' }
+                    detail: { text: '私信定格 ' + handles.length + ' 人，' + fzLabel + '后新粉今日跳过' }
                 }));
             } catch (eD) {}
             return sg;
@@ -3045,6 +2573,8 @@
         if (!sg.chatFreezeDate || sg.chatFreezeDate !== today || !Array.isArray(sg.chatFreezeHandles)) {
             return true; // 未定格
         }
+        // 定格时空名单（如刚重置私信）：没有"17点前已在的粉丝"需要保护，不冻结新粉
+        if (sg.chatFreezeHandles.length === 0) return true;
         var freezeAt = sg.chatFreezeAt || 0;
         var db = loadTargetDB();
         var entry = db[handle];
@@ -3331,12 +2861,65 @@
     }
 
     function readReplyStateAfterScroll(targetHandle) {
+        // 4.6.34：检测开始横幅（全轮次共用此函数）
+        try {
+            showToast('🔍 正在检测回复 @' + (normalizeChatHandle(targetHandle || '') || '?') + '…', '#1d9bf0', 4000);
+        } catch (eDetStart) {}
         scrollDmConversationToBottom();
         return waitForDmMessagesStable(4, 450).then(function () {
             scrollDmConversationToBottom();
             return waitMs(350);
         }).then(function () {
             return detectDmReplyState(targetHandle);
+        }).then(function (st) {
+            // 4.6.32 §C3-6 空列表二次机会：慢网/虚拟列表未渲染时首扫全空 ≠ 无回复——
+            // 上滚触发历史加载→回底→重扫一次，仍空才允许定性 no_reply
+            try {
+                var decision = (st && st.decision) || '';
+                if (st && !st.hasReply && !st.unreadSeen
+                    && (decision === 'no_reply' || decision === 'none')) {
+                    try {
+                        showToast('🔍 消息未渲染，二次扫描…', '#faad14', 3500);
+                    } catch (eRescanToast) {}
+                    try {
+                        var scRoot = getDmMessageScanRoot();
+                        if (scRoot && scRoot.scrollTop != null) scRoot.scrollTop = 0;
+                    } catch (eUp1) {}
+                    try { window.scrollTo(0, 0); } catch (eUp2) {}
+                    return waitMs(900).then(function () {
+                        scrollDmConversationToBottom();
+                        return waitForDmMessagesStable(5, 500);
+                    }).then(function () {
+                        scrollDmConversationToBottom();
+                        return waitMs(350);
+                    }).then(function () {
+                        var st2 = detectDmReplyState(targetHandle);
+                        try {
+                            reportChatMetric('chat.reply_rescan', {
+                                target: normalizeChatHandle(targetHandle || ''),
+                                found: !!(st2 && (st2.hasReply || st2.unreadSeen)),
+                                nodes: countVisibleDmMessageNodes()
+                            });
+                        } catch (eM) {}
+                        return st2;
+                    });
+                }
+            } catch (eRe) {}
+            return st;
+        }).then(function (finalSt) {
+            // 4.6.34：检测结果可视化（全轮次；比特浏览器无控制台）
+            try {
+                var rsHas = !!(finalSt && finalSt.hasReply);
+                var rsUnread = !!(finalSt && finalSt.unreadSeen);
+                var rsN = (finalSt && finalSt.texts && finalSt.texts.length) || 0;
+                var thShow = normalizeChatHandle(targetHandle || '') || '?';
+                showToast(
+                    '🔍 查回 @' + thShow + '：' + (rsHas ? ('有回复 ×' + rsN) : (rsUnread ? '有未读标记' : ('未见回复(' + ((finalSt && finalSt.decision) || '?') + ')'))),
+                    rsHas ? '#3fb950' : '#8b949e',
+                    3500
+                );
+            } catch (eRsToast) {}
+            return finalSt;
         });
     }
 
@@ -3777,18 +3360,6 @@
         try {
             sessionStorage.removeItem('current_target');
             sessionStorage.removeItem('dan_auto_step');
-            sessionStorage.removeItem('dan_inbox_opening');
-            sessionStorage.removeItem('dan_inbox_done');
-            sessionStorage.removeItem('dan_inbox_probe_queue');
-            sessionStorage.removeItem('dan_inbox_processing_queue');
-            sessionStorage.removeItem('dan_inbox_scan_top');
-            sessionStorage.removeItem('dan_inbox_scan_steps');
-            sessionStorage.removeItem('dan_inbox_list_pass_done');
-            sessionStorage.removeItem('dan_inbox_visit_started_at');
-            sessionStorage.removeItem('dan_inbox_watch_started_at');
-            sessionStorage.removeItem('dan_inbox_unread_adopt_count');
-            sessionStorage.removeItem('dan_inbox_unread_hold');
-            sessionStorage.removeItem('dan_inbox_unread_hold_timer');
             sessionStorage.removeItem('dan_pending_peer_hash');
             sessionStorage.removeItem('dan_pending_greeting_ad');
             sessionStorage.removeItem('dan_scroll_fail_count');
@@ -3798,7 +3369,6 @@
         try {
             localStorage.removeItem(getReplyStateKey());
         } catch (eRs) {}
-        try { resetInboxScanPulseStats(); } catch (eP) {}
         try {
             if (typeof SgTelemetry !== 'undefined') {
                 SgTelemetry.emit('chat.handoff_reset', { why: why || '' });
@@ -3806,12 +3376,11 @@
         } catch (eT) {}
     }
 
-    /** 仅清身份步进（软风控进窗 / 破冰开跑前），保留守箱队列与扫描进度以外的脉冲键按需另清 */
+    /** 仅清身份步进（软风控进窗 / 破冰开跑前） */
     function resetChatIdentityState(why) {
         try {
             sessionStorage.removeItem('current_target');
             sessionStorage.removeItem('dan_auto_step');
-            sessionStorage.removeItem('dan_inbox_opening');
         } catch (e) {}
         try {
             if (typeof SgTelemetry !== 'undefined') {
@@ -3904,43 +3473,6 @@
         } catch (e) { return false; }
     }
 
-    /**
-     * 列表根仍占着 opening → 清掉，否则永远扫不到其它未读。
-     * 路径已是 /i/chat 根且 step 空：立即清（不是半截导航）；其它情况 8s 超时。
-     */
-    function clearStaleInboxOpeningIfOnList(why) {
-        try {
-            var opening = normalizeChatHandle(sessionStorage.getItem('dan_inbox_opening') || '');
-            if (!opening) return false;
-            if (isDmConversationPage() || isDmConversationView()) {
-                try { sessionStorage.setItem('dan_inbox_opening_at', String(Date.now())); } catch (eKeep) {}
-                return false;
-            }
-            if (!(isDmInboxListVisible() || isMessagesPage() || getChatPhase() === 'inbox')) return false;
-            var stepNow = sessionStorage.getItem('dan_auto_step') || '';
-            var onRoot = isDmInboxListRootPath();
-            // 明确停在列表根且未武装步进：立刻清，勿等 10s（实机卡死主因）
-            if (onRoot && !stepNow) {
-                sessionStorage.removeItem('dan_inbox_opening');
-                sessionStorage.removeItem('dan_inbox_opening_at');
-                console.warn('[handoff] opening clear on list-root @' + opening + ' why=' + (why || ''));
-                try { reportChatMetric('inbox.opening_stale_clear', { why: (why || '') + '_root', was: opening }); } catch (eM0) {}
-                return true;
-            }
-            var at = parseInt(sessionStorage.getItem('dan_inbox_opening_at') || '0', 10) || 0;
-            if (!at) {
-                sessionStorage.setItem('dan_inbox_opening_at', String(Date.now()));
-                return false;
-            }
-            if (Date.now() - at < 8000) return false;
-            sessionStorage.removeItem('dan_inbox_opening');
-            sessionStorage.removeItem('dan_inbox_opening_at');
-            console.warn('[handoff] stale opening clear @' + opening + ' why=' + (why || ''));
-            try { reportChatMetric('inbox.opening_stale_clear', { why: why || '', was: opening }); } catch (eM) {}
-            return true;
-        } catch (e) { return false; }
-    }
-
     /** 清除诊断冻结（否则 coTick 会持续 stopChat，Force/解卡无效） */
     function clearDiagFreezeLocal(why) {
         var prev = null;
@@ -3962,23 +3494,7 @@
     function startFanRosterForce(mins, via) {
         via = via || 'force';
         mins = Math.max(5, Math.min(60, Number(mins) || 20));
-        // Day1–2：禁止 Force 旁路拉起私信主循环
-        var dayNow = 1;
-        try {
-            if (typeof window.__sgIsChatDayAllowed === 'function' && !window.__sgIsChatDayAllowed()) {
-                var dh = (sessionStorage.getItem('dan_target_username') || localStorage.getItem('matrix_my_handle') || '').replace(/^@/, '').replace(/#guard$/i, '').toLowerCase();
-                try {
-                    dayNow = parseInt((JSON.parse(localStorage.getItem('matrix_stats_' + dh) || '{}')).day_count, 10) || 1;
-                } catch (eD) {}
-                showToast('Day' + dayNow + ' 不私信（Day3起），Force 已拒绝', '#faad14', 3500);
-                try {
-                    if (typeof SgTelemetry !== 'undefined') {
-                        SgTelemetry.emit('scheduler.chat_blocked', { reason: 'day_lt_3', day: dayNow, via: 'force_' + via });
-                    }
-                } catch (eT) {}
-                return { ok: false, reason: 'day_lt_3', day: dayNow, inboxWatchEnabled: false };
-            }
-        } catch (eDay) {}
+        // 4.3.32：Day1 即可私信（原 Day1–2 禁 Force 闸门已移除）
         clearDiagFreezeLocal(via);
         try { maybeRefreshOpsRoundMap(true); } catch (eOps) {}
         try {
@@ -4022,14 +3538,12 @@
         return { ok: true, reason: 'fan_roster_scan', onFollowers: true, inboxWatchEnabled: false, mode: 'fan_roster' };
     }
 
-    /** 一键解卡：解诊断冻结；守箱关则粉丝登记，否则 Force 扫箱 */
+    /** 一键解卡：解诊断冻结，粉丝登记 */
     function unstickInboxAndPulse(mins) {
         var freezeCleared = clearDiagFreezeLocal('unstick');
         var cleared = [];
         [
-            'dan_inbox_opening', 'dan_inbox_opening_at', 'dan_auto_step',
-            'dan_inbox_list_pass_done', 'dan_inbox_scroll_running', 'dan_warmup_timer',
-            'dan_inbox_row_miss_retry', 'dan_inbox_unread_hold'
+            'dan_auto_step', 'dan_warmup_timer'
         ].forEach(function (k) {
             try {
                 if (sessionStorage.getItem(k) != null) {
@@ -4038,135 +3552,16 @@
                 }
             } catch (eR) {}
         });
-        ensureInboxCruiseAlive('unstick');
-        if (!isInboxWatchEnabled()) {
-            var fanPulse = startFanRosterForce(mins || 20, 'unstick');
-            return {
-                cleared: cleared,
-                freezeCleared: freezeCleared,
-                mode: 'fan_roster',
-                pulse: fanPulse,
-                version: (function () {
-                    try { return chrome.runtime.getManifest().version; } catch (e) { return ''; }
-                })()
-            };
-        }
-        try { setChatPhase('inbox'); } catch (ePh2) {}
-        try { setInboxPhase('scanning'); } catch (ePh3) {}
-        var pulse = null;
-        try {
-            if (window.__sgChatBridge && typeof window.__sgChatBridge.forceInboxPulse === 'function') {
-                pulse = window.__sgChatBridge.forceInboxPulse(mins || 20);
-            }
-        } catch (eF) {
-            pulse = { error: String(eF && eF.message || eF) };
-        }
+        var fanPulse = startFanRosterForce(mins || 20, 'unstick');
         return {
             cleared: cleared,
             freezeCleared: freezeCleared,
-            mode: 'inbox',
-            pulse: pulse,
+            mode: 'fan_roster',
+            pulse: fanPulse,
             version: (function () {
                 try { return chrome.runtime.getManifest().version; } catch (e) { return ''; }
             })()
         };
-    }
-
-    /**
-     * 守箱开人后保活：autoRun + 主巡航 interval。
-     * completeChatRound/stop 会 clearAllTimers；若不重启则身份已 ok 也永不 arm（实机 ok_header + autoRun=false）。
-     */
-    function ensureInboxCruiseAlive(why) {
-        var revived = false;
-        try {
-            if (sessionStorage.getItem('dan_auto_run') !== 'true') {
-                sessionStorage.setItem('dan_auto_run', 'true');
-                revived = true;
-            }
-            localStorage.setItem('dan_chat_status', 'running');
-            try {
-                var ms = JSON.parse(sessionStorage.getItem('sg_module_chat') || '{}') || {};
-                ms.running = true;
-                ms.lastActive = Date.now();
-                if (!ms.phase || ms.phase === 'idle' || ms.phase === 'completed') ms.phase = 'sending';
-                sessionStorage.setItem('sg_module_chat', JSON.stringify(ms));
-            } catch (eMs) {}
-            if (typeof ensureChatMainEngine === 'function') ensureChatMainEngine();
-            if (revived) {
-                console.warn('[handoff] cruise revive why=' + (why || '') + ' opening=' + (sessionStorage.getItem('dan_inbox_opening') || ''));
-                try { reportChatMetric('inbox.cruise_revive', { why: why || '' }); } catch (eM) {}
-            }
-        } catch (e) {}
-        return revived;
-    }
-
-    /** 开人后短重试武装 step2（不依赖主循环当拍是否还活着） */
-    function scheduleArmInboxStep2Retries(why) {
-        ensureInboxCruiseAlive(why || 'open_schedule');
-        var delays = [0, 400, 1200, 2500, 5000];
-        for (var i = 0; i < delays.length; i++) {
-            (function (ms) {
-                setTimeout(function () {
-                    try {
-                        ensureInboxCruiseAlive('arm_retry_' + ms);
-                        if (tryArmInboxStep2()) {
-                            try { reportChatMetric('inbox.arm_step2', { why: why || '', via: 'retry_' + ms }); } catch (eR) {}
-                        }
-                    } catch (eArm) {}
-                }, ms);
-            })(delays[i]);
-        }
-    }
-
-    /** 守箱已点开目标后：身份正向证明才武装 step2 */
-    function tryArmInboxStep2() {
-        var ct = normalizeChatHandle(sessionStorage.getItem('current_target') || '');
-        var opening = normalizeChatHandle(sessionStorage.getItem('dan_inbox_opening') || '');
-        if (!ct) return false;
-        if (!(isDmConversationPage() || isDmConversationView())) return false;
-        // opening 被交接/收工误清但人仍在会话：用 current_target 回填，避免永远无法 arm
-        if (!opening) {
-            sessionStorage.setItem('dan_inbox_opening', ct);
-            opening = ct;
-            try { reportChatMetric('inbox.opening_restore', { target: ct, why: 'arm_missing_opening' }); } catch (eRo) {}
-        } else if (opening !== ct) {
-            return false;
-        }
-        if (sessionStorage.getItem('dan_auto_step')) return false;
-        try { captureDmPeerId(ct); } catch (eCap) {}
-        var idr = assertDmConversationMatchesTarget(ct);
-        if (idr.ok) {
-            ensureInboxCruiseAlive('arm_step2');
-            sessionStorage.setItem('dan_auto_step', '2');
-            sessionStorage.setItem('dan_wait_count', '0');
-            console.log('[handoff] arm step2 @' + ct + ' via=' + idr.reason);
-            try { reportChatMetric('inbox.arm_step2', { target: ct, via: idr.reason || '' }); } catch (eM2) {}
-            return true;
-        }
-        try {
-            reportChatMetric('inbox.arm_pending', {
-                target: ct,
-                reason: (idr && idr.reason) || 'identity_pending',
-                header: (idr && idr.headerHandle) || '',
-                url_peer: (idr && idr.urlPeerId) || '',
-                db_peer: (idr && idr.dbPeerId) || ''
-            });
-        } catch (eP) {}
-        return false;
-    }
-
-    function getInboxDoneList() {
-        try { return JSON.parse(sessionStorage.getItem('dan_inbox_done') || '[]'); } catch (e) { return []; }
-    }
-
-    function addInboxDone(handle) {
-        handle = normalizeChatHandle(handle);
-        if (!handle) return;
-        var list = getInboxDoneList();
-        if (!list.includes(handle)) {
-            list.push(handle);
-            sessionStorage.setItem('dan_inbox_done', JSON.stringify(list));
-        }
     }
 
     function canSendAdNow(handle, peerTexts, entry) {
@@ -4236,7 +3631,6 @@
             }
             saveTargetDB(db);
         } catch (e1) {}
-        try { addInboxDone(handle); } catch (e2) {}
         try {
             reportChatMetric('chat_closed', { target: handle, why: why || 'closed' });
             reportSessionVerdict('chat_closed', { target: handle, round: 3, via: why || 'closed' });
@@ -4321,123 +3715,6 @@
         } catch (e1) {}
     }
 
-    // —— 私信回扫脉冲结论（OPS 一眼读错；后续关注/养号可仿此模式）——
-    var INBOX_SCAN_PULSE_KEY = 'dan_inbox_scan_pulse';
-    function resetInboxScanPulseStats() {
-        try { sessionStorage.removeItem(INBOX_SCAN_PULSE_KEY); } catch (eR) {}
-    }
-    function getInboxScanPulseStats() {
-        try {
-            var o = JSON.parse(sessionStorage.getItem(INBOX_SCAN_PULSE_KEY) || '{}');
-            return o && typeof o === 'object' ? o : {};
-        } catch (eG) { return {}; }
-    }
-    function patchInboxScanPulseStats(patch) {
-        var s = getInboxScanPulseStats();
-        if (!patch) return s;
-        for (var k in patch) {
-            if (Object.prototype.hasOwnProperty.call(patch, k)) s[k] = patch[k];
-        }
-        try { sessionStorage.setItem(INBOX_SCAN_PULSE_KEY, JSON.stringify(s)); } catch (eP) {}
-        return s;
-    }
-    function noteInboxListSignalForPulse(signal) {
-        if (!signal) return;
-        var s = getInboxScanPulseStats();
-        s.unread_dom = Math.max(Number(s.unread_dom) || 0, Number(signal.unread_dom) || 0);
-        s.unread_visual = Math.max(Number(s.unread_visual) || 0, Number(signal.unread_visual) || 0);
-        s.urgent = Math.max(Number(s.urgent) || 0, Number(signal.urgent) || 0);
-        s.debt_matched = Math.max(Number(s.debt_matched) || 0, Number(signal.debt_matched) || 0);
-        patchInboxScanPulseStats(s);
-    }
-    function noteInboxOpenForPulse(via, target) {
-        patchInboxScanPulseStats({
-            opened: 1,
-            open_via: via || 'list',
-            open_target: target || ''
-        });
-        try {
-            var n = 0;
-            if (typeof window !== 'undefined' && typeof window.__sgBumpChatSessionOpen === 'function') {
-                n = window.__sgBumpChatSessionOpen() || 0;
-            } else {
-                n = (parseInt(sessionStorage.getItem('sg_chat_session_opens') || '0', 10) || 0) + 1;
-                sessionStorage.setItem('sg_chat_session_opens', String(n));
-            }
-            var maxO = parseInt(sessionStorage.getItem('sg_chat_session_max_opens') || '0', 10) || 0;
-            if (maxO > 0 && n >= maxO) {
-                try { inboxQueueDeferRemaining('session_cap'); } catch (eDef) {}
-            }
-        } catch (eBump) {}
-    }
-    function noteInboxAdoptMissForPulse(reason) {
-        patchInboxScanPulseStats({ adopt_miss_reason: reason || 'unknown' });
-    }
-    function emitInboxScanVerdict(exitReason) {
-        var s = getInboxScanPulseStats();
-        var unreadTotal = (Number(s.unread_dom) || 0) + (Number(s.unread_visual) || 0);
-        var opened = !!s.opened;
-        var via = String(s.open_via || '');
-        var verdict = 'no_unread_scan_done';
-        if (opened) {
-            if (via === 'unread_adopt') verdict = 'opened_adopt';
-            else if (via === 'probe_queue' || via === 'bottom_probe') verdict = 'opened_probe';
-            else verdict = 'opened_urgent';
-        } else if (unreadTotal > 0) {
-            verdict = 'saw_unread_no_open';
-        } else if (exitReason === 'inbox_no_actionable_debt') {
-            verdict = 'no_debt';
-        } else if (exitReason === 'inbox_visit_cap' || exitReason === 'inbox_cap' || exitReason === 'chat_daily_cap') {
-            verdict = 'cap_exit';
-        } else {
-            verdict = 'no_unread_scan_done';
-        }
-        var severity = 'info';
-        if (verdict === 'saw_unread_no_open') severity = 'error';
-        else if (verdict === 'cap_exit') severity = 'warn';
-        reportChatMetric('chat.inbox_scan_verdict', {
-            verdict: verdict,
-            severity: severity,
-            exit_reason: exitReason || '',
-            priority_applied: 'unread_first',
-            unread_dom: Number(s.unread_dom) || 0,
-            unread_visual: Number(s.unread_visual) || 0,
-            urgent: Number(s.urgent) || 0,
-            debt_matched: Number(s.debt_matched) || 0,
-            opened: opened ? 1 : 0,
-            open_via: via,
-            open_target: s.open_target || '',
-            adopt_miss_reason: s.adopt_miss_reason || ''
-        });
-        resetInboxScanPulseStats();
-    }
-    function pulseHasVisibleUnread() {
-        var s = getInboxScanPulseStats();
-        return ((Number(s.unread_dom) || 0) + (Number(s.unread_visual) || 0)) > 0;
-    }
-    function actionableHasUrgentRow(actionable) {
-        actionable = actionable || [];
-        for (var i = 0; i < actionable.length; i++) {
-            if (actionable[i] && (actionable[i].unread || actionable[i].replied)) return true;
-        }
-        return false;
-    }
-    /** 可视未读未消化时禁止探测直开 */
-    function blockProbeWhileUnread(fromObserver) {
-        if (yieldProbeToUrgentListRow(fromObserver)) return 'opened';
-        if (tryOpenOrphanUnreadFromDOM(fromObserver)) return 'opened';
-        var act = pickActionableInboxRows();
-        reportInboxListSignal(act);
-        if (pulseHasVisibleUnread() || actionableHasUrgentRow(act)) {
-            reportChatMetric('inbox.probe_blocked_unread', {
-                unread_dom: getInboxScanPulseStats().unread_dom || 0,
-                unread_visual: getInboxScanPulseStats().unread_visual || 0,
-                urgent: actionableHasUrgentRow(act) ? 1 : 0
-            });
-            return 'blocked';
-        }
-        return 'ok';
-    }
     /** 进会话后发送/放弃结论（与 parse_age_result 并存） */
     function reportSessionVerdict(verdict, meta) {
         meta = meta || {};
@@ -4451,334 +3728,10 @@
         }, meta));
     }
 
-    var _inboxObserver = null;
-    // 主 Chat 引擎与末尾 DM trace 面板是不同闭包；这里提供跨模块安全记录，避免守箱流程被 trace 缺失阻断
-    function dmTracePush(stage, detail) {
-        try {
-            var key = 'sg_dm_flow_trace';
-            var trace = [];
-            try { trace = JSON.parse(sessionStorage.getItem(key) || '[]'); } catch (eParse) { trace = []; }
-            if (!Array.isArray(trace)) trace = [];
-            detail = detail || {};
-            trace.push({ ts: Date.now(), stage: String(stage || ''), detail: detail });
-            if (trace.length > 60) trace = trace.slice(-60);
-            sessionStorage.setItem(key, JSON.stringify(trace));
-        } catch (eTrace) {}
-    }
-
-    function setupInboxObserver() {
-        if (_inboxObserver || !isMessagesPage()) return;
-        var root = document.querySelector('[data-testid="DMDrawer"]') || document.querySelector('main') || document.body;
-        if (!root) return;
-        _inboxObserver = new MutationObserver(function () {
-            if (sessionStorage.getItem('dan_auto_run') !== 'true') return;
-            if (sessionStorage.getItem('dan_auto_step')) return;
-            tryOpenInboxDebtFromDOM(true);
-        });
-        _inboxObserver.observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ['aria-label', 'data-testid'] });
-    }
-
-    /** 从任意收件箱行 testid 第二段捕获本 bot 的 myId（同会话内所有行相同） */
-    function captureInboxMyId() {
-        if (sessionStorage.getItem('dan_inbox_my_id')) return sessionStorage.getItem('dan_inbox_my_id');
-        try {
-            var rows = document.querySelectorAll('[data-testid^="dm-conversation-item-"]');
-            for (var i = 0; i < rows.length; i++) {
-                var m = (rows[i].getAttribute('data-testid') || '').match(/dm-conversation-item-\d+:(\d{6,})/);
-                if (m && m[1]) {
-                    sessionStorage.setItem('dan_inbox_my_id', m[1]);
-                    return m[1];
-                }
-            }
-        } catch (e) {}
-        return '';
-    }
-
-    function getInboxProbeQueue() {
-        try { return JSON.parse(sessionStorage.getItem('dan_inbox_probe_queue') || '[]'); } catch (e) { return []; }
-    }
-
-    function saveInboxProbeQueue(q) {
-        sessionStorage.setItem('dan_inbox_probe_queue', JSON.stringify(Array.isArray(q) ? q : []));
-    }
-
-    /** 探测目标入队（去重）；探测=无回复但过了等待期，优先级低于有回复目标，扫描到底后再逐个处理 */
-    function enqueueInboxProbe(handle) {
-        handle = normalizeChatHandle(handle);
-        if (!handle) return;
-        var q = getInboxProbeQueue();
-        if (q.indexOf(handle) >= 0) return;
-        q.push(handle);
-        saveInboxProbeQueue(q);
-    }
-
-    /** 直接导航打开目标会话（绕过行可见性）：用 DB peerId（+可选 myId）拼 URL
-     *  仅守箱开 + phase=inbox；粉丝队列一律禁止（与 chatGo 深链硬闸一致） */
-    function openDmConversationDirect(handle) {
-        handle = normalizeChatHandle(handle);
-        if (!handle) return false;
-        try {
-            var phBan = getChatPhase();
-            var viaBan = sessionStorage.getItem('dan_dm_entry_via') || '';
-            if (phBan === 'outbound' || phBan === 'followup' || viaBan === 'fan_roster') {
-                console.warn('[inbox_watch] 粉丝队列禁止 /i/chat 直开 @' + handle + ' ph=' + phBan + ' via=' + viaBan);
-                return false;
-            }
-            if (!(phBan === 'inbox' && isInboxWatchEnabled())) {
-                console.warn('[inbox_watch] 非守箱 inbox，禁止直开 @' + handle + ' ph=' + phBan);
-                return false;
-            }
-        } catch (eBan) {
-            return false;
-        }
-        var db = loadTargetDB();
-        var entry = db[handle];
-        var peerId = String((entry && entry.peerId) || '').replace(/\D/g, '');
-        var myId = captureInboxMyId() || '';
-        if (!peerId) {
-            console.warn('[inbox_watch] 直接导航缺 peerId @' + handle);
-            return false;
-        }
-        // 有 myId 用 peer-me；否则新版单 ID /i/chat/<peer>
-        var url = myId ? ('/i/chat/' + peerId + '-' + myId) : ('/i/chat/' + peerId);
-        sessionStorage.setItem('dan_inbox_opening', handle);
-        sessionStorage.setItem('dan_inbox_opening_at', String(Date.now()));
-        sessionStorage.setItem('current_target', handle);
-        // 严逻辑：不在此武装 step2，等身份正向证明后再 arm
-        sessionStorage.removeItem('dan_auto_step');
-        sessionStorage.setItem('dan_wait_count', '0');
-        sessionStorage.setItem('dan_mem_cleaner_count', '0');
-        scheduleArmInboxStep2Retries('open_direct');
-        return !!chatGo(url, true);
-    }
-
-    /** 列表行打开会话（未读/强回复优先路径；供探测队列让位复用） */
-    function openInboxListRow(best, fromObserver, via) {
-        if (!best || !best.handle || !best.row) return false;
-        sessionStorage.removeItem('dan_inbox_scan_steps');
-        try {
-            var scS = getInboxListScroller();
-            if (scS) sessionStorage.setItem('dan_inbox_scan_top', String(scS.scrollTop));
-        } catch (eScS) {}
-        captureDmPeerIdFromRow(best.handle, best.row);
-        console.log('[诊断] inbox_open @' + best.handle + ' round=' + best.round + (fromObserver ? ' (event)' : '') + (via ? ' via=' + via : ''));
-        reportChatMetric('inbox_open', { target: best.handle, round: best.round, from_observer: !!fromObserver, via: via || 'list' });
-        noteInboxOpenForPulse(via || 'list', best.handle);
-        dmTracePush('open', {
-            target: best.handle,
-            round: best.round,
-            action: '打开会话 round=' + best.round + (best.unread ? ' 未读' : ' 有回复')
-        });
-        if (best.round === 1 && best.replied) {
-            markLastInboundAt(best.handle);
-        }
-        sessionStorage.setItem('dan_inbox_opening', best.handle);
-        sessionStorage.setItem('dan_inbox_opening_at', String(Date.now()));
-        sessionStorage.setItem('current_target', best.handle);
-        // 严逻辑：点开后不立刻 step2，等 tryArmInboxStep2 正向证明
-        sessionStorage.removeItem('dan_auto_step');
-        sessionStorage.setItem('dan_wait_count', '0');
-        sessionStorage.setItem('dan_mem_cleaner_count', '0');
-        noteChatProgress('inbox_open');
-        scheduleArmInboxStep2Retries('open_list_' + (via || 'list'));
-        try {
-            var link = best.row.querySelector('a[href*="/i/chat/"], a[href*="/messages/"]') || best.row.querySelector('a');
-            var el = link || best.row;
-            var r = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
-            if (r && r.width > 0 && r.height > 0) {
-                var o = { bubbles: true, cancelable: true, composed: true, view: window, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
-                el.dispatchEvent(new MouseEvent('pointerdown', o));
-                el.dispatchEvent(new MouseEvent('mousedown', o));
-                el.dispatchEvent(new MouseEvent('mouseup', o));
-                el.dispatchEvent(new MouseEvent('click', o));
-            } else {
-                el.click();
-            }
-        } catch (eClk) {
-            try { best.row.click(); } catch (eClk2) {}
-        }
-        return true;
-    }
-
     /** 探测开聊前：可视区若有未读/强回复，立即让位（禁止 processing_queue 旁路） */
-    function yieldProbeToUrgentListRow(fromObserver) {
-        var actionable = pickActionableInboxRows();
-        reportInboxListSignal(actionable);
-        var best = actionable.length ? actionable[0] : null;
-        if (best && (best.replied || best.unread)) {
-            sessionStorage.removeItem('dan_inbox_processing_queue');
-            return openInboxListRow(best, fromObserver, 'yield_over_probe');
-        }
-        if (tryOpenOrphanUnreadFromDOM(fromObserver, actionable)) return true;
-        return false;
-    }
-
     function listOrphanUnreadRows(urgentHandles) {
         return (window.SgInboxWatch && window.SgInboxWatch.listOrphanUnreadRows)
             ? (window.SgInboxWatch.listOrphanUnreadRows(urgentHandles || {}) || []) : [];
-    }
-
-    /** 宇宙外未读收养入库并打开（每脉冲最多 2 条） */
-    function adoptAndOpenUnreadRow(orphan, fromObserver) {
-        if (!orphan || !orphan.row) return false;
-        var peerId = String(orphan.peerId || '').replace(/\D/g, '');
-        var handle = normalizeChatHandle(orphan.handle || orphan.rowHandle || '') || '';
-        var displayName = String(orphan.displayName || '').trim();
-        // /i/chat 行常只有显示名；点行靠 DOM，可用显示名合成句柄入库（勿因缺 @handle 漏开未读）
-        if (!peerId && !handle) {
-            var dnSlug = normalizeDisplayName(displayName).replace(/[^a-z0-9\u3040-\u30ff\u4e00-\u9fff]/gi, '').slice(0, 40);
-            if (dnSlug) {
-                handle = 'dn_' + dnSlug;
-                reportChatMetric('inbox.unread_adopt_dn', { display: displayName.slice(0, 40), handle: handle });
-            } else {
-                reportChatMetric('inbox.unread_adopt_miss', { reason: 'no_peer_or_handle', display: displayName.slice(0, 40) });
-                noteInboxAdoptMissForPulse('no_peer_or_handle');
-                return false;
-            }
-        }
-        if (!handle && peerId) handle = 'p' + peerId;
-        if (isFleetHandle(handle)) {
-            rejectFleetHandle(handle);
-            reportChatMetric('inbox.unread_adopt_miss', { reason: 'fleet', target: handle });
-            noteInboxAdoptMissForPulse('fleet');
-            return false;
-        }
-        try {
-            var rejectDB = getDB('dan_reject_users');
-            if (rejectDB && rejectDB.has && rejectDB.has(handle)) {
-                reportChatMetric('inbox.unread_adopt_miss', { reason: 'reject', target: handle });
-                noteInboxAdoptMissForPulse('reject');
-                return false;
-            }
-        } catch (eRej) {}
-        try {
-            var exist = loadTargetDB()[handle];
-            if (exist && (exist.chatClosedAt || exist.finalKickSentAt)) {
-                reportChatMetric('inbox.unread_adopt_miss', { reason: 'chat_closed', target: handle });
-                noteInboxAdoptMissForPulse('chat_closed');
-                return false;
-            }
-            if (exist && exist.rejectSentAt) {
-                reportChatMetric('inbox.unread_adopt_miss', { reason: 'reject', target: handle });
-                noteInboxAdoptMissForPulse('reject');
-                return false;
-            }
-            // 催加已发、尚未最终催加：开人走最终催加，禁止把 round 打回 1
-            if (exist && canSendFinalKickNow(handle, exist)) {
-                try {
-                    exist.done = false;
-                    exist.needsFinalKick = true;
-                    exist.replySeenAt = Date.now();
-                    exist.lastInboundAt = Date.now();
-                    delete exist.tombstone;
-                    var dbFk = loadTargetDB();
-                    dbFk[handle] = exist;
-                    saveTargetDB(dbFk);
-                    reportChatMetric('inbox.final_kick_adopt', { target: handle, peer_id: peerId || '' });
-                } catch (eFk) {}
-            } else if (exist && (exist.done || exist.blockedAt || (exist.round || 0) >= 3)) {
-                // 墓碑/done 遇可视未读：清 done 再开，避免清假债后蓝点永久不回
-                try {
-                    exist.done = false;
-                    exist.blockedAt = 0;
-                    if ((exist.round || 0) >= 3) exist.round = 1;
-                    delete exist.tombstone;
-                    exist.replySeenAt = Date.now();
-                    exist.lastInboundAt = Date.now();
-                    var dbRe = loadTargetDB();
-                    dbRe[handle] = exist;
-                    saveTargetDB(dbRe);
-                    reportChatMetric('inbox.unread_revive', { target: handle, peer_id: peerId || '' });
-                } catch (eRv) {
-                    reportChatMetric('inbox.unread_adopt_miss', { reason: 'already_done', target: handle });
-                    noteInboxAdoptMissForPulse('already_done');
-                    return false;
-                }
-            }
-        } catch (eDone) {}
-        try {
-            discoverTarget(handle, displayName);
-            var db = loadTargetDB();
-            var er = db[handle] || { round: 0, firstSeen: Date.now(), lastDM: null };
-            if (peerId) er.peerId = peerId;
-            if (displayName) er.displayName = displayName;
-            er.adoptedFromUnread = true;
-            er.replySeenAt = Date.now();
-            er.lastInboundAt = Date.now();
-            er.done = false;
-            delete er.tombstone;
-            if (er.iceSentAt) er.round = Math.max(1, er.round || 0);
-            else if (er.round == null) er.round = 0;
-            db[handle] = er;
-            saveTargetDB(db);
-            reportChatMetric('inbox.unread_adopt', {
-                target: handle,
-                peer_id: peerId || '',
-                round: er.round || 0,
-                unread_source: orphan.unreadSource || ''
-            });
-        } catch (eAd) {
-            console.warn('[inbox] unread adopt failed', eAd);
-            reportChatMetric('inbox.unread_adopt_miss', { reason: 'exception', target: handle || '' });
-            noteInboxAdoptMissForPulse('exception');
-            return false;
-        }
-        sessionStorage.removeItem('dan_inbox_processing_queue');
-        return openInboxListRow({
-            row: orphan.row,
-            handle: handle,
-            peerId: peerId,
-            round: (loadTargetDB()[handle] && loadTargetDB()[handle].round) || 0,
-            unread: true,
-            unreadPrecise: !!orphan.unreadPrecise,
-            replied: false,
-            confidence: 'strong_peer',
-            preview: '',
-            probeable: false,
-            kickReady: false,
-            confirmed: true
-        }, fromObserver, 'unread_adopt');
-    }
-
-    function tryOpenOrphanUnreadFromDOM(fromObserver, actionableHint) {
-        var used = parseInt(sessionStorage.getItem('dan_inbox_unread_adopt_count') || '0', 10) || 0;
-        // 软风控扫箱帽约 5 开：收养上限对齐，避免「看见 5 蓝点只开 2 个就 early_end」
-        var adoptCap = 2;
-        try {
-            var sgCap = JSON.parse(localStorage.getItem('sg_state') || '{}');
-            if (sgCap.softRiskUntil > Date.now() && !sgCap.softRiskChatDone) adoptCap = 5;
-        } catch (eCap) {}
-        if (used >= adoptCap) {
-            reportChatMetric('inbox.unread_adopt_miss', { reason: 'pulse_cap', used: used, cap: adoptCap });
-            noteInboxAdoptMissForPulse('pulse_cap');
-            return false;
-        }
-        var actionable = actionableHint || pickActionableInboxRows();
-        var urgentSet = {};
-        for (var u = 0; u < actionable.length; u++) {
-            if (actionable[u] && (actionable[u].replied || actionable[u].unread) && actionable[u].handle) {
-                urgentSet[actionable[u].handle] = true;
-            }
-        }
-        var orphans = listOrphanUnreadRows(urgentSet);
-        if (!orphans.length) {
-            reportChatMetric('inbox.unread_adopt_miss', {
-                reason: 'no_orphan',
-                urgent: Object.keys(urgentSet).length,
-                debt_matched: actionable.length
-            });
-            noteInboxAdoptMissForPulse('no_orphan');
-            return false;
-        }
-        for (var i = 0; i < orphans.length; i++) {
-            if (adoptAndOpenUnreadRow(orphans[i], fromObserver)) {
-                sessionStorage.setItem('dan_inbox_unread_adopt_count', String(used + 1));
-                return true;
-            }
-        }
-        reportChatMetric('inbox.unread_adopt_miss', { reason: 'all_adopt_failed', orphan_count: orphans.length });
-        noteInboxAdoptMissForPulse('all_adopt_failed');
-        return false;
     }
 
     function reportInboxListSignal(actionable) {
@@ -4788,7 +3741,6 @@
                 : null;
             if (!signal) return;
             reportChatMetric('inbox.list_signal', signal);
-            noteInboxListSignalForPulse(signal);
             var unreadTotal = (signal.unread_dom || 0) + (signal.unread_visual || 0);
             if (unreadTotal > 0 && (signal.urgent || 0) === 0) {
                 reportChatMetric('inbox.unread_outside_debt', {
@@ -4801,472 +3753,6 @@
         } catch (eSig) {}
     }
 
-    function tryOpenInboxDebtFromDOM(fromObserver) {
-        captureInboxMyId();
-        var iq = loadInboxTaskQueue();
-
-        // —— 已封口：只按守箱队列逐条开，禁止盲猜可视区 ——
-        if (iq.sealed) {
-            if (inboxQueueHasOpenWork()) {
-                var openedQ = startInboxTaskFromQueue(fromObserver);
-                if (openedQ === true) return true;
-                if (openedQ === 'scan_done') return finishInboxListScan(fromObserver);
-                if (openedQ === 'scrolling' || openedQ === 'unread_hold') return openedQ;
-                // 队首暂时打不开：禁止裸 false 落到「无债收工」，走列表收尾/未读 hold
-                return finishInboxListScan(fromObserver);
-            }
-            console.log('[inbox_watch] 守箱队列已空，结束扫描');
-            return finishInboxListScan(fromObserver);
-        }
-
-        // —— 登记段：收获候选，不点进 ——
-        harvestInboxCandidatesToQueue();
-        iq = loadInboxTaskQueue();
-        var stHarv = inboxQueueStats(iq);
-
-        if (fromObserver) {
-            // observer 只补充登记，不滚动、不开会话
-            return false;
-        }
-
-        if (stHarv.pending >= INBOX_QUEUE_BATCH_MAX) {
-            inboxQueueSeal('batch_max');
-            var oBat = startInboxTaskFromQueue(fromObserver);
-            if (oBat === true) return true;
-            if (oBat === 'scan_done') return finishInboxListScan(fromObserver);
-            return oBat || finishInboxListScan(fromObserver);
-        }
-
-        // 本脉冲已触底登记过：seal 后执行
-        if (sessionStorage.getItem('dan_inbox_list_pass_done') === '1') {
-            inboxQueueSeal('list_pass_done');
-            if (inboxQueueHasOpenWork()) {
-                var oPass = startInboxTaskFromQueue(fromObserver);
-                if (oPass === true) return true;
-                if (oPass === 'scan_done') return finishInboxListScan(fromObserver);
-                return oPass;
-            }
-            console.log('[inbox_watch] 列表已扫完且队列空');
-            return finishInboxListScan(fromObserver);
-        }
-
-        var scanSteps = parseInt(sessionStorage.getItem('dan_inbox_scan_steps') || '0', 10);
-        if (scanSteps < 30) {
-            var atBottom = isInboxListAtBottom();
-            if (atBottom) {
-                try { sessionStorage.setItem('dan_inbox_list_pass_done', '1'); } catch (ePass) {}
-                sessionStorage.removeItem('dan_inbox_scan_steps');
-                harvestInboxCandidatesToQueue();
-                inboxQueueSeal(stHarv.pending > 0 || inboxQueueStats().pending > 0 ? 'bottom_reached' : 'queue_empty');
-                if (inboxQueueHasOpenWork()) {
-                    var oBot = startInboxTaskFromQueue(fromObserver);
-                    if (oBot === true) return true;
-                    if (oBot === 'scan_done') return finishInboxListScan(fromObserver);
-                    return oBot;
-                }
-                return finishInboxListScan(fromObserver);
-            }
-            scanSteps = scanSteps + 1;
-            sessionStorage.setItem('dan_inbox_scan_steps', String(scanSteps));
-            scrollInboxListBy(420 + Math.floor(Math.random() * 260));
-            noteChatProgress('inbox_scroll_' + scanSteps);
-            showToast('📋 守箱登记中…已 ' + stHarv.pending + ' 人 (' + scanSteps + '/30)', '#1d9bf0', 1400);
-            console.log('[inbox_watch] 登记下滑 step=' + scanSteps + ' pending=' + stHarv.pending);
-            if (sessionStorage.getItem('dan_inbox_scroll_running') !== '1') {
-                sessionStorage.setItem('dan_inbox_scroll_running', '1');
-                setTimeout(function () {
-                    sessionStorage.removeItem('dan_inbox_scroll_running');
-                    if (sessionStorage.getItem('dan_auto_run') === 'true') runInboxWatchTick();
-                }, 2200);
-            }
-            return 'scrolling';
-        }
-
-        try { sessionStorage.setItem('dan_inbox_list_pass_done', '1'); } catch (ePass2) {}
-        sessionStorage.removeItem('dan_inbox_scan_steps');
-        harvestInboxCandidatesToQueue();
-        inboxQueueSeal('scan_steps_max');
-        if (inboxQueueHasOpenWork()) {
-            var oMax = startInboxTaskFromQueue(fromObserver);
-            if (oMax === true) return true;
-            if (oMax === 'scan_done') return finishInboxListScan(fromObserver);
-            return oMax;
-        }
-        return finishInboxListScan(fromObserver);
-    }
-
-    /** 列表扫完：仍有可视未读则短 hold 再收养，避免蓝点漏检后直接跳走 */
-    function finishInboxListScan(fromObserver) {
-        if (fromObserver) return 'scan_done';
-        if (tryOpenOrphanUnreadFromDOM(fromObserver)) return true;
-        var act = pickActionableInboxRows();
-        reportInboxListSignal(act);
-        var orphans = listOrphanUnreadRows({});
-        var unreadLeft = pulseHasVisibleUnread() || (orphans && orphans.length > 0);
-        if (!unreadLeft) {
-            try { sessionStorage.removeItem('dan_inbox_unread_hold'); } catch (eClr) {}
-            return 'scan_done';
-        }
-        var holds = parseInt(sessionStorage.getItem('dan_inbox_unread_hold') || '0', 10) || 0;
-        if (holds >= 3) {
-            // 末次兜底再试开一条 orphan，避免 hold 耗尽后仍蓝点在屏却 scan_done
-            if (tryOpenOrphanUnreadFromDOM(fromObserver)) return true;
-            reportChatMetric('inbox.saw_unread_no_open', {
-                holds: holds,
-                orphans: orphans.length,
-                unread_dom: getInboxScanPulseStats().unread_dom || 0,
-                unread_visual: getInboxScanPulseStats().unread_visual || 0
-            });
-            try { sessionStorage.removeItem('dan_inbox_unread_hold'); } catch (eClr2) {}
-            return 'scan_done';
-        }
-        try {
-            sessionStorage.setItem('dan_inbox_unread_hold', String(holds + 1));
-            sessionStorage.removeItem('dan_inbox_list_pass_done');
-        } catch (eHold) {}
-        reportChatMetric('inbox.unread_hold', {
-            holds: holds + 1,
-            orphans: orphans.length,
-            unread_visual: getInboxScanPulseStats().unread_visual || 0
-        });
-        return 'unread_hold';
-    }
-
-    function pickDebtTargetsFromDB() {
-        var db = loadTargetDB();
-        var sg = ensureChatFreeze();
-        var rejectDB = getDB('dan_reject_users');
-        var inboxDone = getInboxDoneList();
-        var opening = normalizeChatHandle(sessionStorage.getItem('dan_inbox_opening') || '');
-        var list = [];
-        for (var h in db) {
-            var entry = db[h];
-            var handle = normalizeChatHandle(h);
-            if (!entry || !handle || entry.done) continue;
-            if (entry.blockedAt || entry.rejectSentAt) continue;
-            var round = entry.round || 0;
-            if (round !== 1 && round !== 2) continue;
-            if (rejectDB && rejectDB.has(handle)) continue;
-            if (inboxDone.includes(handle) || (opening && opening === handle)) continue;
-            if (!isChatTargetAllowed(handle, sg)) continue;
-            var kickReady = round === 2 && canSendKickNow(handle, entry);
-            var needsAdRepair = round === 2 && !entry.adBubbleOk;
-            // 催加未到点：不进债务/探测；缺广告气泡的假推进仍允许打开补发
-            if (round === 2 && !kickReady && !needsAdRepair) continue;
-            var slaDueAt = entry.slaDueAt || 0;
-            var slaOverdue = slaDueAt > 0 && slaDueAt <= Date.now();
-            list.push({ handle: handle, round: round, lastDM: entry.lastDM || 0, kickReady: kickReady, slaDueAt: slaDueAt, slaOverdue: slaOverdue, replySeenAt: entry.replySeenAt || 0 });
-        }
-        list.sort(function (a, b) {
-            if (a.slaOverdue !== b.slaOverdue) return a.slaOverdue ? -1 : 1;
-            if (a.round !== b.round) return a.round - b.round;
-            // 已确认过回复（replySeenAt）的目标优先，收件箱命中后尽早进入发送判定
-            if ((a.replySeenAt || 0) !== (b.replySeenAt || 0)) return (a.replySeenAt || 0) ? -1 : 1;
-            return (a.lastDM || 0) - (b.lastDM || 0);
-        });
-        return list;
-    }
-
-    function extractInboxRowPreviewData(row) {
-        return (window.SgInboxWatch && window.SgInboxWatch.extractInboxRowPreviewData)
-            ? window.SgInboxWatch.extractInboxRowPreviewData(row)
-            : { preview: '', fromSelf: false, source: 'none', handle: '', unreadFromAria: false };
-    }
-    function extractInboxRowPreview(row) {
-        return (window.SgInboxWatch && window.SgInboxWatch.extractInboxRowPreview)
-            ? window.SgInboxWatch.extractInboxRowPreview(row) : '';
-    }
-    function pickActionableInboxRows() {
-        return (window.SgInboxWatch && window.SgInboxWatch.pickActionableInboxRows)
-            ? (window.SgInboxWatch.pickActionableInboxRows() || []) : [];
-    }
-    /** 从收件箱行 testid dm-conversation-item-<peerId>:<myId> 提取并回写对方数字ID。
-     *  写入前用行 aria-description 中的 @handle 交叉验证，防止匹配错行导致 peerId 污染。 */
-    function captureDmPeerIdFromRow(targetHandle, row) {
-        targetHandle = normalizeChatHandle(targetHandle);
-        if (!targetHandle || !row) return '';
-        var tid = row.getAttribute('data-testid') || '';
-        var m = tid.match(/dm-conversation-item-(\d{6,}):(\d{6,})/);
-        if (!m) return '';
-        var peerId = m[1];
-        try {
-            var desc = String(row.getAttribute('aria-description') || row.getAttribute('aria-label') || '');
-            var mh = desc.match(/@(\S+)/i);
-            var rowHandle = mh ? String(mh[1]).replace(/[,\s].*$/, '').toLowerCase() : '';
-            if (rowHandle && rowHandle !== targetHandle.toLowerCase()) {
-                console.warn('[captureDmPeerId] 行 handle 不匹配，拒绝回写 @' + targetHandle + ' (row=@' + rowHandle + ') peerId=' + peerId);
-                return '';
-            }
-        } catch (eV) {}
-        try {
-            var db = loadTargetDB();
-            if (!db[targetHandle]) db[targetHandle] = { round: 0, firstSeen: Date.now(), lastDM: null };
-            if (String(db[targetHandle].peerId || '') !== peerId) {
-                db[targetHandle].peerId = peerId;
-                saveTargetDB(db);
-                console.log('[captureDmPeerId] 回写 @' + targetHandle + ' peerId=' + peerId);
-            }
-        } catch (e) {}
-        return peerId;
-    }
-
-    function findInboxConversationElement(handle) {
-        handle = normalizeChatHandle(handle);
-        if (!handle) return null;
-        var entry = loadTargetDB()[handle] || {};
-        // 新版 X：收件箱行无 handle，仅 testid dm-conversation-item-<peerId>:<myId> 与链接 /i/chat/<peerId>-<myId>
-        // 通道1：按对方数字ID精确匹配（outbound/inbox 打开会话时已 captureDmPeerId）
-        // 注意：匹配后必须用行 aria-description 的 @handle 交叉验证，防止 DB peerId 污染后错配
-        var pid = String(entry.peerId || '').replace(/\D/g, '');
-        if (pid && pid.length >= 6) {
-            try {
-                var byId = document.querySelector('[data-testid^="dm-conversation-item-' + pid + ':"]');
-                if (byId) {
-                    var desc = String(byId.getAttribute('aria-description') || '');
-                    var dm = desc.match(/@(\S+)/i);
-                    var rh = dm ? String(dm[1]).replace(/[,\s].*$/, '').toLowerCase() : '';
-                    if (!rh || rh === handle.toLowerCase()) return byId;
-                    // 通道1 被污染：行 handle 与目标不一致，回退到通道2/3
-                }
-            } catch (eP) {}
-            try {
-                var byHref = document.querySelector(
-                    'a[href*="/i/chat/' + pid + '-"], a[href*="/messages/' + pid + '-"], a[href*="/i/chat/' + pid + '"], a[href*="/messages/' + pid + '"]'
-                );
-                if (byHref) return byHref.closest('[data-testid^="dm-conversation-item-"]') || byHref.closest('[data-testid="conversation"]') || byHref.closest('[data-testid="DMConversation"]') || byHref.closest('[role="listitem"]') || byHref;
-            } catch (eP2) {}
-        }
-        // 通道2：按显示名匹配行首（粉丝页扫描时已 discoverTarget 存 displayName）
-        var dnKey = normalizeDisplayName(entry.displayName);
-        if (dnKey) {
-            try {
-                var dnRows = document.querySelectorAll('[data-testid^="dm-conversation-item-"]');
-                for (var d2 = 0; d2 < dnRows.length; d2++) {
-                    var firstLine = ((dnRows[d2].innerText || '').split('\n')[0] || '');
-                    if (normalizeDisplayName(firstLine) === dnKey) return dnRows[d2];
-                }
-            } catch (eD2) {}
-        }
-        // 通道3：旧版 handle 匹配（兼容）
-        var selectors = [
-            '[data-testid^="dm-conversation-item-"] a[href*="/' + handle + '"]',
-            '[data-testid^="dm-conversation-item-"] [href*="/' + handle + '"]',
-            '[data-testid="conversation"] a[href*="/' + handle + '"]',
-            '[data-testid="DMConversation"] a[href*="/' + handle + '"]',
-            '[data-testid="conversation"] [href*="/' + handle + '"]',
-            '[data-testid="DMConversation"] [href*="/' + handle + '"]',
-            'a[href="/' + handle + '"]',
-            'a[href*="/' + handle + '?"]',
-            'a[href*="/' + handle + '/"]'
-        ];
-        for (var s = 0; s < selectors.length; s++) {
-            try {
-                var el = document.querySelector(selectors[s]);
-                if (el) return el.closest('[data-testid^="dm-conversation-item-"]') || el.closest('[data-testid="conversation"]') || el.closest('[data-testid="DMConversation"]') || el.closest('[role="listitem"]') || el.closest('article') || el;
-            } catch (eS) {}
-        }
-        var rows = document.querySelectorAll('[data-testid^="dm-conversation-item-"], [data-testid="conversation"], [data-testid="DMConversation"], [role="listitem"], article');
-        for (var i = 0; i < rows.length; i++) {
-            var row = rows[i];
-            var txt = (row.innerText || '').toLowerCase();
-            if (txt.indexOf('@' + handle) >= 0 || txt.indexOf(handle) >= 0) return row;
-            try {
-                var links = row.querySelectorAll('a[href*="/messages/"] , a[href*="/i/chat/"] , a[href*="/' + handle + '"]');
-                for (var k = 0; k < links.length; k++) {
-                    var ah = (links[k].getAttribute('href') || '').toLowerCase();
-                    if (ah.indexOf('/' + handle) >= 0) return row;
-                }
-            } catch (eL) {}
-        }
-        // 头像 alt / title 兜底
-        try {
-            var avatarRows = document.querySelectorAll('[data-testid="conversation"], [data-testid="DMConversation"], [role="listitem"], article');
-            for (var a = 0; a < avatarRows.length; a++) {
-                var rt = (avatarRows[a].getAttribute('aria-label') || avatarRows[a].innerText || '').toLowerCase();
-                if (rt.indexOf(handle) >= 0) return avatarRows[a];
-                var imgs = avatarRows[a].querySelectorAll('img[alt], img[title]');
-                for (var m = 0; m < imgs.length; m++) {
-                    var al = String(imgs[m].getAttribute('alt') || imgs[m].getAttribute('title') || '').toLowerCase();
-                    if (al.indexOf(handle) >= 0) return avatarRows[a];
-                }
-            }
-        } catch (eA) {}
-        return null;
-    }
-
-    /** 收件箱列表（左栏）滚动容器识别：X 虚拟滚动，window.scrollBy 滚不到列表容器 */
-    function getInboxListScroller() {
-        try {
-            var cands = document.querySelectorAll('[data-testid="DmActivityContainer"], [data-testid="dm-inbox-panel"], [data-testid="dm-conversation-list"], [data-testid="DMDrawer"]');
-            for (var c = 0; c < cands.length; c++) {
-                if (cands[c].scrollHeight > cands[c].clientHeight + 10) return cands[c];
-            }
-            var row = document.querySelector('[data-testid^="dm-conversation-item-"]');
-            if (row) {
-                var p = row.parentElement;
-                var depth = 0;
-                while (p && p !== document.body && depth < 12) {
-                    try {
-                        var st = window.getComputedStyle(p);
-                        if ((st.overflowY === 'auto' || st.overflowY === 'scroll' || st.overflowY === 'overlay') && p.scrollHeight > p.clientHeight + 5) return p;
-                    } catch (eC) {}
-                    p = p.parentElement;
-                    depth++;
-                }
-            }
-        } catch (e) {}
-        return null;
-    }
-
-    /** 收件箱列表是否已滚动到底（虚拟滚动触底） */
-    function isInboxListAtBottom() {
-        try {
-            var sc = getInboxListScroller();
-            if (sc) return (sc.scrollTop + sc.clientHeight) >= (sc.scrollHeight - 160);
-            var se = document.scrollingElement || document.documentElement;
-            return (se.scrollTop + window.innerHeight) >= (se.scrollHeight - 160);
-        } catch (e) { return true; }
-    }
-
-    /** 滚动收件箱列表容器（找不到容器时退回 window 滚动） */
-    function scrollInboxListBy(amount) {
-        try {
-            var sc = getInboxListScroller();
-            if (sc) {
-                sc.scrollBy({ top: amount, behavior: 'smooth' });
-                return true;
-            }
-        } catch (e) {}
-        try { window.scrollBy({ top: amount, behavior: 'smooth' }); } catch (e2) {}
-        return false;
-    }
-
-    function runInboxWatchTick() {
-        if (!isInboxWatchEnabled()) {
-            console.log('[inbox_watch] 已停用，改走粉丝队列 drain');
-            try {
-                if (typeof SgTelemetry !== 'undefined') {
-                    SgTelemetry.emit('chat.inbox_watch_disabled', { at: Date.now() });
-                }
-            } catch (eT) {}
-            try {
-                if (isSoftRiskInboxSegment() || getChatPhase() === 'followup' || getChatPhase() === 'inbox' || isSoftRiskOutboundSegment()) {
-                    try { setChatPhase('outbound'); } catch (ePh) {}
-                    runFollowupQueueTick();
-                }
-            } catch (eFu) {}
-            return;
-        }
-        setChatPhase('inbox');
-        setupInboxObserver();
-        tryUnlockDmPin();
-        // 明确检测：必须在私信环境且会话列表可见，否则先回收件箱根视图
-        var mailSrc = detectDmMailboxSource();
-        if (!mailSrc) {
-            console.warn('[inbox_watch] 非私信环境，拉回收件箱列表');
-            // 相位已是扫箱却停在粉丝页等非 DM：强制回 /i/chat，禁止干等后被调度当成死循环
-            try {
-                if (getChatPhase() === 'inbox' || isSoftRiskInboxSegment()) {
-                    chatGo('/i/chat', true);
-                }
-            } catch (eNav) {}
-            return;
-        }
-        if (!isDmInboxListVisible()) {
-            var leaveHow = leaveDmConversationToListOnce();
-            console.log('[inbox_watch] 会话中列表不可见，退回列表 once via=' + leaveHow);
-            return;
-        }
-        // 从会话返回收件箱：恢复上次扫描位置（虚拟列表已按该位置渲染则直接续扫；未渲染则由下滑步进补齐）
-        var scanTop = parseInt(sessionStorage.getItem('dan_inbox_scan_top') || '0', 10) || 0;
-        if (scanTop > 0) {
-            try {
-                var scR = getInboxListScroller();
-                if (scR) scR.scrollTop = scanTop;
-            } catch (eScR) {}
-            sessionStorage.removeItem('dan_inbox_scan_top');
-        }
-        // 单次守箱到点即交回调度：短冷却后再回来查新消息（不长期钉在收件箱）
-        var visitCapMs = (getChatIntervalCfg().inboxVisitCapSec || 150) * 1000;
-        var visitAt = parseInt(sessionStorage.getItem('dan_inbox_visit_started_at') || '0', 10) || 0;
-        if (!visitAt) {
-            visitAt = Date.now();
-            sessionStorage.setItem('dan_inbox_visit_started_at', String(visitAt));
-        } else if (Date.now() - visitAt > visitCapMs) {
-            console.log('[inbox_watch] 单次守箱到点(>' + Math.round(visitCapMs / 60000 * 10) / 10 + 'min)，交回调度，短冷却后回查');
-            sessionStorage.removeItem('dan_inbox_visit_started_at');
-            completeChatRound('inbox_visit_cap');
-            return;
-        }
-        var tOpen1 = tryOpenInboxDebtFromDOM(false);
-        if (tOpen1 === true) return;
-        if (tOpen1 === 'scrolling') return; // 下滑扫描中，本 tick 结束等渲染续扫
-        if (tOpen1 === 'unread_hold') {
-            console.log('[inbox_watch] 可视未读未打开，短暂停顿后重试收养');
-            showToast('📬 发现未读，准备打开…', '#1d9bf0', 1400);
-            if (sessionStorage.getItem('dan_inbox_unread_hold_timer') !== '1') {
-                sessionStorage.setItem('dan_inbox_unread_hold_timer', '1');
-                setTimeout(function () {
-                    sessionStorage.removeItem('dan_inbox_unread_hold_timer');
-                    if (sessionStorage.getItem('dan_auto_run') === 'true') runInboxWatchTick();
-                }, 1600);
-            }
-            return;
-        }
-        if (tOpen1 === 'scan_done') {
-            console.log('[inbox_watch] 收件箱扫描完毕（触底/达上限），结束本轮守箱');
-            completeChatRound('inbox_scan_done');
-            return;
-        }
-        if (isChatDailyCapReached()) {
-            completeChatRound('chat_daily_cap');
-            return;
-        }
-        if (isInboxCapReached()) {
-            console.log('[inbox_watch] inbox 日帽已满，交回调度');
-            completeChatRound('inbox_cap');
-            return;
-        }
-        var started = parseInt(sessionStorage.getItem('dan_inbox_watch_started_at') || '0', 10) || 0;
-        if (!started) {
-            started = Date.now();
-            sessionStorage.setItem('dan_inbox_watch_started_at', String(started));
-            console.log('[诊断] inbox_watch_start actionableAd=' + countAdDebt() + ' actionableKick=' + countKickDebt() + ' detect=' + mailSrc);
-            reportChatMetric('inbox_watch_start', { ad_debt: countAdDebt(), kick_debt: countKickDebt(), detect: mailSrc });
-        }
-        // 登记未封口 / 队列仍有 open / 正在开人：禁止用「DB 无债」提前交回调度（会跳回粉丝页）
-        try {
-            var iqGate = loadInboxTaskQueue();
-            var listPass = sessionStorage.getItem('dan_inbox_list_pass_done') === '1';
-            var openingGate = normalizeChatHandle(sessionStorage.getItem('dan_inbox_opening') || '');
-            if (openingGate || inboxQueueHasOpenWork() || (iqGate && !iqGate.sealed && !listPass)) {
-                console.log('[inbox_watch] 脉冲未完成，续扫 sealed=' + !!(iqGate && iqGate.sealed) + ' pass=' + listPass + ' opening=' + openingGate);
-                showToast('📬 守箱扫描中…', '#1d9bf0', 1200);
-                try { noteChatProgress('inbox_resume_wait'); } catch (eNpR) {}
-                // 必须自调度：否则 clear 后空队列会干等直到下个主循环（或永远卡 toast）
-                if (sessionStorage.getItem('dan_inbox_resume_timer') !== '1') {
-                    sessionStorage.setItem('dan_inbox_resume_timer', '1');
-                    setTimeout(function () {
-                        sessionStorage.removeItem('dan_inbox_resume_timer');
-                        if (sessionStorage.getItem('dan_auto_run') === 'true') runInboxWatchTick();
-                    }, 1800);
-                }
-                return;
-            }
-        } catch (eGate) {}
-        var debts = pickDebtTargetsFromDB();
-        if (!debts.length) {
-            console.log('[inbox_watch] 无可处理债，结束本轮');
-            try {
-                if (typeof SgTelemetry !== 'undefined') SgTelemetry.emit('chat.inbox_no_actionable_debt', { raw_ad: countRawAdDebt(), raw_kick: countRawKickDebt() });
-            } catch (eEmit) {}
-            completeChatRound('inbox_no_actionable_debt');
-            return;
-        }
-        // 行优先扫描已由 tryOpenInboxDebtFromDOM 完成（命中即开 / 下滑有界续扫 / 触底即结束），此处仅记录守箱状态
-        sessionStorage.setItem('dan_inbox_dom_miss', '0');
-        showToast('📬 守箱扫描中…', '#1d9bf0', 1200);
-    }
 
     // 扫描当前页所有可见粉丝 → 加入目标数据库
     function syncFanScan() {
@@ -6019,6 +4505,48 @@
         return null;
     }
 
+    // ==================== 4.6.33 几何+DNA 混合分类 ====================
+
+    /**
+     * 几何判定：消息气泡在会话容器中的水平位置 → own(右) / peer(左) / unknown。
+     * X DM：我方气泡右对齐，对方左对齐。用叶子中心的 X 坐标与容器中心比较。
+     * 死区 ±3%（最小 15px）内的判定为 unknown（居中系统消息等）。
+     */
+    function classifyDmLeafGeometry(leaf) {
+        if (!leaf || !leaf.getBoundingClientRect) return 'unknown';
+        try {
+            var rect = leaf.getBoundingClientRect();
+            if (!rect || rect.width === 0 || rect.height === 0) return 'unknown';
+            var root = null;
+            try { root = __getDmMessageListRoot(); } catch (eR) {}
+            if (!root) { try { root = getDmMessageScanRoot(); } catch (eS) {} }
+            if (!root || !root.getBoundingClientRect) return 'unknown';
+            var rootRect = root.getBoundingClientRect();
+            if (!rootRect || rootRect.width < 100) return 'unknown';
+            var leafCX = rect.left + rect.width / 2;
+            var rootCX = rootRect.left + rootRect.width / 2;
+            var dead = Math.max(15, rootRect.width * 0.03);
+            if (leafCX > rootCX + dead) return 'own';
+            if (leafCX < rootCX - dead) return 'peer';
+            return 'unknown';
+        } catch (e) { return 'unknown'; }
+    }
+
+    /**
+     * 混合分类：几何优先，DNA（话术池）兜底。
+     * 几何右 → own（即使话术池不匹配——可能是新话术未入池）
+     * 几何左 → peer（即使文本像话术——对方可能引用/撞车）
+     * 几何不明 → DNA 判定（isLinkShellText || isOwnScriptText）
+     */
+    function classifyDmMessageOwnPeer(text, leaf) {
+        var geo = classifyDmLeafGeometry(leaf);
+        if (geo === 'own') return 'own';
+        if (geo === 'peer') return 'peer';
+        var handle = '';
+        try { handle = normalizeChatHandle(sessionStorage.getItem('current_target') || '') || ''; } catch (eH) {}
+        return (isLinkShellText(text) || isOwnScriptText(text, handle)) ? 'own' : 'peer';
+    }
+
     function collectPeerDmMessages() {
         var scanRoot = getDmMessageScanRoot();
         var seen = {};
@@ -6049,7 +4577,9 @@
             var peerHandle = '';
             try { peerHandle = normalizeChatHandle(sessionStorage.getItem('current_target') || '') || ''; } catch (ePh) {}
             if (isDmChromeNoise(raw, peerHandle)) return;
-            if (isLinkShellText(raw) || isOwnScriptText(raw, peerHandle)) return;
+            // 4.6.33：几何优先 + DNA 兜底——右对齐必 own（新话术未入池也跳过），
+            // 左对齐必 peer（撞车前缀/链接误判不再漏掉对方回复）
+            if (classifyDmMessageOwnPeer(raw, leaf) === 'own') return;
             if (seen[raw]) return;
             seen[raw] = 1;
             out.push({ text: raw, source: leaf, entry: entry || findDmMessageEntry(leaf) || leaf, isReply: true });
@@ -6186,7 +4716,6 @@
             saveTargetDB: saveTargetDB,
             ensureChatFreeze: ensureChatFreeze,
             getDB: getDB,
-            getInboxDoneList: getInboxDoneList,
             isChatTargetAllowed: isChatTargetAllowed,
             canProbeInboxTarget: canProbeInboxTarget,
             canSendKickNow: canSendKickNow,
@@ -6700,6 +5229,9 @@
         try { loadScripts(); } catch (eCfg) {}
     });
 
+    // ====== 跨 tab 私信重置广播：监听唯一归属 A2（scheduler-core.js），见 §X A2↔C2 ======
+    // 本文件不再挂 sg_reset_chat_seq 监听，避免双份清理+双 toast 维护分叉（4.6.30）。
+
     // ========== 【DNA 关键词已从话术系统自动提取】 ==========
     const MAX_DB_SIZE = 8000;
 
@@ -6742,16 +5274,6 @@
         var softFive = !!opts.softFivePhase;
         var softPass = parseInt(opts.softPass, 10) || 0;
         try {
-            var pulseSnap = getInboxScanPulseStats();
-            var hasPulse = !!(pulseSnap.opened || pulseSnap.unread_dom || pulseSnap.unread_visual
-                || pulseSnap.debt_matched || pulseSnap.adopt_miss_reason || pulseSnap.urgent);
-            var inboxExit = reason === 'inbox_scan_done' || reason === 'inbox_visit_cap'
-                || reason === 'inbox_no_actionable_debt' || reason === 'inbox_cap' || reason === 'chat_daily_cap';
-            if (inboxExit || hasPulse) {
-                emitInboxScanVerdict(reason);
-            }
-        } catch (eVerdict) {}
-        try {
             reportDmHealthEvent('DM_ROUND_END', {
                 reason: reason,
                 severity: (reason === 'queue_empty' || reason === 'bottom_reached') ? 'warn' : 'info'
@@ -6761,65 +5283,9 @@
         console.log('[私信列表序] 本轮完成 reason=' + reason);
         sessionStorage.setItem('dan_scroll_fail_count', '0');
         sessionStorage.setItem('dan_bottom_hit_count', '0');
-        sessionStorage.removeItem('dan_inbox_watch_started_at');
-        sessionStorage.removeItem('dan_inbox_visit_started_at');
-        sessionStorage.removeItem('dan_inbox_opening');
         sessionStorage.removeItem('dan_ops_round_refreshed_this_round');
         sessionStorage.setItem('dan_auto_run', 'false');
-        try {
-            var endQ = loadInboxTaskQueue();
-            var endSt = inboxQueueStats(endQ);
-            var pulseEndSnap = getInboxScanPulseStats();
-            var unreadLeftEnd = (Number(pulseEndSnap.unread_dom) || 0) + (Number(pulseEndSnap.unread_visual) || 0);
-            setInboxPhase('done');
-            var leaseIntent = 'inbox';
-            var leasePulse = endQ.pulseId || '';
-            try {
-                var leaseEnd = JSON.parse(sessionStorage.getItem(CHAT_LEASE_KEY) || 'null');
-                if (leaseEnd && leaseEnd.intent) leaseIntent = leaseEnd.intent;
-                if (leaseEnd && leaseEnd.pulseId) leasePulse = leaseEnd.pulseId;
-            } catch (eLi) {}
-            try {
-                if (!leasePulse) leasePulse = sessionStorage.getItem('dan_inbox_queue_pulse') || '';
-            } catch (eLp) {}
-            var chatPhaseEnd = '';
-            try { chatPhaseEnd = getChatPhase(); } catch (eCp) {}
-            // 破冰 outbound 不宣称守箱 plan/progress；仍发 complete，intent 标明以便 OPS 不误判断环
-            if (typeof SgTelemetry !== 'undefined') {
-                if (chatPhaseEnd === 'inbox' || leaseIntent === 'inbox') {
-                    SgTelemetry.emit('chat.round_result', {
-                        pulseId: leasePulse || endQ.pulseId || '',
-                        intent: 'inbox',
-                        reason: reason || '',
-                        pending: endSt.pending,
-                        doing: endSt.doing,
-                        done: endSt.done,
-                        skipped: endSt.skipped,
-                        deferred: endSt.deferred,
-                        opened: pulseEndSnap.opened || 0,
-                        unread_left: unreadLeftEnd,
-                        phase: chatPhaseEnd
-                    });
-                }
-                SgTelemetry.emit('scheduler.round_complete', {
-                    module: 'chat',
-                    pulseId: leasePulse || endQ.pulseId || '',
-                    intent: leaseIntent || (chatPhaseEnd === 'inbox' ? 'inbox' : 'outbound'),
-                    reason: reason || '',
-                    phase: chatPhaseEnd
-                });
-            }
-            // 残留名单 / 未读未开：保留 roster 供下一租约消费；仅全空才 force clear
-            var residual = (endSt.pending + endSt.doing + endSt.deferred) > 0;
-            var unreadHold = unreadLeftEnd > 0 && (Number(pulseEndSnap.opened) || 0) <= 0;
-            if (residual || unreadHold) {
-                mirrorInboxRoster(endQ);
-                setInboxPhase(residual ? 'sealed' : 'done');
-            } else {
-                clearInboxTaskQueue('round_done');
-            }
-            clearChatLeaseLocal();
-        } catch (eRes) {}
+        clearChatLeaseLocal();
         try {
             var cfgIv = getChatIntervalCfg();
             var coolMin;
@@ -6830,8 +5296,8 @@
             // 五段软风控 / 4.1.38：废除 25–35 分长冷却；节流靠关注+填窗。清债仅极短防连开
             if (softFive) {
                 coolMin = 0;
-            } else if (pendingReply || pendingKick || reason === 'inbox_visit_cap' || reason === 'inbox_no_actionable_debt' || reason === 'inbox_scan_done') {
-                coolMin = (pendingReply || pendingKick) ? 1 : 0;
+            } else if (pendingReply || pendingKick) {
+                coolMin = 1;
             } else {
                 coolMin = 0;
             }
@@ -6886,28 +5352,9 @@
                             }
                         } catch (eMk2) {}
                     } else {
-                        var pulseEnd = getInboxScanPulseStats();
-                        var unreadLeft = (Number(pulseEnd.unread_dom) || 0) + (Number(pulseEnd.unread_visual) || 0);
-                        var openedN = Number(pulseEnd.opened) || 0;
-                        sessionStorage.setItem('sg_soft_risk_pulse_ran', '1');
-                        if (unreadLeft > 0 && openedN <= 0) {
-                            sessionStorage.setItem('sg_soft_risk_pulse_reason', 'saw_unread_unresolved');
-                            st.softRiskOutboundDone = true;
-                            try {
-                                if (typeof SgTelemetry !== 'undefined') {
-                                    SgTelemetry.emit('scheduler.soft_pulse_unread_block_done', {
-                                        reason: reason || '',
-                                        unread_dom: pulseEnd.unread_dom || 0,
-                                        unread_visual: pulseEnd.unread_visual || 0
-                                    });
-                                }
-                            } catch (eBlk) {}
-                            console.warn('[私信] 扫箱未读未开，暂不 chatDone reason=' + reason);
-                        } else {
-                            sessionStorage.setItem('sg_soft_risk_pulse_reason', String(reason || ''));
-                            st.softRiskChatDone = true;
-                            st.softRiskOutboundDone = true;
-                        }
+                        sessionStorage.setItem('sg_soft_risk_pulse_reason', String(reason || ''));
+                        st.softRiskChatDone = true;
+                        st.softRiskOutboundDone = true;
                     }
                 }
             } catch (ePulse) {}
@@ -7082,11 +5529,15 @@
     const toast = document.createElement('div');
     toast.id = 'auto-dm-toast';
     if (document.body) document.body.appendChild(toast);
+    var __dmToastTok = 0;
     function showToast(msg, color = '#1d9bf0', time = 2500) {
+        // 4.6.34：代次令牌——旧 timeout 不得藏掉新横幅
+        var myTok = (++__dmToastTok);
         toast.innerText = msg;
         toast.style.background = color;
         toast.style.display = 'block';
-        setTimeout(() => {
+        setTimeout(function () {
+            if (myTok !== __dmToastTok) return;
             if (toast && toast.parentNode) {
                 toast.style.display = 'none';
             }
@@ -8768,6 +7219,65 @@
     }
 
     /**
+     * 清理超过 N 小时未回复的目标，避免挤占队列空间。
+     * 触发时机：私信启动时每日一次。
+     * 规则：round=1 或 round=2，未 done，lastDM 超过 staleMs → 拉黑。
+     */
+    function pruneStaleNoReply(staleMs, maxPerRun) {
+        staleMs = Number(staleMs) || 48 * 60 * 60 * 1000;
+        maxPerRun = Number(maxPerRun) || 200;
+        var now = Date.now();
+        var pruned = 0;
+        var db;
+        try {
+            db = loadTargetDB();
+        } catch (eDb) { return 0; }
+        if (!db || typeof db !== 'object') return 0;
+        var handles = Object.keys(db);
+        for (var i = 0; i < handles.length && pruned < maxPerRun; i++) {
+            try {
+                var h = handles[i];
+                var entry = db[h];
+                if (!entry || typeof entry !== 'object') continue;
+                if (entry.done) continue;
+                if (entry.blockedAt) continue;
+                var r = Number(entry.round) || 0;
+                if (r < 1) continue; // 没发过私信的不处理
+                if (r >= 3) continue; // 已到最高轮次的也不处理
+                var lastDm = Number(entry.lastDM) || Number(entry.iceSentAt) || 0;
+                if (!lastDm) continue;
+                if (now - lastDm < staleMs) continue;
+                // 超过 N 小时未回复 → 拉黑
+                markPeerBlocked(h, 'stale_' + Math.round(staleMs / 3600000) + 'h_no_reply');
+                pruned++;
+            } catch (ePr) {}
+        }
+        if (pruned > 0) {
+            console.log('[私信] 清理 ' + pruned + ' 个 ' + Math.round(staleMs / 3600000) + 'h 未回复目标');
+            try { showToast('🧹 清理 ' + pruned + ' 个超时未回复目标', '#1d9bf0', 2000); } catch (eT) {}
+        }
+        return pruned;
+    }
+
+    function pruneStaleIfNeeded() {
+        var STALE_MS = 48 * 60 * 60 * 1000;
+        var PRUNE_KEY = 'dan_stale_prune_day';
+        var today = '';
+        try {
+            today = new Date().toISOString().slice(0, 10);
+            var last = localStorage.getItem(PRUNE_KEY) || '';
+            if (last === today) return 0;
+            localStorage.setItem(PRUNE_KEY, today);
+        } catch (eK) { return 0; }
+        try {
+            return pruneStaleNoReply(STALE_MS, 300);
+        } catch (e) {
+            console.warn('[私信] 清理超时目标失败', e);
+            return 0;
+        }
+    }
+
+    /**
      * 无法私信（无输入框 / Use X Number 硬门）→ 永久拉黑 + 队列 skipped，本趟立刻走人，禁止再点进。
      */
     function finalizeUnsendablePeer(handle, reason) {
@@ -8933,14 +7443,33 @@
         if (!root) return turns;
         var handle = '';
         try { handle = normalizeChatHandle(sessionStorage.getItem('current_target') || '') || ''; } catch (eH) {}
-        // 按 DOM 顺序取可见文本行（含时间戳行作切界）
-        var raw = '';
-        try { raw = String(root.innerText || root.textContent || '').replace(/\r/g, '\n'); } catch (eT) { raw = ''; }
-        var lines = raw.split('\n');
-        for (var i = 0; i < lines.length; i++) {
-            var line = String(lines[i] || '').replace(/\s+/g, ' ').trim();
+        // 4.6.33：递归遍历 DOM 同时抓消息叶子（几何分类）和时间戳行（切轮）
+        // innerText 行流丢失几何位置；纯叶子选择器丢时间戳——递归遍历兼得
+        var items = [];
+        try {
+            var walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, null);
+            var node;
+            while (node = walker.nextNode()) {
+                if (isDmComposerNode(node)) continue;
+                var tid = String((node.getAttribute && node.getAttribute('data-testid')) || '');
+                // 消息叶子
+                if (/^message-text-/i.test(tid) || tid === 'messageText') {
+                    var msgText = getDmMessageText(node);
+                    if (msgText) items.push({ text: msgText, leaf: node, isTime: false });
+                    continue;
+                }
+                // 时间戳行：textContent 短且匹配时间戳模式
+                var tc = String(node.textContent || '').replace(/\s+/g, ' ').trim();
+                if (tc && tc.length < 40 && isDmTimestampLine(tc)) {
+                    items.push({ text: tc, leaf: null, isTime: true });
+                }
+            }
+        } catch (eScan) {}
+        if (!items.length) return turns;
+        for (var i = 0; i < items.length; i++) {
+            var line = String(items[i].text || '').replace(/\s+/g, ' ').trim();
             if (!line) continue;
-            if (isDmTimestampLine(line)) {
+            if (items[i].isTime) {
                 cur.time = line;
                 flush();
                 continue;
@@ -8952,7 +7481,9 @@
             } catch (eN) {}
             if (line.length > 280) continue;
             cur.all.push(line);
-            if (isLinkShellText(line) || isOwnScriptText(line, handle)) cur.own.push(line);
+            // 4.6.33：几何+DNA 混合分类
+            var kind = classifyDmMessageOwnPeer(line, items[i].leaf);
+            if (kind === 'own') cur.own.push(line);
             else cur.peer.push(line);
         }
         flush();
@@ -8983,40 +7514,44 @@
             });
         }
 
-        // A) 正文流：最后我方行之后的 peer（修「同轮无时间戳切开 → afterIce 空」）
+        // A) DOM 叶子流（4.6.33）：几何+DNA 混合分类，最后一条 own 叶子之后的 peer
+        //    替代 innerText 行流——innerText 丢失几何位置，话术撞车/引用会误判 own
         try {
-            var root = null;
-            try { root = __getDmMessageListRoot(); } catch (eR) { root = null; }
-            if (!root) {
-                try { root = getDmMessageScanRoot(); } catch (eS) { root = null; }
+            var rootA = null;
+            try { rootA = __getDmMessageListRoot(); } catch (eR) { rootA = null; }
+            if (!rootA) {
+                try { rootA = getDmMessageScanRoot(); } catch (eS) { rootA = null; }
             }
-            if (root) {
-                var raw = String(root.innerText || root.textContent || '').replace(/\r/g, '\n');
-                var lines = raw.split('\n');
+            if (rootA) {
+                var textLeaves = rootA.querySelectorAll('[data-testid^="message-text-"], [data-testid="messageText"]');
                 var lastOwnIdx = -1;
                 var classified = [];
-                for (var i = 0; i < lines.length; i++) {
-                    var line = String(lines[i] || '').replace(/\s+/g, ' ').trim();
-                    if (!line || line.length > 280) continue;
-                    if (isDmTimestampLine(line)) {
-                        classified.push({ kind: 'time', text: line });
-                        continue;
-                    }
+                for (var i = 0; i < textLeaves.length; i++) {
+                    var leaf = textLeaves[i];
+                    if (!leaf || isDmComposerNode(leaf)) continue;
+                    var text = getDmMessageText(leaf);
+                    if (!text || text.length > 280) continue;
                     try {
-                        if (isProfileUiLine(line) || isDmIdentityNoise(line, handle)) continue;
-                        if (/^(已读|Read|送达|Delivered|发送失败|Failed to send|无法送达|Message not delivered|Unencrypted|Encrypted)$/i.test(line)) continue;
+                        if (isProfileUiLine(text) || isDmIdentityNoise(text, handle)) continue;
+                        if (/^(已读|Read|送达|Delivered|发送失败|Failed to send|无法送达|Message not delivered|Unencrypted|Encrypted)$/i.test(text)) continue;
                     } catch (eN) {}
-                    if (isLinkShellText(line) || isOwnScriptText(line, handle)) {
-                        classified.push({ kind: 'own', text: line });
-                        lastOwnIdx = classified.length - 1;
-                    } else {
-                        classified.push({ kind: 'peer', text: line });
-                    }
+                    var kind = classifyDmMessageOwnPeer(text, leaf);
+                    classified.push({ kind: kind, text: text });
+                    if (kind === 'own') lastOwnIdx = classified.length - 1;
                 }
                 if (lastOwnIdx >= 0) {
                     for (var j = lastOwnIdx + 1; j < classified.length; j++) {
                         if (classified[j].kind === 'peer') pushPeer(classified[j].text, '');
                     }
+                } else {
+                    // 4.6.32 §C3-7 边界缺失上报
+                    try {
+                        var peerCnt = 0;
+                        for (var pc = 0; pc < classified.length; pc++) { if (classified[pc].kind === 'peer') peerCnt++; }
+                        if (peerCnt > 0) {
+                            reportChatMetric('chat.ice_boundary_missing', { target: handle, peer_lines: peerCnt, lines: classified.length });
+                        }
+                    } catch (eBm) {}
                 }
             }
         } catch (eStream) {}
@@ -9097,7 +7632,14 @@
             seen[rawLine] = 1;
             all.push(rawLine);
             var sig = __ownBubbleSignature(rawLine);
-            if (isLinkShellText(rawLine) || isOwnScriptText(rawLine, handle)) own.push(sig);
+            // 4.6.34：叶子回落与 C3 几何+DNA 同源，避免确认路径仍纯 DNA 假阴性
+            var kindFb = 'unknown';
+            try { kindFb = classifyDmMessageOwnPeer(rawLine, leaf); } catch (eKind) {
+                kindFb = (isLinkShellText(rawLine) || isOwnScriptText(rawLine, handle)) ? 'own' : 'peer';
+            }
+            if (kindFb === 'own') own.push(sig);
+            else if (kindFb === 'peer') peer.push(sig);
+            else if (isLinkShellText(rawLine) || isOwnScriptText(rawLine, handle)) own.push(sig);
             else peer.push(sig);
         }
         return { own: own, peer: peer, all: all, turns: [], latest: null };
@@ -9165,11 +7707,21 @@
                 needles = needles.concat(__msgNeedleVariants(sentNorm));
             }
         } catch (eSn) {}
+        // 4.6.28：写入方式改一次性粘贴（模拟真人 Ctrl+V）
+        // 弃用旧的 execCommand/setter/textContent，减少事件数，降低被检测概率
+        // 4.6.30：粘贴前必须清空（上次发送失败的残留会与本次粘贴拼接成双倍正文）；
+        // 核对改 trim 后全等——粘贴只有全成/全败，无中间态（§C5 写入不变量）
+        function __dmNormTxt(s) { return ((s || '') + '').replace(/\r\n?/g, '\n').trim(); }
+        var wantText = __dmNormTxt(text);
+        var fillOk = false;
+        var fillReason = '';
         try {
             inputElement.click();
             inputElement.focus();
+            await __dmSleep(300 + Math.floor(Math.random() * 300));
             var isTextarea = inputElement.tagName === 'TEXTAREA' || inputElement.value !== undefined;
             if (isTextarea) {
+                // textarea：先清空再粘贴
                 try {
                     var proto = inputElement.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
                     var setter = Object.getOwnPropertyDescriptor(proto, 'value');
@@ -9180,24 +7732,64 @@
                 }
                 inputElement.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
                 inputElement.dispatchEvent(new Event('change', { bubbles: true }));
+                fillOk = __dmNormTxt(inputElement.value) === wantText;
+                fillReason = fillOk ? 'textarea_setter' : 'textarea_value_mismatch';
             } else {
-                var sel = window.getSelection();
-                var range = document.createRange();
-                range.selectNodeContents(inputElement);
-                range.collapse(false);
-                sel.removeAllRanges();
-                sel.addRange(range);
-                var inserted = document.execCommand('insertText', false, text);
-                if (!inserted) {
-                    inputElement.textContent = text;
-                    inputElement.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+                // contenteditable：一次性粘贴（模拟 Ctrl+V）
+                // 4.6.30：先清空（selectAll+delete）再粘贴
+                try {
+                    inputElement.focus();
+                    document.execCommand('selectAll', false);
+                    document.execCommand('delete', false);
+                } catch (_) {}
+                await __dmSleep(200);
+                try {
+                    var dt = new DataTransfer();
+                    dt.setData('text/plain', text);
+                    inputElement.dispatchEvent(new ClipboardEvent('paste', {
+                        clipboardData: dt,
+                        bubbles: true,
+                        cancelable: true
+                    }));
+                } catch (ePaste) {
+                    // 兜底：execCommand
+                    try { document.execCommand('insertText', false, text); } catch (_) {}
+                }
+                // 核对：读 innerText，trim 后全等
+                var got = ((inputElement.innerText || inputElement.textContent || '') + '').trim();
+                fillOk = __dmNormTxt(got) === wantText;
+                fillReason = fillOk ? 'paste_ok_' + got.length + '字' : 'paste_mismatch_got_' + got.length + '字';
+                // 不匹配时重试一次
+                if (!fillOk) {
+                    try {
+                        document.execCommand('selectAll', false);
+                        document.execCommand('delete', false);
+                    } catch (_) {}
+                    await __dmSleep(200);
+                    try {
+                        var dt2 = new DataTransfer();
+                        dt2.setData('text/plain', text);
+                        inputElement.dispatchEvent(new ClipboardEvent('paste', {
+                            clipboardData: dt2,
+                            bubbles: true,
+                            cancelable: true
+                        }));
+                    } catch (_) {
+                        try { document.execCommand('insertText', false, text); } catch (_) {}
+                    }
+                    var got2 = ((inputElement.innerText || inputElement.textContent || '') + '').trim();
+                    fillOk = __dmNormTxt(got2) === wantText;
+                    fillReason = fillOk ? 'paste_retry_ok_' + got2.length + '字' : 'paste_retry_fail_got_' + got2.length + '字';
                 }
             }
         } catch (eFill) {
-            return { ok: false, reason: 'fill_failed' };
+            fillReason = 'fill_exception:' + eFill.message;
         }
+        console.log('[私信发送] 写入核对：' + fillReason + ' 目标=' + text.length + '字');
+        if (!fillOk) return { ok: false, reason: 'fill_failed:' + fillReason };
 
-        await __dmSleep(800);
+        // 4.6.34：发送前多等 Lexical reconciliation（1.8–2.5s）
+        await __dmSleep(1800 + Math.floor(Math.random() * 700));
         var beforeBodies = __collectDmBodyTexts();
         var beforeOwn = beforeBodies.own;
         var beforeAll = beforeBodies.all.slice();
@@ -9207,13 +7799,29 @@
         }
         try {
             var sendBtn = null;
-            for (var w = 0; w < 4; w++) {
+            for (var w = 0; w < 6; w++) {
                 sendBtn = findDmSendButton();
                 if (sendBtn && !sendBtn.disabled) break;
-                await __dmSleep(500);
+                await __dmSleep(600);
             }
-            if (sendBtn && !sendBtn.disabled) sendBtn.click();
-            else {
+            console.log('[私信发送] 发送按钮状态：' + (sendBtn ? (sendBtn.disabled ? '禁用' : '可用') : '未找到'));
+            if (sendBtn && !sendBtn.disabled) {
+                // 4.6.34：优先 humanClick（对齐关注/转帖），失败再原生 click / Enter
+                var clicked = false;
+                try {
+                    if (typeof EngineUtils !== 'undefined' && EngineUtils.humanClick) {
+                        clicked = !!(await EngineUtils.humanClick(sendBtn));
+                    }
+                } catch (eHc) { clicked = false; }
+                if (!clicked) {
+                    try { sendBtn.click(); clicked = true; } catch (eNc) { clicked = false; }
+                }
+                if (!clicked) {
+                    inputElement.dispatchEvent(new KeyboardEvent('keydown', {
+                        bubbles: true, cancelable: true, key: 'Enter', code: 'Enter', keyCode: 13
+                    }));
+                }
+            } else {
                 inputElement.dispatchEvent(new KeyboardEvent('keydown', {
                     bubbles: true, cancelable: true, key: 'Enter', code: 'Enter', keyCode: 13
                 }));
@@ -9250,29 +7858,37 @@
             return null;
         }
 
-        for (var i = 0; i < 24; i++) {
-            await __dmSleep(500);
+        // 4.6.28：确认等待拉长（24次→30次，500ms→700ms），给气泡渲染更多时间
+        for (var i = 0; i < 30; i++) {
+            await __dmSleep(700);
             var hit = confirmTick();
-            if (hit) return hit;
+            if (hit) {
+                console.log('[私信发送] 发送确认成功：' + hit.reason + '（第' + (i+1) + '次检测）');
+                return hit;
+            }
         }
-        await __dmSleep(600);
+        await __dmSleep(800);
         var late = confirmTick();
         if (late) {
             late.reason = (late.reason || 'body') + '_late';
+            console.log('[私信发送] 发送确认成功（延迟）：' + late.reason);
             return late;
         }
         // 绝对：会话里已有命中本条/话术池的正文
         try {
             var nowBodies = __collectDmBodyTexts();
             if (__bodiesMatchNeedles(nowBodies.all, needles) || __ownBubblesMatchNeedles(nowBodies.own, needles)) {
+                console.log('[私信发送] 发送确认成功（绝对匹配）');
                 return { ok: true, reason: 'body_absolute' };
             }
             for (var aj = 0; aj < needles.length; aj++) {
                 if (__countNeedleInDmMessages(needles[aj]) > 0) {
+                    console.log('[私信发送] 发送确认成功（针绝对匹配）');
                     return { ok: true, reason: 'needle_absolute' };
                 }
             }
         } catch (eAbs) {}
+        console.log('[私信发送] 发送确认失败：no_bubble（30次检测均未发现新气泡）');
         return { ok: false, reason: 'no_bubble' };
     }
 
@@ -9314,16 +7930,6 @@
     window.__sgChatMainEngineTick = function () {
         var isRunning = sessionStorage.getItem('dan_auto_run') === 'true';
         if (!isRunning) {
-            // 守箱开人未完成时禁止静默灭自动导致 step 永不上
-            try {
-                var openingGuard = sessionStorage.getItem('dan_inbox_opening') || '';
-                var phGuard = '';
-                try { phGuard = getInboxPhase(); } catch (ePhG) {}
-                if (openingGuard && (phGuard === 'executing' || phGuard === 'sealed' || isDmConversationPage() || isDmConversationView())) {
-                    ensureInboxCruiseAlive('main_loop_opening_guard');
-                    isRunning = sessionStorage.getItem('dan_auto_run') === 'true';
-                }
-            } catch (eGuard) {}
             if (!isRunning) return;
         }
 
@@ -9488,37 +8094,6 @@
                     runFollowupQueueTick();
                     return;
                 }
-                try { clearStaleInboxOpeningIfOnList('main_loop'); } catch (eStale) {}
-                // 已点开目标：先武装 step2（身份正向证明），禁止对着残留窗盲扫
-                try {
-                    if (tryArmInboxStep2()) return;
-                    var openingNow = sessionStorage.getItem('dan_inbox_opening');
-                    var ctNow = sessionStorage.getItem('current_target');
-                    if (openingNow && ctNow && openingNow === ctNow && (isDmConversationPage() || isDmConversationView())) {
-                        // identity_pending：静默等待，不跑列表扫描；刷新健康计时防误跳粉丝页
-                        try { sessionStorage.setItem('dan_last_healthy_time', Date.now().toString()); } catch (eHt) {}
-                        try { noteChatProgress('identity_pending'); } catch (eNp) {}
-                        return;
-                    }
-                } catch (eArm) {}
-                // 会话视图但 opening 空：若仍有 current_target，先回填并 arm，禁止误退列表
-                try {
-                    if ((isDmConversationPage() || isDmConversationView()) && !sessionStorage.getItem('dan_inbox_opening')) {
-                        var ctStuck = normalizeChatHandle(sessionStorage.getItem('current_target') || '');
-                        if (ctStuck) {
-                            sessionStorage.setItem('dan_inbox_opening', ctStuck);
-                            sessionStorage.setItem('dan_inbox_opening_at', String(Date.now()));
-                            ensureInboxCruiseAlive('conv_missing_opening');
-                            if (tryArmInboxStep2()) return;
-                            try { sessionStorage.setItem('dan_last_healthy_time', Date.now().toString()); } catch (eHt2) {}
-                            return;
-                        }
-                        ensureInboxListRootView();
-                        return;
-                    }
-                } catch (eRoot3) {}
-                runInboxWatchTick();
-                return;
             }
             if (!isFollowersListPath(window.location.href)) {
                 if (sessionStorage.getItem('dan_auto_step') && !isMessagesPage()) {
@@ -9607,13 +8182,16 @@
                 return;
             }
 
-            // 赶工窗：目标与目标之间强制间隔，避免 17 点连点爆发
-            if (isChatRushMode()) {
-                var rushPaceUntil = parseInt(sessionStorage.getItem('dan_rush_next_target_at') || '0', 10) || 0;
-                if (Date.now() < rushPaceUntil) {
-                    var leftSec = Math.ceil((rushPaceUntil - Date.now()) / 1000);
-                    if (leftSec % 15 === 0 || leftSec <= 3) {
-                        showToast('赶工匀速中，下一人 ' + leftSec + 's…', '#faad14', 1200);
+            // 4.6.34：人间间隔（非 rush 也生效；rush 更长）。防握手未完成就被下一人带走
+            {
+                var paceUntil = parseInt(sessionStorage.getItem('dan_next_target_at') || '0', 10) || 0;
+                try {
+                    if (!paceUntil) paceUntil = parseInt(sessionStorage.getItem('dan_rush_next_target_at') || '0', 10) || 0;
+                } catch (ePaceLegacy) {}
+                if (Date.now() < paceUntil) {
+                    var leftSec = Math.ceil((paceUntil - Date.now()) / 1000);
+                    if (leftSec % 10 === 0 || leftSec <= 3) {
+                        showToast((isChatRushMode() ? '赶工匀速中' : '匀速中') + '，下一人 ' + leftSec + 's…', '#faad14', 1200);
                     }
                     return;
                 }
@@ -9746,13 +8324,23 @@
                 if (typeof TimeUtil !== 'undefined' && TimeUtil.isPastChatFreeze) pastFreezePick = !!TimeUtil.isPastChatFreeze();
                 else {
                     var pp = (typeof TimeUtil !== 'undefined' && TimeUtil.shanghaiParts) ? TimeUtil.shanghaiParts() : null;
-                    pastFreezePick = !!(pp && pp.minutes >= 17 * 60);
+                    var fzMinFb = 17 * 60;
+                    try {
+                        if (typeof TimeUtil !== 'undefined' && TimeUtil.chatFreezeMinutes) fzMinFb = TimeUtil.chatFreezeMinutes();
+                    } catch (eFzFb) {}
+                    pastFreezePick = !!(pp && pp.minutes >= fzMinFb);
                 }
                 if (pastFreezePick && stNow.pending === 0 && baselineOk && harvestPasses >= 1) {
                     var lastFzToast = parseInt(sessionStorage.getItem('dan_freeze_toast_at') || '0', 10) || 0;
                     if (Date.now() - lastFzToast > 90000) {
                         sessionStorage.setItem('dan_freeze_toast_at', String(Date.now()));
-                        showToast('🔒 17点定格：今日不破冰新粉（仅清未完成债）', '#faad14', 2800);
+                        var freezeToastH = 17;
+                        try {
+                            if (typeof TimeUtil !== 'undefined' && TimeUtil.chatFreezeMinutes) {
+                                freezeToastH = Math.floor(TimeUtil.chatFreezeMinutes() / 60) || 17;
+                            }
+                        } catch (eFzT) {}
+                        showToast('🔒 ' + freezeToastH + '点定格：今日不破冰新粉（仅清未完成债）', '#faad14', 2800);
                         try {
                             if (typeof SgTelemetry !== 'undefined') {
                                 SgTelemetry.emit('chat.outbound_freeze_idle', { cells: cellCount });
@@ -9762,9 +8350,30 @@
                 }
             } catch (eFzToast) {}
 
-            // 4.3.10：有台账浅扫 — 回顶后只收当前可见屏即封口（新上旧下）；未完成债靠 DB 灌队，禁止再往下滚半天
+            // 4.6.28：有台账浅扫也对账 — 主页粉丝数 vs 台账总数 vs 队列总数，缺口告警
+            var shPF = 0;
+            try { shPF = readOwnFollowerCount() || 0; } catch (ePfSh) {}
+            var shDbTotal = 0;
+            try { shDbTotal = Object.keys(loadTargetDB() || {}).length; } catch (eDbSh) {}
             if (baselineOk && harvestPasses >= 1 && !iceQ.sealed) {
-                console.log('[私信列表序] 顶部浅扫封口 pending=' + stNow.pending + ' passes=' + harvestPasses + ' seen=' + cellCount);
+                console.log('[私信列表序] 顶部浅扫封口 pending=' + stNow.pending + ' passes=' + harvestPasses + ' seen=' + cellCount + ' 主页粉丝=' + shPF + ' 台账=' + shDbTotal + ' 缺口=' + (shPF > 0 && shDbTotal > 0 ? (shPF - shDbTotal) : 'N/A'));
+                if (shPF > 0 && shDbTotal > 0 && shDbTotal < shPF * 0.85) {
+                    console.warn('[粉丝对账] 浅扫缺口过大！主页=' + shPF + ' 台账=' + shDbTotal + ' 差=' + (shPF - shDbTotal));
+                    try {
+                        if (typeof SgTelemetry !== 'undefined') {
+                            SgTelemetry.emit('chat.fan_roster_gap', {
+                                cellsSeen: cellCount,
+                                queueTotal: stNow.total,
+                                gap: shPF - shDbTotal,
+                                profileFollowers: shPF,
+                                dbTotal: shDbTotal,
+                                profileGap: true,
+                                reason: 'shallow_gap',
+                                pulseId: (iceQ && iceQ.pulseId) || ''
+                            });
+                        }
+                    } catch (eEm2) {}
+                }
                 noteSoftOutboundResidual(stNow.pending, 'shallow_new_fans');
                 prepareAndSealIceQueue(stNow.pending > 0 ? 'shallow_new_fans' : 'shallow_empty', function () {
                     var stSeal = iceQueueStats();
@@ -9892,7 +8501,9 @@
                 sessionStorage.setItem('dan_wait_count', '0');
                 sessionStorage.setItem('dan_auto_step', '2');
                 sessionStorage.setItem('dan_chat_wait_time', '0');
-                setTimeout(() => { dmButton.click(); }, 600);
+                // 4.6.34：点 DM 前短 settle，给资料页/按钮态时间（1.2–2s）
+                var dmClickSettle = 1200 + Math.floor(Math.random() * 800);
+                setTimeout(function () { try { dmButton.click(); } catch (eDmClk) {} }, dmClickSettle);
             } else {
                 let failDMCount = parseInt(sessionStorage.getItem('dan_wait_count') || '0');
                 // 无 DM 按钮：最多再等 2 拍（防 SPA 未渲染），然后硬 skipped，禁止 doing 占坑反复进同一资料
@@ -9914,6 +8525,10 @@
         }
 
         if (currentStep === '2') {
+            // 4.6.34：已在发送/分析中则早退，禁止主循环并行重入 sendOneOrDump
+            try {
+                if (sessionStorage.getItem('dan_dm_inflight') === '1') return;
+            } catch (eInfEarly) {}
             const targetHandleEarly = sessionStorage.getItem('current_target');
             /** @param {{ skipInboxDone?: boolean }} [opts] */
             function finishTargetVisit(opts) {
@@ -9925,19 +8540,20 @@
                 }
                 sessionStorage.setItem('dan_mem_cleaner_count', (parseInt(sessionStorage.getItem('dan_mem_cleaner_count') || '0') + 1).toString());
                 sessionStorage.setItem('dan_auto_step', '4');
-                if (getChatPhase() === 'inbox') {
-                    if (!opts.skipInboxDone && th) addInboxDone(th);
-                    sessionStorage.removeItem('dan_inbox_opening');
-                    try {
-                        if (th) {
-                            if (opts.skipInboxDone) {
-                                inboxQueueMark(th, opts.queueStatus || 'skipped', opts.queueReason || 'deferred');
-                            } else {
-                                inboxQueueMark(th, 'done', opts.queueReason || 'visited');
-                            }
-                        }
-                    } catch (eInbQ) {}
-                } else if (th && (getChatPhase() === 'outbound' || getChatPhase() === 'followup')) {
+                try { sessionStorage.removeItem('dan_dm_inflight'); } catch (eInfClr) {}
+                // 4.6.34：离开会话前短 settle（1.2–2s），避免未反馈完就被回退带走
+                try {
+                    sessionStorage.setItem('dan_leave_settle_until', String(Date.now() + 1200 + Math.floor(Math.random() * 800)));
+                } catch (eLvSet) {}
+                // 4.6.34：人间间隔 25–40s（rush 仍 70–120s）
+                try {
+                    var gapMs = isChatRushMode()
+                        ? (70000 + Math.floor(Math.random() * 50000))
+                        : (25000 + Math.floor(Math.random() * 15000));
+                    sessionStorage.setItem('dan_next_target_at', String(Date.now() + gapMs));
+                    console.log('[私信] 下一人间隔 ' + Math.round(gapMs / 1000) + 's');
+                } catch (eGap) {}
+                if (th && (getChatPhase() === 'outbound' || getChatPhase() === 'followup')) {
                     // 一窗一遍：显式 deferred/skipped/failed 优先；发送路径已标终态则勿用 iceSentAt 盖成 done
                     try {
                         var entQ = loadTargetDB()[th] || {};
@@ -9962,11 +8578,6 @@
                             iceQueueMark(th, 'deferred', opts.queueReason || 'soft_leave');
                         }
                     } catch (eIq) {}
-                }
-                if (isChatRushMode()) {
-                    var gapMs = 70000 + Math.floor(Math.random() * 50000);
-                    sessionStorage.setItem('dan_rush_next_target_at', String(Date.now() + gapMs));
-                    console.log('[赶工] 下一人间隔 ' + Math.round(gapMs / 1000) + 's');
                 }
             }
 
@@ -10150,7 +8761,6 @@
                                 queueReason: 'identity_timeout'
                             });
                         } else {
-                            try { inboxQueueMark(targetHandle, 'skipped', 'identity_timeout'); } catch (eIq) {}
                             finishTargetVisit({ skipInboxDone: true, queueStatus: 'skipped', queueReason: 'identity_timeout' });
                         }
                     }
@@ -10187,7 +8797,6 @@
                 });
                 console.warn('[私信] 会话身份不匹配，中止 @' + targetHandle, idAssert);
                 showToast('⚠️ 会话与目标不一致，跳过', '#faad14', 2800);
-                try { inboxQueueMark(targetHandle, 'skipped', 'target_mismatch'); } catch (eIq2) {}
                 try { sessionStorage.removeItem('dan_dm_id_wait_' + normalizeChatHandle(targetHandle)); } catch (eClr2b) {}
                 finishTargetVisit({ skipInboxDone: true, queueStatus: 'skipped', queueReason: idAssert.reason || 'target_mismatch' });
                 return;
@@ -10304,7 +8913,7 @@
                     dryRunPreview(targetHandle, userRound, msgToSend, {});
                     return false;
                 }
-                showToast(roundName + '发送中…(第' + roundNumber + '轮)', '#1d9bf0');
+                showToast(roundName + '发送中…(第' + roundNumber + '轮)', '#1d9bf0', 25000);
                 sendLogToNAS(targetHandle, actionTypes[userRound] || 'AD', '第' + roundNumber + '轮:' + roundName, msgToSend);
 
                 dmTracePush('send', { target: targetHandle, round: roundNumber, text: '开始发送 ' + roundName });
@@ -10353,14 +8962,12 @@
                         try {
                             iceQueueMark(targetHandle, 'skipped', failReason === 'no_bubble' ? 'send_no_bubble' : 'send_fail_block');
                         } catch (eIqBlk) {}
-                        try {
-                            inboxQueueMark(targetHandle, 'skipped', failReason === 'no_bubble' ? 'send_no_bubble' : 'send_fail_block');
-                        } catch (eInbBlk) {}
                         showToast('⛔ ' + roundName + (failReason === 'no_bubble'
                             ? '气泡连败未确认，拉黑跳过'
                             : '连续失败，可能已拉黑，完结'), '#f85149', 2800);
                     } else {
                         // 类别与轮次对应：破冰/广告/催加各自提示，避免笼统「未检测」
+                        // 4.6.34：fill_failed:* 前缀归入「填入话术失败」
                         var tipMap = {
                             no_bubble: '已点发送但会话气泡未确认',
                             no_input: '找不到输入框',
@@ -10368,7 +8975,9 @@
                             fill_failed: '填入话术失败',
                             dry_run: '干跑未真发'
                         };
-                        var tip = tipMap[failReason] || ('确认失败:' + failReason);
+                        var tipKey = failReason;
+                        if (String(failReason || '').indexOf('fill_failed') === 0) tipKey = 'fill_failed';
+                        var tip = tipMap[tipKey] || ('确认失败:' + failReason);
                         showToast('⚠️ ' + roundName + tip + '，本轮不计数', '#faad14', 3200);
                     }
                     return false;
@@ -10409,6 +9018,10 @@
                         if (latEntry.lastDM) iceLatencyMs = Date.now() - latEntry.lastDM;
                     } catch (eLat) {}
                 }
+                // 4.6.34：发送成功后停留 4–7s（模拟真人发完看一眼），放慢节奏
+                var postSendStayMs = 4000 + Math.floor(Math.random() * 3000);
+                console.log('[私信发送] 发送成功，停留 ' + Math.round(postSendStayMs/1000) + ' 秒后离开');
+                await __dmSleep(postSendStayMs);
                 markUserDone(myHandle, targetHandle);
                 if (userRound === 0) {
                     try { sessionStorage.setItem('dan_iced_' + normalizeChatHandle(targetHandle), '1'); } catch (eLock) {}
@@ -10416,9 +9029,6 @@
                 maybeRefreshOpsRoundMap(true);
                 try {
                     if (userRound === 0) iceQueueMark(targetHandle, 'done', opsOk ? 'ice_sent' : 'ice_sent_local');
-                    else inboxQueueMark(targetHandle, 'done', userRound === 1
-                        ? (opsOk ? 'ad_sent' : 'ad_sent_local')
-                        : (opsOk ? 'kick_sent' : 'kick_sent_local'));
                 } catch (eIceQ) {}
                 try { rememberSentScriptText(targetHandle, userRound, msgToSend); } catch (eMem) {}
                 if (iceLatencyMs != null) {
@@ -10458,7 +9068,6 @@
                         reportSessionVerdict('kick_sent', { target: targetHandle, round: 2, kickCount: kcNow, ops_ok: opsOk });
                         if (kcNow >= ((window.SgChatGates && window.SgChatGates.KICK_MAX_COUNT) || 2)) {
                             try { iceQueueMark(targetHandle, 'done', 'kick_max'); } catch (eIqK) {}
-                            try { inboxQueueMark(targetHandle, 'done', 'kick_max'); } catch (eIqK2) {}
                         }
                     }
                 } catch (eMet) {}
@@ -10480,6 +9089,11 @@
             }
 
             async function sendOneOrDump() {
+                // 4.6.34：进入异步体即锁（belt-and-suspenders，与调用前锁双保险）
+                try {
+                    sessionStorage.setItem('dan_auto_step', '2_waiting');
+                    sessionStorage.setItem('dan_dm_inflight', '1');
+                } catch (eLockIn) {}
                 if (isFleetHandle(targetHandle)) {
                     rejectFleetHandle(targetHandle);
                     finishTargetVisit();
@@ -10487,6 +9101,8 @@
                 }
 
                 // OPS 权威轮次：必须拿到有效 check 才发送（失败关闭，防 OPS 宕机时同轮重发）
+                // 4.6.34：校验横幅（比特无控制台）
+                try { showToast('⏳ 后台校验 @' + targetHandle + '…', '#8b949e', 4000); } catch (eOpsToast) {}
                 var check = await opsDmCheck(targetHandle);
                 debugChatLog('opsDmCheck @' + targetHandle + ' allowed=' + (check && check.allowed) + ' reason=' + ((check && check.reason) || '') + ' round=' + ((check && check.current_round) != null ? check.current_round : '?'), {
                     step: 'ops_check', target: targetHandle, reason: (check && check.reason) || '', round: check && check.current_round
@@ -10692,6 +9308,10 @@
                         finishTargetVisit({ skipInboxDone: true });
                         return;
                     }
+                    // 4.6.34：破冰前也给检测反馈（真空=可破冰）
+                    try {
+                        showToast('🔍 查回 @' + targetHandle + '：真空会话 → 破冰', '#8b949e', 3500);
+                    } catch (eIceDet) {}
                     var iceInputOb = wakeUpTarget || findBottomAwakeningTarget();
                     if (!(iceInputOb && !iceInputOb.disabled)) {
                         var iceDead = false;
@@ -10715,7 +9335,7 @@
                         return;
                     }
                     // 破冰话术固定取 icebreaker；禁止 setUserRound(0) 清掉已破冰状态
-                    showToast('❄️ 破冰发送中…(第1轮)', '#1d9bf0');
+                    showToast('❄️ 破冰发送中…(第1轮)', '#1d9bf0', 25000);
                     sessionStorage.setItem('dan_auto_step', '2_waiting');
                     var iceOkOb = await recordDmAndAdvance(iceMsgOb, 0);
                     if (iceOkOb) {
@@ -10746,7 +9366,17 @@
                         var earlyPeers = [];
                         var blankAdopt = false;
                         try { blankAdopt = isBlankDmThread(); } catch (eBa) { blankAdopt = false; }
+                        try {
+                            showToast('🔍 正在检测回复 @' + targetHandle + '…', '#1d9bf0', 3500);
+                        } catch (eR0Start) {}
                         try { earlyPeers = blankAdopt ? [] : (collectExtraPeerTexts(targetHandle) || []); } catch (eEp) { earlyPeers = []; }
+                        try {
+                            showToast(
+                                '🔍 查回 @' + targetHandle + '：' + (earlyPeers.length ? ('有回复 ×' + earlyPeers.length) : (blankAdopt ? '真空会话' : '未见回复')),
+                                earlyPeers.length ? '#3fb950' : '#8b949e',
+                                3500
+                            );
+                        } catch (eR0Res) {}
                         if (earlyPeers.length > 0) {
                             // OPS 禁止跳轮：无破冰记录时先占位 round1，再发 AD 记 round2
                             var opsMaxPf = Number(check.current_round);
@@ -10848,7 +9478,7 @@
                                 finishTargetVisit({ skipInboxDone: true });
                                 return;
                             }
-                            showToast('❄️ 未读收养破冰中…', '#1d9bf0');
+                            showToast('❄️ 未读收养破冰中…', '#1d9bf0', 25000);
                             sessionStorage.setItem('dan_auto_step', '2_waiting');
                             var iceOk = await recordDmAndAdvance(iceMsg, 0);
                             if (iceOk) {
@@ -10903,6 +9533,7 @@
                         return;
                     }
                     var replyState = await readReplyStateAfterScroll(targetHandle);
+                    // 4.6.34：查回横幅已在 readReplyStateAfterScroll 内统一弹出（全轮次）
                     var dbEntry = loadTargetDB()[targetHandle] || {};
                     try {
                         if (!dbEntry.iceSentAt) {
@@ -11286,6 +9917,9 @@
 
                 if (userRound === 2) {
                     var kickEntry = loadTargetDB()[targetHandle] || {};
+                    try {
+                        showToast('🔍 正在检测回复 @' + targetHandle + '…', '#1d9bf0', 3500);
+                    } catch (eR2Start) {}
                     // 已婉拒/已拉黑 / 会话有婉拒痕迹：绝不能当「缺广告」补发（@f2jgmw 类事故）
                     if (kickEntry.rejectSentAt || kickEntry.blockedAt || conversationHasRejectEvidence(targetHandle)) {
                         try {
@@ -11298,12 +9932,20 @@
                             gate_reason: kickEntry.blockedAt ? 'peer_blocked' : 'already_rejected'
                         });
                         console.log('[kick] 已婉拒/拉黑，禁止广告补发 @' + targetHandle);
+                        try { showToast('🔍 查回 @' + targetHandle + '：已婉拒/拉黑，跳过催加', '#8b949e', 3500); } catch (eR2Skip) {}
                         finishTargetVisit();
                         return;
                     }
                     // round2 仍见明确低龄：仅 dating 补完结；job 年龄不挡
                     try {
                         var agePeers = collectExtraPeerTexts(targetHandle) || [];
+                        try {
+                            showToast(
+                                '🔍 查回 @' + targetHandle + '：' + (agePeers.length ? ('有回复 ×' + agePeers.length) : '未见新回复 → 催加闸'),
+                                agePeers.length ? '#3fb950' : '#8b949e',
+                                3500
+                            );
+                        } catch (eR2Res) {}
                         var ageAgain = parseAgeFromInbound(agePeers);
                         if (!isJobScriptPool() && ageAgain != null && ageAgain < getAgeRejectBelow()) {
                             try { markAgeRejected(targetHandle, ageAgain); } catch (eAge2) {}
@@ -11457,11 +10099,36 @@
                 }, delay);
             }
 
-            sendOneOrDump();
+            // 4.6.34：调用异步发送前立刻锁 step，防 3–7s tick 在 opsDmCheck/检测期间重入
+            try {
+                sessionStorage.setItem('dan_auto_step', '2_waiting');
+                sessionStorage.setItem('dan_dm_inflight', '1');
+            } catch (eLockPre) {}
+            Promise.resolve(sendOneOrDump()).catch(function (eSendDump) {
+                console.warn('[私信] sendOneOrDump 异常', eSendDump);
+                try {
+                    finishTargetVisit({
+                        skipInboxDone: true,
+                        queueStatus: 'deferred',
+                        queueReason: 'send_throw'
+                    });
+                } catch (eFt) {
+                    try { sessionStorage.removeItem('dan_dm_inflight'); } catch (eInf) {}
+                    try { sessionStorage.setItem('dan_auto_step', '4'); } catch (eSt) {}
+                }
+            });
             return;
         }
 
         if (currentStep === '4') {
+            // 4.6.34：离开会话前短 settle
+            try {
+                var leaveSettleUntil = parseInt(sessionStorage.getItem('dan_leave_settle_until') || '0', 10) || 0;
+                if (Date.now() < leaveSettleUntil) {
+                    return;
+                }
+                sessionStorage.removeItem('dan_leave_settle_until');
+            } catch (eLeaveSettle) {}
             let hostUser = sessionStorage.getItem('dan_target_username');
             // 安全网：如果 hostUser 为空，从 localStorage 恢复
             if (!hostUser) {
@@ -11616,14 +10283,14 @@
                 return true;
             }
         } catch (eChk) {}
-        // 4.1.36：主巡航 3–4.5s（旧 5–7s）；无守箱脉冲后靠粉丝列表轮转，节奏需更快
+        // 4.6.34：主巡航 5–7s（旧 3–4.5 过快导致 step2 重入/握手来不及）
         window._sgChatMainEngineId = safeSetInterval(function () {
             try {
                 if (typeof window.__sgChatMainEngineTick === 'function') window.__sgChatMainEngineTick();
             } catch (eTick) {
                 console.warn('[chat] mainEngine tick', eTick);
             }
-        }, 3000 + Math.floor(Math.random() * 1500));
+        }, 5000 + Math.floor(Math.random() * 2000));
         return true;
     }
     ensureChatMainEngine();
@@ -11815,6 +10482,8 @@
     window.addEventListener('sg-chat-command', function (e) {
         var d = e.detail || {};
         if (d.command === 'start') {
+            // 启动时清理 48h 未回复目标（每日一次）
+            try { pruneStaleIfNeeded(); } catch (ePr) {}
             var recStart = null;
             try { recStart = reconcileChatHostIdentity('chat_command_start'); } catch (eRecS) { recStart = null; }
             var myH = (recStart && recStart.live) || getMyHandle();
@@ -11891,12 +10560,6 @@
                 chatGo(dest, false);
                 return;
             }
-            // 已在会话页且带 opening：立刻调度武装（防 start 免跳后 step 空转）
-            try {
-                if (sessionStorage.getItem('dan_inbox_opening') && (isDmConversationPage() || isDmConversationView())) {
-                    scheduleArmInboxStep2Retries('chat_start_keep');
-                }
-            } catch (eArmS) {}
             sessionStorage.setItem('dan_warmup_timer', (Date.now() + 500).toString());
             updateMasterBtn();
             if (dest) showToast('📩 调度启动私信', '#1d9bf0', 1500);
@@ -11956,13 +10619,179 @@
         collectPeerDmTexts: collectPeerDmTexts
     };
     try {
-        if (window.SgInboxWatch && typeof window.SgInboxWatch.register === 'function') {
-            window.SgInboxWatch.register({
-                runInboxWatchTick: runInboxWatchTick
-            });
-        }
         try { bindSgInboxWatchHooks(); } catch (eInboxBind) {}
     } catch (eInboxReg) {}
+    // 4.6.4：守箱移除时误删的收件箱 DOM 工具函数（仍被 live 流程/bridge 引用），从备份恢复
+    function extractInboxRowPreviewData(row) {
+        return (window.SgInboxWatch && window.SgInboxWatch.extractInboxRowPreviewData)
+            ? window.SgInboxWatch.extractInboxRowPreviewData(row)
+            : { preview: '', fromSelf: false, source: 'none', handle: '', unreadFromAria: false };
+    }
+    function pickActionableInboxRows() {
+        return (window.SgInboxWatch && window.SgInboxWatch.pickActionableInboxRows)
+            ? (window.SgInboxWatch.pickActionableInboxRows() || []) : [];
+    }
+    /** 从收件箱行 testid dm-conversation-item-<peerId>:<myId> 提取并回写对方数字ID。
+     *  写入前用行 aria-description 中的 @handle 交叉验证，防止匹配错行导致 peerId 污染。 */
+    function captureDmPeerIdFromRow(targetHandle, row) {
+        targetHandle = normalizeChatHandle(targetHandle);
+        if (!targetHandle || !row) return '';
+        var tid = row.getAttribute('data-testid') || '';
+        var m = tid.match(/dm-conversation-item-(\d{6,}):(\d{6,})/);
+        if (!m) return '';
+        var peerId = m[1];
+        try {
+            var desc = String(row.getAttribute('aria-description') || row.getAttribute('aria-label') || '');
+            var mh = desc.match(/@(\S+)/i);
+            var rowHandle = mh ? String(mh[1]).replace(/[,\s].*$/, '').toLowerCase() : '';
+            if (rowHandle && rowHandle !== targetHandle.toLowerCase()) {
+                console.warn('[captureDmPeerId] 行 handle 不匹配，拒绝回写 @' + targetHandle + ' (row=@' + rowHandle + ') peerId=' + peerId);
+                return '';
+            }
+        } catch (eV) {}
+        try {
+            var db = loadTargetDB();
+            if (!db[targetHandle]) db[targetHandle] = { round: 0, firstSeen: Date.now(), lastDM: null };
+            if (String(db[targetHandle].peerId || '') !== peerId) {
+                db[targetHandle].peerId = peerId;
+                saveTargetDB(db);
+                console.log('[captureDmPeerId] 回写 @' + targetHandle + ' peerId=' + peerId);
+            }
+        } catch (e) {}
+        return peerId;
+    }
+
+    function findInboxConversationElement(handle) {
+        handle = normalizeChatHandle(handle);
+        if (!handle) return null;
+        var entry = loadTargetDB()[handle] || {};
+        // 新版 X：收件箱行无 handle，仅 testid dm-conversation-item-<peerId>:<myId> 与链接 /i/chat/<peerId>-<myId>
+        // 通道1：按对方数字ID精确匹配（outbound/inbox 打开会话时已 captureDmPeerId）
+        // 注意：匹配后必须用行 aria-description 的 @handle 交叉验证，防止 DB peerId 污染后错配
+        var pid = String(entry.peerId || '').replace(/\D/g, '');
+        if (pid && pid.length >= 6) {
+            try {
+                var byId = document.querySelector('[data-testid^="dm-conversation-item-' + pid + ':"]');
+                if (byId) {
+                    var desc = String(byId.getAttribute('aria-description') || '');
+                    var dm = desc.match(/@(\S+)/i);
+                    var rh = dm ? String(dm[1]).replace(/[,\s].*$/, '').toLowerCase() : '';
+                    if (!rh || rh === handle.toLowerCase()) return byId;
+                    // 通道1 被污染：行 handle 与目标不一致，回退到通道2/3
+                }
+            } catch (eP) {}
+            try {
+                var byHref = document.querySelector(
+                    'a[href*="/i/chat/' + pid + '-"], a[href*="/messages/' + pid + '-"], a[href*="/i/chat/' + pid + '"], a[href*="/messages/' + pid + '"]'
+                );
+                if (byHref) return byHref.closest('[data-testid^="dm-conversation-item-"]') || byHref.closest('[data-testid="conversation"]') || byHref.closest('[data-testid="DMConversation"]') || byHref.closest('[role="listitem"]') || byHref;
+            } catch (eP2) {}
+        }
+        // 通道2：按显示名匹配行首（粉丝页扫描时已 discoverTarget 存 displayName）
+        var dnKey = normalizeDisplayName(entry.displayName);
+        if (dnKey) {
+            try {
+                var dnRows = document.querySelectorAll('[data-testid^="dm-conversation-item-"]');
+                for (var d2 = 0; d2 < dnRows.length; d2++) {
+                    var firstLine = ((dnRows[d2].innerText || '').split('\n')[0] || '');
+                    if (normalizeDisplayName(firstLine) === dnKey) return dnRows[d2];
+                }
+            } catch (eD2) {}
+        }
+        // 通道3：旧版 handle 匹配（兼容）
+        var selectors = [
+            '[data-testid^="dm-conversation-item-"] a[href*="/' + handle + '"]',
+            '[data-testid^="dm-conversation-item-"] [href*="/' + handle + '"]',
+            '[data-testid="conversation"] a[href*="/' + handle + '"]',
+            '[data-testid="DMConversation"] a[href*="/' + handle + '"]',
+            '[data-testid="conversation"] [href*="/' + handle + '"]',
+            '[data-testid="DMConversation"] [href*="/' + handle + '"]',
+            'a[href="/' + handle + '"]',
+            'a[href*="/' + handle + '?"]',
+            'a[href*="/' + handle + '/"]'
+        ];
+        for (var s = 0; s < selectors.length; s++) {
+            try {
+                var el = document.querySelector(selectors[s]);
+                if (el) return el.closest('[data-testid^="dm-conversation-item-"]') || el.closest('[data-testid="conversation"]') || el.closest('[data-testid="DMConversation"]') || el.closest('[role="listitem"]') || el.closest('article') || el;
+            } catch (eS) {}
+        }
+        var rows = document.querySelectorAll('[data-testid^="dm-conversation-item-"], [data-testid="conversation"], [data-testid="DMConversation"], [role="listitem"], article');
+        for (var i = 0; i < rows.length; i++) {
+            var row = rows[i];
+            var txt = (row.innerText || '').toLowerCase();
+            if (txt.indexOf('@' + handle) >= 0 || txt.indexOf(handle) >= 0) return row;
+            try {
+                var links = row.querySelectorAll('a[href*="/messages/"] , a[href*="/i/chat/"] , a[href*="/' + handle + '"]');
+                for (var k = 0; k < links.length; k++) {
+                    var ah = (links[k].getAttribute('href') || '').toLowerCase();
+                    if (ah.indexOf('/' + handle) >= 0) return row;
+                }
+            } catch (eL) {}
+        }
+        // 头像 alt / title 兜底
+        try {
+            var avatarRows = document.querySelectorAll('[data-testid="conversation"], [data-testid="DMConversation"], [role="listitem"], article');
+            for (var a = 0; a < avatarRows.length; a++) {
+                var rt = (avatarRows[a].getAttribute('aria-label') || avatarRows[a].innerText || '').toLowerCase();
+                if (rt.indexOf(handle) >= 0) return avatarRows[a];
+                var imgs = avatarRows[a].querySelectorAll('img[alt], img[title]');
+                for (var m2 = 0; m2 < imgs.length; m2++) {
+                    var al = String(imgs[m2].getAttribute('alt') || imgs[m2].getAttribute('title') || '').toLowerCase();
+                    if (al.indexOf(handle) >= 0) return avatarRows[a];
+                }
+            }
+        } catch (eA) {}
+        return null;
+    }
+
+    /** 收件箱列表（左栏）滚动容器识别：X 虚拟滚动，window.scrollBy 滚不到列表容器 */
+    function getInboxListScroller() {
+        try {
+            var cands = document.querySelectorAll('[data-testid="DmActivityContainer"], [data-testid="dm-inbox-panel"], [data-testid="dm-conversation-list"], [data-testid="DMDrawer"]');
+            for (var c = 0; c < cands.length; c++) {
+                if (cands[c].scrollHeight > cands[c].clientHeight + 10) return cands[c];
+            }
+            var row = document.querySelector('[data-testid^="dm-conversation-item-"]');
+            if (row) {
+                var p = row.parentElement;
+                var depth = 0;
+                while (p && p !== document.body && depth < 12) {
+                    try {
+                        var st = window.getComputedStyle(p);
+                        if ((st.overflowY === 'auto' || st.overflowY === 'scroll' || st.overflowY === 'overlay') && p.scrollHeight > p.clientHeight + 5) return p;
+                    } catch (eC) {}
+                    p = p.parentElement;
+                    depth++;
+                }
+            }
+        } catch (e) {}
+        return null;
+    }
+
+    /** 收件箱列表是否已滚动到底（虚拟滚动触底） */
+    function isInboxListAtBottom() {
+        try {
+            var sc = getInboxListScroller();
+            if (sc) return (sc.scrollTop + sc.clientHeight) >= (sc.scrollHeight - 160);
+            var se = document.scrollingElement || document.documentElement;
+            return (se.scrollTop + window.innerHeight) >= (se.scrollHeight - 160);
+        } catch (e) { return true; }
+    }
+
+    /** 滚动收件箱列表容器（找不到容器时退回 window 滚动） */
+    function scrollInboxListBy(amount) {
+        try {
+            var sc = getInboxListScroller();
+            if (sc) {
+                sc.scrollBy({ top: amount, behavior: 'smooth' });
+                return true;
+            }
+        } catch (e) {}
+        try { window.scrollBy({ top: amount, behavior: 'smooth' }); } catch (e2) {}
+        return false;
+    }
+
     try { bindSgDmPinHooks(); } catch (ePinRebind) {}
     window.__sgChatBridge = {
         isDmPath: isDmPath,
@@ -12348,11 +11177,6 @@
                 var stuck = trace.stuckAt;
                 if (stuck === 'inbox_row' && !trace.inboxListVisible) return '/i/chat';
                 if (!trace.onConversation) {
-                    var entry = loadTargetDB()[state.handle] || {};
-                    if (entry.peerId) {
-                        var myId = captureInboxMyId();
-                        if (myId) return '/i/chat/' + entry.peerId + '-' + myId;
-                    }
                     if (state.navCount === 0 && !trace.inboxListVisible) return '/i/chat';
                 }
                 return '';
@@ -12840,59 +11664,6 @@
                 return { found: found, atBottom: atBottom, error: String(eSc) };
             }
         },
-        /** 手动触发一次完整守箱逻辑（runInboxWatchTick），返回前后状态快照给控制台，不依赖 console.log */
-        debugRunInboxWatchOnce: function () {
-            var before = {
-                ver: window.__sgDiagBridgeVer || '',
-                autoRun: sessionStorage.getItem('dan_auto_run'),
-                step: sessionStorage.getItem('dan_auto_step'),
-                currentTarget: sessionStorage.getItem('current_target') || '',
-                miss: sessionStorage.getItem('dan_inbox_dom_miss'),
-                scrollRunning: sessionStorage.getItem('dan_inbox_scroll_running'),
-                inboxVisible: null,
-                scroller: null,
-                debts: []
-            };
-            try { before.inboxVisible = isDmInboxListVisible ? isDmInboxListVisible() : null; } catch (e) {}
-            try {
-                var sc = getInboxListScroller();
-                if (sc) before.scroller = { top: sc.scrollTop, sh: sc.scrollHeight, ch: sc.clientHeight };
-            } catch (e) {}
-            try {
-                var actionable = pickActionableInboxRows();
-                before.actionable = actionable.map(function (a) {
-                    return {
-                        handle: a.handle,
-                        round: a.round,
-                        unread: a.unread,
-                        unreadSource: a.unreadSource,
-                        unreadPrecise: a.unreadPrecise,
-                        replied: a.replied,
-                        confidence: a.confidence,
-                        previewFromSelf: a.previewFromSelf,
-                        preview: a.preview,
-                        probeable: a.probeable,
-                        kickReady: a.kickReady
-                    };
-                });
-            } catch (e) {}
-            try {
-                var debts = pickDebtTargetsFromDB();
-                before.debts = debts.map(function (t) { return { handle: t.handle, round: t.round, kickReady: t.kickReady, slaOverdue: t.slaOverdue }; });
-            } catch (e) {}
-            var tickError = null;
-            try { runInboxWatchTick(); } catch (e) { tickError = String((e && e.message) || e); }
-            var after = {
-                step: sessionStorage.getItem('dan_auto_step'),
-                currentTarget: sessionStorage.getItem('current_target'),
-                dan_inbox_opening: sessionStorage.getItem('dan_inbox_opening') || ''
-            };
-            try {
-                var sc2 = getInboxListScroller();
-                if (sc2) after.scroller = { top: sc2.scrollTop, sh: sc2.scrollHeight, ch: sc2.clientHeight };
-            } catch (e) {}
-            return { tickError: tickError, before: before, after: after };
-        },
         /** 输出目标行/任意行的收件箱 DOM 结构，用于判断新版 X 未读标记的准确选择器 */
         debugDumpInboxRowHTML: function (handle) {
             handle = normalizeChatHandle(handle);
@@ -12958,154 +11729,9 @@
         },
         /** 主世界可调：开软风控扫箱窗 + 等列表就绪再 tick（同步 tick 会空 ok） */
         forceInboxPulse: function (mins) {
-            if (!isInboxWatchEnabled()) {
-                return Promise.resolve(startFanRosterForce(mins || 20, 'forceInboxPulse'));
-            }
-            mins = Math.max(5, Math.min(60, Number(mins) || 20));
-            // 诊断冻结下 coTick 会立刻 stopChat；Force 前先解冻，否则脉冲空跑
-            var freezeCleared = clearDiagFreezeLocal('force_pulse');
-            var until = Date.now() + mins * 60 * 1000;
-            try {
-                var st = JSON.parse(localStorage.getItem('sg_state') || '{}');
-                st.softRiskUntil = until;
-                st.softRiskMode = 'ice_then_scan';
-                st.softRiskChatDone = false;
-                st.softRiskOutboundDone = true;
-                st.running = true;
-                localStorage.setItem('sg_state', JSON.stringify(st));
-            } catch (eSt) {}
-            try {
-                sessionStorage.setItem('sg_chat_force_inbox', 'true');
-                sessionStorage.setItem('dan_auto_run', 'true');
-                sessionStorage.setItem('dan_chat_phase', 'inbox');
-                try { ensureChatMainEngine(); } catch (eEngF) {}
-                sessionStorage.removeItem('sg_debt_only');
-                // 有密封残留则续跑，不 force 清；仅空队列才新租约
-                var forceFresh = true;
-                try {
-                    var stF = inboxQueueStats();
-                    if (stF.sealed && (stF.pending + stF.doing + stF.deferred) > 0) forceFresh = false;
-                } catch (eStF) {}
-                if (forceFresh) {
-                    try { clearChatLeaseLocal(); } catch (eCl) {}
-                    try { sessionStorage.removeItem('dan_inbox_queue_pulse'); } catch (ePp) {}
-                    try { clearInboxTaskQueue('force_new_lease'); } catch (eClrF) {}
-                    [
-                        'dan_inbox_list_pass_done', 'dan_inbox_unread_adopt_count',
-                        'dan_inbox_visit_started_at', 'dan_inbox_unread_hold', 'sg_soft_risk_pulse_ran',
-                        'sg_chat_session_deadline', 'sg_chat_session_opens', 'dan_inbox_scan_steps',
-                        'dan_inbox_scroll_running', 'dan_inbox_row_miss_retry', 'sg_soft_unread_retry',
-                        'sg_soft_risk_pulse_reason', 'dan_inbox_phase'
-                    ].forEach(function (k) {
-                        try { sessionStorage.removeItem(k); } catch (eRm) {}
-                    });
-                    try { beginChatLease('inbox'); setInboxPhase('scanning'); } catch (ePh) {}
-                } else {
-                    try { inboxQueuePromoteDeferred('force_resume'); } catch (ePf) {}
-                    try { beginChatLease('inbox'); } catch (eLs2) {}
-                    if (getInboxPhase() === 'done' || getInboxPhase() === 'idle') setInboxPhase('sealed');
-                }
-                noteChatProgress('force_pulse');
-                try {
-                    var leaseForce = null;
-                    try { leaseForce = JSON.parse(sessionStorage.getItem(CHAT_LEASE_KEY) || 'null'); } catch (eLf) {}
-                    if (typeof SgTelemetry !== 'undefined') {
-                        var forceMeta = {
-                            module: 'chat',
-                            intent: 'inbox',
-                            pulseId: (leaseForce && leaseForce.pulseId) || sessionStorage.getItem('dan_inbox_queue_pulse') || '',
-                            url: 'https://x.com/i/chat',
-                            via: 'forceInboxPulse',
-                            resume: !forceFresh
-                        };
-                        if (SgTelemetry.emitRoundStart) SgTelemetry.emitRoundStart(forceMeta);
-                        else SgTelemetry.emit('scheduler.round_start', forceMeta);
-                    }
-                } catch (eRsF) {}
-            } catch (eSs) {}
-            try {
-                if (typeof window.__sgBeginSoftRiskChatSession === 'function') window.__sgBeginSoftRiskChatSession();
-            } catch (eCap) {}
-            try {
-                window.dispatchEvent(new CustomEvent('sg-chat-command', {
-                    detail: { command: 'start', targetUrl: 'https://x.com/i/chat' }
-                }));
-            } catch (eEv) {}
-
-            function snapReady() {
-                var mailSrc = null;
-                var listVisible = false;
-                var rows = 0;
-                try { mailSrc = detectDmMailboxSource(); } catch (e1) {}
-                try { listVisible = !!isDmInboxListVisible(); } catch (e2) {}
-                try { rows = document.querySelectorAll('[data-testid^="dm-conversation-item-"]').length; } catch (e3) {}
-                return { mailSrc: mailSrc, listVisible: listVisible, rows: rows };
-            }
-            function runOnceTick() {
-                var tick = null;
-                var signals = null;
-                try { tick = window.__sgChatBridge.debugRunInboxWatchOnce(); } catch (eTick) {
-                    tick = { error: String((eTick && eTick.message) || eTick) };
-                }
-                try { signals = window.__sgChatBridge.debugDumpVisibleInboxSignals(15); } catch (eSig) {
-                    signals = { error: String((eSig && eSig.message) || eSig) };
-                }
-                var orphans = 0;
-                try { orphans = (listOrphanUnreadRows({}) || []).length; } catch (eOr) {}
-                return { tick: tick, signals: signals, orphanCount: orphans };
-            }
-
-            var t0 = Date.now();
-            var maxWait = 8000;
-            return new Promise(function (resolve) {
-                function finish(ok, reason, first, second) {
-                    var ready = snapReady();
-                    var orphans = (first && first.orphanCount) || 0;
-                    try { orphans = (listOrphanUnreadRows({}) || []).length; } catch (eOr2) {}
-                    resolve({
-                        ok: !!ok,
-                        reason: reason || '',
-                        mins: mins,
-                        until: until,
-                        untilLabel: new Date(until).toLocaleString(),
-                        url: String(location.href || ''),
-                        mailSrc: ready.mailSrc,
-                        listVisible: ready.listVisible,
-                        rows: ready.rows,
-                        waitMs: Date.now() - t0,
-                        orphanCount: orphans,
-                        freezeCleared: !!freezeCleared,
-                        freezePrev: freezeCleared || null,
-                        tick: first ? first.tick : null,
-                        tick2: second || null,
-                        signals: first ? first.signals : null
-                    });
-                }
-                function afterReady() {
-                    var first = runOnceTick();
-                    setTimeout(function () {
-                        var second = null;
-                        try { second = window.__sgChatBridge.debugRunInboxWatchOnce(); } catch (e2) {
-                            second = { error: String((e2 && e2.message) || e2) };
-                        }
-                        finish(true, 'list_ready', first, second);
-                    }, 2000);
-                }
-                function poll() {
-                    var ready = snapReady();
-                    if (ready.mailSrc && ready.listVisible && ready.rows > 0) {
-                        afterReady();
-                        return;
-                    }
-                    if (Date.now() - t0 >= maxWait) {
-                        finish(false, 'inbox_list_not_ready', null, null);
-                        return;
-                    }
-                    setTimeout(poll, 400);
-                }
-                setTimeout(poll, 300);
-            });
-        }
+            // 守箱已废除，统一走粉丝页强制私信
+            return Promise.resolve(startFanRosterForce(mins || 20, 'forceInboxPulse'));
+        },
     };
 
     /** 上线前清误杀拉黑：控制台执行 __sgClearFalseDmBlocks() 或 __sgClearFalseDmBlocks({dryRun:true}) */
@@ -13197,6 +11823,259 @@
             }
         } catch (eBridge2) {}
     });
+
+    // ==================== DM 流程追踪（跨导航持久化 + 浮动面板 + 调试快照） ====================
+    var DM_TRACE_KEY = 'sg_dm_flow_trace';
+    var _dmTracePanelEl = null;
+    var _dmTracePanelVisible = null;
+
+    function dmTraceIsPanelVisible() {
+        if (_dmTracePanelVisible !== null) return _dmTracePanelVisible;
+        try { _dmTracePanelVisible = localStorage.getItem('sg_dm_trace_visible') === '1'; } catch (e) { _dmTracePanelVisible = false; }
+        return _dmTracePanelVisible;
+    }
+
+    function dmTraceGet() {
+        try { return JSON.parse(sessionStorage.getItem(DM_TRACE_KEY) || '[]'); } catch (e) { return []; }
+    }
+
+    var DM_TRACE_STAGE_LABEL = {
+        list_scan: '📋 列表扫描',
+        open: '🖱 打开会话',
+        read_reply: '💬 读取回复',
+        route: '🧭 分流决策',
+        send: '📤 发送',
+        finish: '✅ 完成',
+        back_to_list: '🔙 返回列表',
+        round_end: '🏁 轮次结束',
+        dm_panel: '🪟 DM面板'
+    };
+
+    var DM_TRACE_STAGE_COLOR = {
+        list_scan: '#1d9bf0',
+        open: '#1d9bf0',
+        read_reply: '#a371f7',
+        route: '#faad14',
+        send: '#00ba7c',
+        finish: '#5b7083',
+        back_to_list: '#5b7083',
+        round_end: '#ff8c00',
+        dm_panel: '#5b7083'
+    };
+
+    function dmTracePush(stage, detail) {
+        detail = detail || {};
+        var trace = dmTraceGet();
+        trace.push({
+            ts: Date.now(),
+            time: new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }),
+            stage: stage,
+            label: DM_TRACE_STAGE_LABEL[stage] || stage,
+            detail: detail
+        });
+        if (trace.length > 60) trace = trace.slice(-60);
+        try { sessionStorage.setItem(DM_TRACE_KEY, JSON.stringify(trace)); } catch (e) {}
+        try {
+            if (typeof SgDebugLog !== 'undefined' && SgDebugLog.push) {
+                SgDebugLog.push('chat', detail.level || 'info', '[DM流程] ' + (DM_TRACE_STAGE_LABEL[stage] || stage) + ' ' + (detail.text || ''), Object.assign({ step: 'dm_trace', dm_stage: stage }, detail));
+            }
+        } catch (e) {}
+        renderDmTracePanel();
+        return trace;
+    }
+
+    function ensureDmTracePanel() {
+        if (_dmTracePanelEl) return _dmTracePanelEl;
+        try {
+            _dmTracePanelEl = document.createElement('div');
+            _dmTracePanelEl.id = 'sg-dm-trace-panel';
+            _dmTracePanelEl.style.cssText = 'position:fixed;right:10px;bottom:64px;z-index:2147483640;width:340px;max-height:320px;overflow-y:auto;background:rgba(15,20,25,0.92);color:#e7e9ea;border:1px solid rgba(255,255,255,0.16);border-radius:10px;padding:8px;font:12px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;box-shadow:0 8px 28px rgba(0,0,0,0.45);display:none;';
+            _dmTracePanelEl.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;padding:2px 2px 6px;border-bottom:1px solid rgba(255,255,255,0.12);margin-bottom:6px;">' +
+                '<b style="color:#fff;font-size:12px;">📊 DM流程追踪</b>' +
+                '<span style="display:flex;gap:4px;">' +
+                '<button id="sg-dm-trace-clear" style="background:rgba(255,255,255,0.1);border:none;color:#8899a6;border-radius:4px;padding:1px 6px;cursor:pointer;font-size:11px;">清空</button>' +
+                '<button id="sg-dm-trace-close" style="background:rgba(255,255,255,0.1);border:none;color:#8899a6;border-radius:4px;padding:1px 6px;cursor:pointer;font-size:11px;">✕</button>' +
+                '</span></div>' +
+                '<div id="sg-dm-trace-body" style="max-height:260px;overflow-y:auto;"></div>';
+            document.body.appendChild(_dmTracePanelEl);
+            try {
+                _dmTracePanelEl.querySelector('#sg-dm-trace-close').addEventListener('click', function () {
+                    try { localStorage.setItem('sg_dm_trace_visible', '0'); } catch (e) {}
+                    _dmTracePanelVisible = false;
+                    _dmTracePanelEl.style.display = 'none';
+                });
+                _dmTracePanelEl.querySelector('#sg-dm-trace-clear').addEventListener('click', function () {
+                    try { sessionStorage.removeItem(DM_TRACE_KEY); } catch (e) {}
+                    renderDmTracePanel();
+                });
+            } catch (e) {}
+        } catch (e) {}
+        return _dmTracePanelEl;
+    }
+
+    function renderDmTracePanel() {
+        var panel = ensureDmTracePanel();
+        if (!panel) return;
+        if (!dmTraceIsPanelVisible()) { panel.style.display = 'none'; return; }
+        panel.style.display = 'block';
+        var body = panel.querySelector('#sg-dm-trace-body');
+        if (!body) return;
+        var trace = dmTraceGet().slice(-16);
+        var html = '';
+        for (var i = trace.length - 1; i >= 0; i--) {
+            var t = trace[i];
+            var color = DM_TRACE_STAGE_COLOR[t.stage] || '#8899a6';
+            var detailText = '';
+            var d = t.detail || {};
+            if (d.target) detailText += '<span style="color:#a5d6ff;">@' + String(d.target).slice(0, 20) + '</span> ';
+            if (d.text) detailText += String(d.text).slice(0, 40);
+            else if (d.action) detailText += String(d.action);
+            else if (d.reason) detailText += String(d.reason);
+            else if (d.round != null) detailText += 'round=' + d.round;
+            if (d.peer_count != null) detailText += ' 对方气泡=' + d.peer_count;
+            if (d.decision) detailText += ' decision=' + d.decision;
+            html += '<div style="display:flex;gap:6px;padding:2px 0;border-bottom:1px solid rgba(255,255,255,0.05);">' +
+                '<span style="color:' + color + ';white-space:nowrap;flex:0 0 auto;">' + t.label + '</span>' +
+                '<span style="color:#8899a6;flex:0 0 auto;font-size:11px;">' + (t.time || '').slice(11, 19) + '</span>' +
+                '<span style="color:#c4cfd6;word-break:break-all;">' + detailText + '</span></div>';
+        }
+        if (!html) html = '<div style="color:#5b7083;padding:8px 2px;">暂无流程记录 — 等下次 DM 任务运行时自动记录</div>';
+        body.innerHTML = html;
+    }
+
+    function dmTraceTogglePanel() {
+        var vis = !dmTraceIsPanelVisible();
+        try { localStorage.setItem('sg_dm_trace_visible', vis ? '1' : '0'); } catch (e) {}
+        _dmTracePanelVisible = vis;
+        renderDmTracePanel();
+    }
+
+    // 页面主世界可通过 __sgRunDmDebug() 快照查看；另暴露浮动面板开关事件
+    try {
+        window.addEventListener('message', function (e) {
+            if (e.source !== window || !e.data) return;
+            if (e.data.type === '__sg_dm_trace_toggle') {
+                dmTraceTogglePanel();
+                try { window.postMessage({ type: '__sg_dm_trace_toggle_result', id: e.data.id || 0, visible: dmTraceIsPanelVisible() }, '*'); } catch (eT) {}
+                return;
+            }
+        });
+    } catch (e) {}
+
+    // ==================== DM 调试桥（响应页面主世界 __sgRunDmDebug） ====================
+    function buildDmDebugSnapshot() {
+        try {
+            var bridge = window.__sgChatBridge || {};
+            var isDmPathFn = bridge.isDmPath || isDmPath;
+            var getRootFn = bridge.getDmConversationRoot || function () { return document.querySelector('[data-testid="DmActivityContainer"]') || document.body; };
+            var getRootTestidFn = bridge.getDmConversationRootTestid || (function () { return getRootFn() === document.body ? 'body' : (getRootFn().getAttribute('data-testid') || getRootFn().tagName); });
+            var collectPeerFn = bridge.collectPeerDmMessages || (function () { return []; });
+            var fallbackFn = bridge.fallbackCollectPeerDmTexts || (function () { return []; });
+            var findComposerFn = bridge.findBottomAwakeningTarget || (function () { return null; });
+            var getPhaseFn = bridge.getChatPhase || (function () { return 'unknown'; });
+            var getDnaFn = bridge.getDnaCore || (function () { return []; });
+            var mailSrc = (function () {
+                try {
+                    var path = (window.location.pathname || '').toLowerCase();
+                    var href = String(window.location.href || '').toLowerCase();
+                    if (isDmPathFn(path) || isDmPathFn(href)) return 'messages';
+                    if (path.indexOf('/dm') >= 0) return 'messages';
+                    if (document.querySelector('[data-testid="DMDrawer"]') || document.querySelector('[data-testid="DmActivityContainer"]')) return 'messages';
+                } catch (e) {}
+                return null;
+            })();
+            var root = getRootFn();
+            var entryCount = 0, bubbleCount = 0, convItemCount = 0;
+            try { entryCount = document.querySelectorAll('[data-testid^="message-"]:not([data-testid^="message-text-"])').length; } catch (eE) {}
+            try { bubbleCount = document.querySelectorAll('[data-testid^="message-text-"], [data-testid="messageBubble"]').length; } catch (eB) {}
+            try { convItemCount = document.querySelectorAll('[data-testid="conversationItem"]').length; } catch (eC) {}
+            var testidInventory = {};
+            var dmTestids = {};
+            try {
+                var tidNodes = document.querySelectorAll('[data-testid]');
+                for (var t = 0; t < tidNodes.length; t++) {
+                    var tk = tidNodes[t].getAttribute('data-testid') || '';
+                    if (!tk) continue;
+                    testidInventory[tk] = (testidInventory[tk] || 0) + 1;
+                    if (/dm|chat|conversation|message|inbox|thread|cell|unread/i.test(tk)) {
+                        dmTestids[tk] = (dmTestids[tk] || 0) + 1;
+                    }
+                }
+            } catch (eT) {}
+            var peerMsgs = collectPeerFn();
+            var peerTexts = [];
+            for (var p = 0; p < peerMsgs.length; p++) peerTexts.push(peerMsgs[p].text);
+            var fbMsgs = fallbackFn(root);
+            var fbTexts = [];
+            for (var f = 0; f < fbMsgs.length; f++) fbTexts.push(fbMsgs[f].text);
+            var unreadMarkers = [];
+            try {
+                if (root && root.querySelectorAll) {
+                    var unreadNodes = root.querySelectorAll('[data-testid="unreadIndicator"], [data-testid*="unread" i], [aria-label*="未读" i], [aria-label*="Unread" i], [aria-label*="新消息" i]');
+                    for (var u = 0; u < unreadNodes.length; u++) unreadMarkers.push(unreadNodes[u].getAttribute('data-testid') || unreadNodes[u].getAttribute('aria-label') || unreadNodes[u].tagName);
+                }
+            } catch (eU) {}
+            var composerInput = null;
+            try { composerInput = findComposerFn(); } catch (eCIn) {}
+            var sendBtn = null;
+            try {
+                var findSendBtnFn = bridge.findDmSendButton || (function () { return null; });
+                sendBtn = findSendBtnFn();
+            } catch (eS) {}
+            return {
+                ts: Date.now(),
+                url: window.location.href,
+                path: window.location.pathname,
+                isMessagesPage: !!mailSrc,
+                mailSource: mailSrc || 'none',
+                rootTestid: getRootTestidFn(),
+                rootFound: !!root,
+                rootTagName: root ? root.tagName : 'N/A',
+                entryCount: entryCount,
+                bubbleCount: bubbleCount,
+                convItemCount: convItemCount,
+                testidInventory: testidInventory,
+                dmTestids: dmTestids,
+                peerCount: peerTexts.length,
+                peerTexts: peerTexts.slice(-12),
+                fallbackCount: fbTexts.length,
+                fallbackTexts: fbTexts.slice(-12),
+                unreadMarkers: unreadMarkers,
+                unreadSeen: unreadMarkers.length > 0,
+                composerFound: !!composerInput,
+                composerDisabled: composerInput ? !!composerInput.disabled : 'N/A',
+                sendBtnFound: !!sendBtn,
+                sendBtnDisabled: sendBtn ? !!sendBtn.disabled : 'N/A',
+                currentTarget: sessionStorage.getItem('current_target') || '',
+                chatPhase: getPhaseFn(),
+                autoStep: sessionStorage.getItem('dan_auto_step') || '',
+                dnaCore: getDnaFn().slice(0, 12)
+            };
+        } catch (e) {
+            return { error: String(e && e.message || e), ts: Date.now() };
+        }
+    }
+
+    function installDmDebugBridge() {
+        try {
+            if (window.__sgDmDebugBridgeListening) return;
+            window.__sgDmDebugBridgeListening = true;
+            window.addEventListener('message', function (e) {
+                if (e.source !== window || !e.data) return;
+                if (e.data.type === '__sg_dm_debug_request') {
+                    var payload = buildDmDebugSnapshot();
+                    window.postMessage({ type: '__sg_dm_debug_result', payload: payload, id: e.data.id || 0 }, '*');
+                    return;
+                }
+            });
+            try { window.__sgDmDebugReady = true; } catch (eD) {}
+            console.log('[DM调试] 应答桥已就绪');
+        } catch (e) {}
+    }
+
+    installDmDebugBridge();
+    setTimeout(installDmDebugBridge, 500);
+
 })();
 
 // =============================================================================
@@ -13507,258 +12386,6 @@
 
     // 自动初始化（异步，不阻塞主流程）
     bootstrapFromJSON();
-
-    // ==================== DM 流程追踪（跨导航持久化 + 浮动面板 + 调试快照） ====================
-    var DM_TRACE_KEY = 'sg_dm_flow_trace';
-    var _dmTracePanelEl = null;
-    var _dmTracePanelVisible = null;
-
-    function dmTraceIsPanelVisible() {
-        if (_dmTracePanelVisible !== null) return _dmTracePanelVisible;
-        try { _dmTracePanelVisible = localStorage.getItem('sg_dm_trace_visible') === '1'; } catch (e) { _dmTracePanelVisible = false; }
-        return _dmTracePanelVisible;
-    }
-
-    function dmTraceGet() {
-        try { return JSON.parse(sessionStorage.getItem(DM_TRACE_KEY) || '[]'); } catch (e) { return []; }
-    }
-
-    var DM_TRACE_STAGE_LABEL = {
-        list_scan: '📋 列表扫描',
-        open: '🖱 打开会话',
-        read_reply: '💬 读取回复',
-        route: '🧭 分流决策',
-        send: '📤 发送',
-        finish: '✅ 完成',
-        back_to_list: '🔙 返回列表',
-        round_end: '🏁 轮次结束',
-        dm_panel: '🪟 DM面板'
-    };
-
-    var DM_TRACE_STAGE_COLOR = {
-        list_scan: '#1d9bf0',
-        open: '#1d9bf0',
-        read_reply: '#a371f7',
-        route: '#faad14',
-        send: '#00ba7c',
-        finish: '#5b7083',
-        back_to_list: '#5b7083',
-        round_end: '#ff8c00',
-        dm_panel: '#5b7083'
-    };
-
-    function dmTracePush(stage, detail) {
-        detail = detail || {};
-        var trace = dmTraceGet();
-        trace.push({
-            ts: Date.now(),
-            time: new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }),
-            stage: stage,
-            label: DM_TRACE_STAGE_LABEL[stage] || stage,
-            detail: detail
-        });
-        if (trace.length > 60) trace = trace.slice(-60);
-        try { sessionStorage.setItem(DM_TRACE_KEY, JSON.stringify(trace)); } catch (e) {}
-        try {
-            if (typeof SgDebugLog !== 'undefined' && SgDebugLog.push) {
-                SgDebugLog.push('chat', detail.level || 'info', '[DM流程] ' + (DM_TRACE_STAGE_LABEL[stage] || stage) + ' ' + (detail.text || ''), Object.assign({ step: 'dm_trace', dm_stage: stage }, detail));
-            }
-        } catch (e) {}
-        renderDmTracePanel();
-        return trace;
-    }
-
-    function ensureDmTracePanel() {
-        if (_dmTracePanelEl) return _dmTracePanelEl;
-        try {
-            _dmTracePanelEl = document.createElement('div');
-            _dmTracePanelEl.id = 'sg-dm-trace-panel';
-            _dmTracePanelEl.style.cssText = 'position:fixed;right:10px;bottom:64px;z-index:2147483640;width:340px;max-height:320px;overflow-y:auto;background:rgba(15,20,25,0.92);color:#e7e9ea;border:1px solid rgba(255,255,255,0.16);border-radius:10px;padding:8px;font:12px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;box-shadow:0 8px 28px rgba(0,0,0,0.45);display:none;';
-            _dmTracePanelEl.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;padding:2px 2px 6px;border-bottom:1px solid rgba(255,255,255,0.12);margin-bottom:6px;">' +
-                '<b style="color:#fff;font-size:12px;">📊 DM流程追踪</b>' +
-                '<span style="display:flex;gap:4px;">' +
-                '<button id="sg-dm-trace-clear" style="background:rgba(255,255,255,0.1);border:none;color:#8899a6;border-radius:4px;padding:1px 6px;cursor:pointer;font-size:11px;">清空</button>' +
-                '<button id="sg-dm-trace-close" style="background:rgba(255,255,255,0.1);border:none;color:#8899a6;border-radius:4px;padding:1px 6px;cursor:pointer;font-size:11px;">✕</button>' +
-                '</span></div>' +
-                '<div id="sg-dm-trace-body" style="max-height:260px;overflow-y:auto;"></div>';
-            document.body.appendChild(_dmTracePanelEl);
-            try {
-                _dmTracePanelEl.querySelector('#sg-dm-trace-close').addEventListener('click', function () {
-                    try { localStorage.setItem('sg_dm_trace_visible', '0'); } catch (e) {}
-                    _dmTracePanelVisible = false;
-                    _dmTracePanelEl.style.display = 'none';
-                });
-                _dmTracePanelEl.querySelector('#sg-dm-trace-clear').addEventListener('click', function () {
-                    try { sessionStorage.removeItem(DM_TRACE_KEY); } catch (e) {}
-                    renderDmTracePanel();
-                });
-            } catch (e) {}
-        } catch (e) {}
-        return _dmTracePanelEl;
-    }
-
-    function renderDmTracePanel() {
-        var panel = ensureDmTracePanel();
-        if (!panel) return;
-        if (!dmTraceIsPanelVisible()) { panel.style.display = 'none'; return; }
-        panel.style.display = 'block';
-        var body = panel.querySelector('#sg-dm-trace-body');
-        if (!body) return;
-        var trace = dmTraceGet().slice(-16);
-        var html = '';
-        for (var i = trace.length - 1; i >= 0; i--) {
-            var t = trace[i];
-            var color = DM_TRACE_STAGE_COLOR[t.stage] || '#8899a6';
-            var detailText = '';
-            var d = t.detail || {};
-            if (d.target) detailText += '<span style="color:#a5d6ff;">@' + String(d.target).slice(0, 20) + '</span> ';
-            if (d.text) detailText += String(d.text).slice(0, 40);
-            else if (d.action) detailText += String(d.action);
-            else if (d.reason) detailText += String(d.reason);
-            else if (d.round != null) detailText += 'round=' + d.round;
-            if (d.peer_count != null) detailText += ' 对方气泡=' + d.peer_count;
-            if (d.decision) detailText += ' decision=' + d.decision;
-            html += '<div style="display:flex;gap:6px;padding:2px 0;border-bottom:1px solid rgba(255,255,255,0.05);">' +
-                '<span style="color:' + color + ';white-space:nowrap;flex:0 0 auto;">' + t.label + '</span>' +
-                '<span style="color:#8899a6;flex:0 0 auto;font-size:11px;">' + (t.time || '').slice(11, 19) + '</span>' +
-                '<span style="color:#c4cfd6;word-break:break-all;">' + detailText + '</span></div>';
-        }
-        if (!html) html = '<div style="color:#5b7083;padding:8px 2px;">暂无流程记录 — 等下次 DM 任务运行时自动记录</div>';
-        body.innerHTML = html;
-    }
-
-    function dmTraceTogglePanel() {
-        var vis = !dmTraceIsPanelVisible();
-        try { localStorage.setItem('sg_dm_trace_visible', vis ? '1' : '0'); } catch (e) {}
-        _dmTracePanelVisible = vis;
-        renderDmTracePanel();
-    }
-
-    // 页面主世界可通过 __sgRunDmDebug() 快照查看；另暴露浮动面板开关事件
-    try {
-        window.addEventListener('message', function (e) {
-            if (e.source !== window || !e.data) return;
-            if (e.data.type === '__sg_dm_trace_toggle') {
-                dmTraceTogglePanel();
-                try { window.postMessage({ type: '__sg_dm_trace_toggle_result', id: e.data.id || 0, visible: dmTraceIsPanelVisible() }, '*'); } catch (eT) {}
-                return;
-            }
-        });
-    } catch (e) {}
-
-    // ==================== DM 调试桥（响应页面主世界 __sgRunDmDebug） ====================
-    function buildDmDebugSnapshot() {
-        try {
-            var bridge = window.__sgChatBridge || {};
-            var isDmPathFn = bridge.isDmPath || isDmPath;
-            var getRootFn = bridge.getDmConversationRoot || function () { return document.querySelector('[data-testid="DmActivityContainer"]') || document.body; };
-            var getRootTestidFn = bridge.getDmConversationRootTestid || (function () { return getRootFn() === document.body ? 'body' : (getRootFn().getAttribute('data-testid') || getRootFn().tagName); });
-            var collectPeerFn = bridge.collectPeerDmMessages || (function () { return []; });
-            var fallbackFn = bridge.fallbackCollectPeerDmTexts || (function () { return []; });
-            var findComposerFn = bridge.findBottomAwakeningTarget || (function () { return null; });
-            var getPhaseFn = bridge.getChatPhase || (function () { return 'unknown'; });
-            var getDnaFn = bridge.getDnaCore || (function () { return []; });
-            var mailSrc = (function () {
-                try {
-                    var path = (window.location.pathname || '').toLowerCase();
-                    var href = String(window.location.href || '').toLowerCase();
-                    if (isDmPathFn(path) || isDmPathFn(href)) return 'messages';
-                    if (path.indexOf('/dm') >= 0) return 'messages';
-                    if (document.querySelector('[data-testid="DMDrawer"]') || document.querySelector('[data-testid="DmActivityContainer"]')) return 'messages';
-                } catch (e) {}
-                return null;
-            })();
-            var root = getRootFn();
-            var entryCount = 0, bubbleCount = 0, convItemCount = 0;
-            try { entryCount = document.querySelectorAll('[data-testid^="message-"]:not([data-testid^="message-text-"])').length; } catch (eE) {}
-            try { bubbleCount = document.querySelectorAll('[data-testid^="message-text-"], [data-testid="messageBubble"]').length; } catch (eB) {}
-            try { convItemCount = document.querySelectorAll('[data-testid="conversationItem"]').length; } catch (eC) {}
-            var testidInventory = {};
-            var dmTestids = {};
-            try {
-                var tidNodes = document.querySelectorAll('[data-testid]');
-                for (var t = 0; t < tidNodes.length; t++) {
-                    var tk = tidNodes[t].getAttribute('data-testid') || '';
-                    if (!tk) continue;
-                    testidInventory[tk] = (testidInventory[tk] || 0) + 1;
-                    if (/dm|chat|conversation|message|inbox|thread|cell|unread/i.test(tk)) {
-                        dmTestids[tk] = (dmTestids[tk] || 0) + 1;
-                    }
-                }
-            } catch (eT) {}
-            var peerMsgs = collectPeerFn();
-            var peerTexts = [];
-            for (var p = 0; p < peerMsgs.length; p++) peerTexts.push(peerMsgs[p].text);
-            var fbMsgs = fallbackFn(root);
-            var fbTexts = [];
-            for (var f = 0; f < fbMsgs.length; f++) fbTexts.push(fbMsgs[f].text);
-            var unreadMarkers = [];
-            try {
-                if (root && root.querySelectorAll) {
-                    var unreadNodes = root.querySelectorAll('[data-testid="unreadIndicator"], [data-testid*="unread" i], [aria-label*="未读" i], [aria-label*="Unread" i], [aria-label*="新消息" i]');
-                    for (var u = 0; u < unreadNodes.length; u++) unreadMarkers.push(unreadNodes[u].getAttribute('data-testid') || unreadNodes[u].getAttribute('aria-label') || unreadNodes[u].tagName);
-                }
-            } catch (eU) {}
-            var composerInput = null;
-            try { composerInput = findComposerFn(); } catch (eCIn) {}
-            var sendBtn = null;
-            try {
-                var findSendBtnFn = bridge.findDmSendButton || (function () { return null; });
-                sendBtn = findSendBtnFn();
-            } catch (eS) {}
-            return {
-                ts: Date.now(),
-                url: window.location.href,
-                path: window.location.pathname,
-                isMessagesPage: !!mailSrc,
-                mailSource: mailSrc || 'none',
-                rootTestid: getRootTestidFn(),
-                rootFound: !!root,
-                rootTagName: root ? root.tagName : 'N/A',
-                entryCount: entryCount,
-                bubbleCount: bubbleCount,
-                convItemCount: convItemCount,
-                testidInventory: testidInventory,
-                dmTestids: dmTestids,
-                peerCount: peerTexts.length,
-                peerTexts: peerTexts.slice(-12),
-                fallbackCount: fbTexts.length,
-                fallbackTexts: fbTexts.slice(-12),
-                unreadMarkers: unreadMarkers,
-                unreadSeen: unreadMarkers.length > 0,
-                composerFound: !!composerInput,
-                composerDisabled: composerInput ? !!composerInput.disabled : 'N/A',
-                sendBtnFound: !!sendBtn,
-                sendBtnDisabled: sendBtn ? !!sendBtn.disabled : 'N/A',
-                currentTarget: sessionStorage.getItem('current_target') || '',
-                chatPhase: getPhaseFn(),
-                autoStep: sessionStorage.getItem('dan_auto_step') || '',
-                dnaCore: getDnaFn().slice(0, 12)
-            };
-        } catch (e) {
-            return { error: String(e && e.message || e), ts: Date.now() };
-        }
-    }
-
-    function installDmDebugBridge() {
-        try {
-            if (window.__sgDmDebugBridgeListening) return;
-            window.__sgDmDebugBridgeListening = true;
-            window.addEventListener('message', function (e) {
-                if (e.source !== window || !e.data) return;
-                if (e.data.type === '__sg_dm_debug_request') {
-                    var payload = buildDmDebugSnapshot();
-                    window.postMessage({ type: '__sg_dm_debug_result', payload: payload, id: e.data.id || 0 }, '*');
-                    return;
-                }
-            });
-            try { window.__sgDmDebugReady = true; } catch (eD) {}
-            console.log('[DM调试] 应答桥已就绪');
-        } catch (e) {}
-    }
-
-    installDmDebugBridge();
-    setTimeout(installDmDebugBridge, 500);
 
     console.log('[MatrixChatTemplates] 模板管理模块已加载 (' + MTPL_VER + ')');
 })();

@@ -16,9 +16,13 @@
     try {
       if (typeof getScrmGateSync === 'function') {
         var g = getScrmGateSync();
-        return !!(g && g.allow_chat);
+        // 4.4.1：紧急 fail-open —— 闸门未就绪/拉不到时默认放行，避免耽误私信
+        // g 为假值（缓存未就绪/查询中）→ 放行
+        if (!g) return true;
+        return !!g.allow_chat;
       }
     } catch (e) {}
+    // 函数未定义/异常 → 默认放行（fail-open）
     return true;
   }
 
@@ -40,26 +44,6 @@
     return false;
   }
 
-  function readLocalDayCount() {
-    try {
-      var h = '';
-      try {
-        if (typeof window !== 'undefined' && typeof window.__sgGetMyHandle === 'function') {
-          h = String(window.__sgGetMyHandle() || '');
-        }
-      } catch (eH) {}
-      if (!h) {
-        h = localStorage.getItem('matrix_my_handle') || '';
-        h = String(h).replace(/^@/, '').replace(/#guard$/i, '').toLowerCase();
-      }
-      if (!h || h === 'unknown') return 1;
-      var dc = parseInt((JSON.parse(localStorage.getItem('matrix_stats_' + h) || '{}')).day_count, 10);
-      return (dc > 0) ? dc : 1;
-    } catch (e) {
-      return 1;
-    }
-  }
-
   /**
    * 返回 { allowChat, preferInbox, allowFollow, cooldownMultiplier, reason }
    */
@@ -73,10 +57,7 @@
     if (!scrmAllowsChat()) {
       return { allowChat: false, preferInbox: false, allowFollow: true, cooldownMultiplier: 2, reason: 'scrm_offline' };
     }
-    var dayCount = readLocalDayCount();
-    if (dayCount < 3) {
-      return { allowChat: false, preferInbox: false, allowFollow: true, cooldownMultiplier: 1, reason: 'day_lt_3', day: dayCount };
-    }
+    // 4.3.32：取消私信天数限制，Day1 即可私信（4.6.31 顺带删 readLocalDayCount 死代码）
     // 4.1.64：非私信时段（默认 08:00–18:00 外）不开私信、不赶债
     try {
       var inChat = true;
@@ -104,7 +85,6 @@
         reason: phase === 'chat2' ? 'soft_risk_chat2' : 'soft_risk_chat1'
       };
     }
-    // 窗外：债/回复也只走粉丝页（守箱废除）
     if (debt > 0) {
       return { allowChat: true, preferInbox: false, allowFollow: true, cooldownMultiplier: 1, reason: 'has_kick_or_debt' };
     }

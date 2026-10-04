@@ -191,11 +191,12 @@
       msgs = [];
     }
     // 4.1.17：发送路径禁止 fallback；仅显式 allowFallback 时启用（诊断）
+    var fromFallback = false;
     if (!msgs.length && allowFallback) {
       try {
         var root = callHook('getDmConversationRoot');
         var fb = callHook('fallbackCollectPeerDmTexts', root);
-        if (fb && fb.length) msgs = fb;
+        if (fb && fb.length) { msgs = fb; fromFallback = true; }
       } catch (eF) {}
     }
     var out = [];
@@ -208,7 +209,9 @@
       } else if (callHook('isSystemDmLine', t) || callHook('isProfileUiLine', t)) {
         continue;
       }
-      if (isLinkShellText(t) || isOwnScriptText(t, normHandle)) continue;
+      // 4.6.33：主路径 collectPeerDmMessages 已做几何+DNA 混合分类（几何左=对方，即使文本像话术），
+      // 此处再按文本二次过滤会把"对方引用/撞车前缀"的真回复误杀——文本兜底过滤只用于 fallback 宽扫
+      if (fromFallback && (isLinkShellText(t) || isOwnScriptText(t, normHandle))) continue;
       // 极短噪声（非年龄数字等有效短回复仍可能 2 字；≤1 已在 chrome 拦）
       if (t.length < 2) continue;
       seen[t] = 1;

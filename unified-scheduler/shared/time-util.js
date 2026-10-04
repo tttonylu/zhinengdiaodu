@@ -129,7 +129,7 @@ var TimeUtil = (function () {
     }
   }
 
-  /** 读 sg_stage_policy.chatHours；产品默认 08:00–18:00；job 池 start≥10:00、end 默认不低于 19:00 */
+  /** 读 sg_stage_policy.chatHours；产品默认 dating 08:00–18:00；job 池硬窗北京 10:00–19:00 */
   function readChatHours() {
     if (isTest24h()) return { startH: 0, startM: 0, endH: 24, endM: 0 };
     var out = { startH: 8, startM: 0, endH: 18, endM: 0 };
@@ -145,18 +145,13 @@ var TimeUtil = (function () {
         };
       }
     } catch (e) {}
-    // 选兼职粉：北京时间 10:00 起；结束至少到 19:00（晚上七点），除非 OPS 配了更晚
+    // 兼职粉：北京时间（Asia/Shanghai）硬窗 10:00–19:00；19:00 起硬停，留到次日
+    // inRange 为 [start, end)，故 end=19:00 时 19:00 起不在窗内
     if (isJobScriptPool()) {
-      var startMin = out.startH * 60 + (out.startM || 0);
-      if (startMin < 10 * 60) {
-        out.startH = 10;
-        out.startM = 0;
-      }
-      var endMin = out.endH * 60 + (out.endM || 0);
-      if (endMin < 19 * 60) {
-        out.endH = 19;
-        out.endM = 0;
-      }
+      out.startH = 10;
+      out.startM = 0;
+      out.endH = 19;
+      out.endM = 0;
     }
     return out;
   }
@@ -185,9 +180,10 @@ var TimeUtil = (function () {
     return inRange(h.startH, h.startM, h.endH, h.endM);
   }
 
-  /** 定格点：上海时间绝对 17:00（不跟 end 漂移）；24h 测试模式永不定格 */
+  /** 定格点：上海时间；dating 17:00；job 对齐私信硬停 19:00（不停窗内破冰）；24h 测试永不定格 */
   function chatFreezeMinutes() {
     if (isTest24h()) return 24 * 60;
+    if (isJobScriptPool()) return 19 * 60;
     return 17 * 60;
   }
 

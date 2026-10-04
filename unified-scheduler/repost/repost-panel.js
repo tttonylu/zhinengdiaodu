@@ -143,15 +143,10 @@
       return;
     }
     try {
-      chrome.runtime.sendMessage({ action: 'sg_manual_repost' }, function (r) {
-        if (chrome.runtime.lastError) {
-          toast('启动失败：' + chrome.runtime.lastError.message, '#f4212e');
-          return;
-        }
-        if (r && r.ok === false) toast(r.error || '启动失败', '#f4212e');
-        else toast('已启动手动转帖', '#52c41a');
-        setTimeout(render, 400);
-      });
+      // 页面内直发，不走 chrome.runtime/SW，避免 SW 休眠时「Receiving end does not exist」
+      window.dispatchEvent(new CustomEvent('sg-page-cmd', { detail: { action: 'sg_manual_repost' } }));
+      toast('已启动手动转帖', '#52c41a');
+      setTimeout(render, 400);
     } catch (e) {
       toast('启动失败', '#f4212e');
     }
@@ -227,8 +222,13 @@
     if (pt === 'text_or_image') pt = 'all';
 
     var cloneLabel = '';
+    var cloneError = '';
     try {
       if (window.ProfileClone && ProfileClone.statusLabel) cloneLabel = ProfileClone.statusLabel() || '';
+      if (window.ProfileClone && ProfileClone.getState) {
+        var cs = ProfileClone.getState();
+        if (cs && cs.lastError) cloneError = cs.lastError;
+      }
     } catch (eCl) {}
 
     panel.innerHTML =
@@ -240,7 +240,7 @@
       + '<div><span>今日</span><span>' + dailyLabel() + '</span></div>'
       + '</div>'
       + (cloneLabel
-        ? '<div style="font-size:10px;color:#f91880;margin:0 0 6px">资料克隆：' + cloneLabel + '</div>'
+        ? '<div style="font-size:10px;color:#f91880;margin:0 0 6px">资料克隆：' + cloneLabel + (cloneError ? ' · ' + cloneError : '') + '</div>'
         : '')
       + '<div class="sg-rp-cfg">'
       + '<div><span>类型</span><select id="sg-rp-type">'

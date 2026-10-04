@@ -7,6 +7,7 @@
   if (typeof window !== 'undefined') window.__sg_promo_links_loaded__ = true;
 
   var current_live_links = [];
+  var _linkRoundIdx = 0; // 轮播索引（round-robin）
   var MY_LINKS_KEY = 'dan_promo_links';
   var LINKS_SYNC_KEY = 'dan_links_last_sync';
   var LINK_SYNC_INTERVAL = 5 * 60 * 1000;
@@ -135,8 +136,12 @@
 
   function getLiveLink() {
     if (current_live_links && current_live_links.length > 0) {
-      console.log('[推广链接] 使用服务器同步链接:', current_live_links[0]);
-      return current_live_links[0];
+      // 4.4.1：round-robin 轮播，多链接均匀分配
+      var idx = _linkRoundIdx % current_live_links.length;
+      var link = current_live_links[idx];
+      _linkRoundIdx = (idx + 1) % current_live_links.length;
+      console.log('[推广链接] 轮播第' + (idx + 1) + '/' + current_live_links.length + '个:', link);
+      return link;
     }
     console.log('[推广链接] 无可用链接，跳过广告');
     return null;
@@ -184,6 +189,7 @@
 
   function setCurrentLinks(links) {
     current_live_links = Array.isArray(links) ? links : [];
+    _linkRoundIdx = 0; // 链接列表变更后重置轮播索引
   }
 
   var api = {

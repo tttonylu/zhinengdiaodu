@@ -11,12 +11,12 @@
     morningNurtureUntil: [6, 0],
     stages: {
       S0: { priority: [] },
-      // Day1–2：先养号再关注
-      S1: { dayMax: 2, priority: ['nurture', 'follow'] },
-      // Day≥3 非私信时段：关注+养号（转帖由 A2 非私信独占，不进白天混排）
-      S2: { dayMin: 3, priority: ['follow', 'nurture'] },
-      // Day≥3 私信时段：私信可进软窗；工作内关注优先（A3）
-      S3: { dayMin: 3, priority: ['chat', 'follow', 'nurture'] },
+      // 4.6.21：Day1 先关注后养号（用户要求先点关注）
+      S1: { dayMax: 1, priority: ['follow', 'nurture'] },
+      // Day≥2 非私信时段：关注+养号（转帖由 A2 非私信独占，不进白天混排）
+      S2: { dayMin: 2, priority: ['follow', 'nurture'] },
+      // 4.6.31：取消 S3 日龄门，私信时段即全开（Day1 即可私信）
+      S3: { dayMin: 1, priority: ['chat', 'follow', 'nurture'] },
       // S4 已停用，保留字段仅兼容旧配置
       S4: { maxOccupyMin: 30, priority: ['chat'], disabled: true }
     },
@@ -170,6 +170,42 @@
     return false;
   }
 
+  /** 4.3.32：新号资料是否已就绪（资料修改过 + 发过帖子）
+   *  Day≥2 号默认视为就绪（已度过首日）；Day1 新号需检查
+   *  - 资料修改：profile clone textDone 或 done = true
+   *  - 发过帖子：repost posted_ids 非空
+   *  - 手动标记：sg_newacct_ready_<handle> = '1'
+   */
+  function isNewAccountReady() {
+    try {
+      var day = getDayCount();
+      if (day >= 2) return true;
+    } catch (eD) {}
+    // 手动标记优先（用户可在面板点「新号就绪」）
+    try {
+      var h = localStorage.getItem(K.LK_MY_HANDLE) || 'unknown';
+      h = h.replace('@', '').replace('#guard', '').toLowerCase();
+      if (localStorage.getItem('sg_newacct_ready_' + h) === '1') return true;
+    } catch (eM) {}
+    // 检查资料克隆是否完成
+    var profileOk = false;
+    try {
+      var h2 = (localStorage.getItem(K.LK_MY_HANDLE) || 'unknown').replace('@', '').replace('#guard', '').toLowerCase();
+      var pcs = localStorage.getItem('sg_profile_clone_state_' + h2);
+      if (pcs) {
+        var st = JSON.parse(pcs);
+        if (st && (st.done || st.textDone)) profileOk = true;
+      }
+    } catch (eP) {}
+    // 检查是否发过帖子（per-handle 标记，避免多号串扰）
+    var postOk = false;
+    try {
+      var h3 = (localStorage.getItem(K.LK_MY_HANDLE) || 'unknown').replace('@', '').replace('#guard', '').toLowerCase();
+      if (localStorage.getItem('sg_repost_posted_ok_' + h3) === '1') postOk = true;
+    } catch (ePost) {}
+    return profileOk && postOk;
+  }
+
   function shanghaiMinutesNow() {
     if (typeof TimeUtil !== 'undefined' && TimeUtil.shanghaiParts) {
       var p = TimeUtil.shanghaiParts();
@@ -253,8 +289,8 @@
     var s1 = policy.stages.S1 || {};
     var s2 = policy.stages.S2 || {};
     var s3 = policy.stages.S3 || {};
-    var s1DayMax = (s1.dayMax != null) ? Number(s1.dayMax) : 2;
-    var s3DayMin = (s3.dayMin != null) ? Number(s3.dayMin) : 3;
+    var s1DayMax = (s1.dayMax != null) ? Number(s1.dayMax) : 1;
+    // 4.6.31：S3 不再设日龄门（Day1 即可私信）；忽略 s3.dayMin，防 OPS 旧配置复活闸门
 
     if (!g_isWorkTime) {
       // 4.3.23：关注/养号全天可跑；不再因下班进空 priority 的 S0 静默。
@@ -265,10 +301,14 @@
       if (dayCount <= s1DayMax) {
         var pOff = preferNurtureBeforeFollow(['nurture', 'follow']);
         if (quotaFull) pOff = dropFollow(pOff);
+        // 4.3.32：新号未就绪 → 禁止关注
+        if (!isNewAccountReady()) pOff = dropFollow(pOff);
         return { stage: 'S1', priority: pOff };
       }
       var pOff2 = ['follow', 'nurture'];
       if (quotaFull) pOff2 = dropFollow(pOff2);
+      // 4.3.32：新号未就绪 → 禁止关注
+      if (!isNewAccountReady()) pOff2 = dropFollow(pOff2);
       return { stage: 'S2', priority: pOff2 };
     }
 
@@ -285,23 +325,29 @@
     var stage;
     var priority;
 
-    if (dayCount <= s1DayMax) {
-      stage = 'S1';
-      priority = (s1.priority || ['nurture', 'follow']).concat();
-      // Day1–2：养号优先排序（软），不再硬挡关注——养号空转会导致整天 0 粉
-      priority = preferNurtureBeforeFollow(priority);
-    } else if (dayCount >= s3DayMin && g_isChatTime) {
-      // Day≥3 私信时段：全开；不再进入 S4 独占
+    // 4.3.32/4.6.31：私信时段直接 S3 全开（Day1 即可私信，不再判日龄）
+    if (g_isChatTime) {
+      // 私信时段：全开；不再进入 S4 独占
       stage = 'S3';
       priority = (s3.priority || ['chat', 'follow', 'nurture']).concat();
+    } else if (dayCount <= s1DayMax) {
+      stage = 'S1';
+      priority = (s1.priority || ['nurture', 'follow']).concat();
+      // Day1：养号优先排序（软），不再硬挡关注——养号空转会导致整天 0 粉
+      priority = preferNurtureBeforeFollow(priority);
     } else {
-      // Day≥3 非私信时段（18:00 后 / 08:00 前）
+      // Day≥2 非私信时段（18:00 后 / 08:00 前）
       stage = 'S2';
       priority = (s2.priority || ['follow', 'nurture']).concat();
     }
 
-    // 配额满：去掉 follow，其余照常（Day≥3 私信时段仍可 chat+nurture）
+    // 配额满：去掉 follow，其余照常（私信时段仍可 chat+nurture）
     if (quotaFull) {
+      priority = dropFollow(priority);
+    }
+
+    // 4.3.32：新号未就绪（资料未修改 / 未发过帖）→ 禁止关注，仅养号+私信
+    if (!isNewAccountReady()) {
       priority = dropFollow(priority);
     }
 
@@ -328,7 +374,8 @@
     isWorkTime: isWorkTime,
     isChatTime: isChatTime,
     isMorningNurtureOnly: isMorningNurtureOnlyPublic,
-    hasNurtureProgressToday: hasNurtureProgressToday
+    hasNurtureProgressToday: hasNurtureProgressToday,
+    isNewAccountReady: isNewAccountReady
   };
   if (typeof window !== 'undefined') { window.StageDetector = StageDetector; }
   if (typeof self !== 'undefined') { self.StageDetector = StageDetector; }

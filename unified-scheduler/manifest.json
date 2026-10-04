@@ -1,11 +1,10 @@
 {
   "manifest_version": 3,
   "name": "智能调度中心",
-  "version": "4.3.29",
-  "description": "智能调度 4.3.29：修复远程重锁关注配额后前端仍满配额的问题",
-
+  "version": "4.6.37",
+  "description": "智能调度 4.6.37：关注防老外修日文误跳——name∨bio 分提合并判定，有日文不按长度踢，补半角假名与显示原文",
   "action": {
-    "default_title": "智能调度中心 4.3.27"
+    "default_title": "智能调度中心 4.6.37"
   },
   "permissions": [
     "storage",

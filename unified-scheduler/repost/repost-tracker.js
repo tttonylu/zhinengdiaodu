@@ -21,15 +21,14 @@
     postType: 'text_or_image', // text | image | text_or_image
     banVideo: true,
     postsPerHandle: 1,
-    cooldownMin: 30,
+    cooldownMin: 40,
     cooldownMax: 90,
     dailyCap: 50,
-    // dailyQuota 仅作 OPS/本地兜底展示；真正收工条数见 getDailyQuota（按日龄）
-    dailyQuota: 2,
+    day14Quota: 2,  // Day1–4 每日条数（与 OPS 一致）
+    day5Quota: 1,   // Day5+ 每日条数（与 OPS 一致）
     maxMinutes: 60,
     // 开跑时刻（上海）；followWorkEnd=true 时跟 stage 的 workHours.end
-    // 凌晨场默认 06:00 且不跟随下班（须 S0=上班前）
-    followWorkEnd: false,
+    followWorkEnd: true,
     startHour: 6,
     startMin: 0,
     // 旧双窗字段仅兼容旧 LS，门禁不再使用
@@ -159,6 +158,68 @@
     return getTargets().length > 0;
   }
 
+  function myHandle() {
+    try {
+      var h = (localStorage.getItem('matrix_my_handle') || '').replace(/^@/, '').replace(/#guard$/i, '').toLowerCase().trim();
+      if (h && h !== 'unknown') return h;
+    } catch (e) {}
+    return 'unknown';
+  }
+
+  var POSTED_OK_KEY_PREFIX = 'sg_repost_posted_ok_';
+
+  // 本号 handle 候选：导航栏个人资料链接（无论当前停在谁的主页，都指向登录本号）
+  // > matrix_my_handle（转帖跳来源号主页时可能被改写）> matrix_stats_*（最后兜底）
+  function navProfileHandle() {
+    try {
+      var a = document.querySelector('a[data-testid="AppTabBar_Profile_Link"]');
+      var href = a && (a.getAttribute('href') || a.href || '');
+      var m = String(href || '').match(/x\.com\/([A-Za-z0-9_]+)/) || String(href || '').match(/^\/([A-Za-z0-9_]+)/);
+      var h = (m && m[1]) || '';
+      if (h && !/^(home|explore|search|i|settings|messages|notifications|compose|login|signup)$/i.test(h)) {
+        return h.toLowerCase();
+      }
+    } catch (e) {}
+    return '';
+  }
+
+  function ownHandleCandidates() {
+    var out = [];
+    function push(v) {
+      var h = String(v == null ? '' : v).replace(/^@/, '').replace(/#guard$/i, '').toLowerCase().trim();
+      if (h && h !== 'unknown' && out.indexOf(h) < 0) out.push(h);
+    }
+    push(navProfileHandle());
+    try { push(localStorage.getItem('matrix_my_handle')); } catch (e0) {}
+    if (!out.length) {
+      try {
+        var ks = Object.keys(localStorage || {});
+        for (var i = 0; i < ks.length; i++) {
+          if (ks[i].indexOf('matrix_stats_') === 0) { push(ks[i].slice('matrix_stats_'.length)); break; }
+        }
+      } catch (e1) {}
+    }
+    return out;
+  }
+
+  // 写「本号已发帖」标记：对每个候选 handle 都写，读取方（面板/阶段检测）用哪个都能命中
+  function markOwnPosted() {
+    var hs = ownHandleCandidates();
+    for (var i = 0; i < hs.length; i++) {
+      try { localStorage.setItem(POSTED_OK_KEY_PREFIX + hs[i], '1'); } catch (e2) {}
+    }
+    return hs;
+  }
+
+  // 是否已标记发帖（任一候选 handle 命中即算）
+  function hasPostedOk() {
+    var hs = ownHandleCandidates();
+    for (var i = 0; i < hs.length; i++) {
+      try { if (localStorage.getItem(POSTED_OK_KEY_PREFIX + hs[i]) === '1') return true; } catch (e3) {}
+    }
+    return false;
+  }
+
   function getPostedIds() { return loadJson(POSTED_KEY, []); }
   function isPosted(id) { return !!id && getPostedIds().indexOf(String(id)) >= 0; }
   function markPosted(id) {
@@ -170,6 +231,10 @@
       if (ids.length > 800) ids = ids.slice(-600);
       saveJson(POSTED_KEY, ids);
     }
+    // 4.3.32：按号记录已发过帖（用于新号就绪判定，避免多号串扰）
+    // 4.4.3：不能用 location.pathname（转帖在来源号主页会误写来源号）
+    // 4.6.3：matrix_my_handle 同样会被来源页导航改写，改为「导航栏本号 + matrix_my_handle」双写
+    markOwnPosted();
   }
 
   function getSkipIds() { return loadJson(SKIP_KEY, []); }
@@ -196,6 +261,14 @@
   function bumpDaily() {
     var d = getDaily();
     d.count = (d.count || 0) + 1;
+    saveJson(DAILY_KEY, d);
+    return d;
+  }
+
+  // 4.6.30：直接写当日计数（反垃圾填满配额用），替代循环 bump 造成的虚高/多次写盘
+  function setDailyCount(n) {
+    var d = getDaily();
+    d.count = Math.max(0, parseInt(n, 10) || 0);
     saveJson(DAILY_KEY, d);
     return d;
   }
@@ -240,7 +313,13 @@
    * Day 1–4 → 2 条/天；Day ≥5 → 1 条/天。去重靠 posted/skip ids。
    */
   function getDailyQuota() {
-    return getAccountDayCount() >= 5 ? 1 : 2;
+    var cfg = getConfig();
+    var day = getAccountDayCount();
+    var early = Number(cfg.day14Quota);
+    var late = Number(cfg.day5Quota);
+    if (!isFinite(early) || early < 0) early = 2;
+    if (!isFinite(late) || late < 0) late = 1;
+    return day >= 5 ? late : early;
   }
 
   /** 当日有效上限：日龄配额与 dailyCap（>0）取更严 */
@@ -559,6 +638,8 @@
     var started = getAutoStartedAt();
     if (!started) return false;
     if (getAutoStatus() !== 'running') return false;
+    // 4.5.2：还没发到日配额就不算超时（当天必须发到），避免熔断冷却/等新帖时被误判超时
+    if (!dailyExhausted()) return false;
     if (Date.now() - started >= getMaxMinutes() * 60 * 1000) return true;
     return false;
   }
@@ -616,6 +697,9 @@
     hasLocalTargets: hasLocalTargets,
     isPosted: isPosted,
     markPosted: markPosted,
+    markOwnPosted: markOwnPosted,
+    hasPostedOk: hasPostedOk,
+    ownHandleCandidates: ownHandleCandidates,
     getLastOkAt: getLastOkAt,
     markLastOkAt: markLastOkAt,
     msUntilNextPostAllowed: msUntilNextPostAllowed,
@@ -623,6 +707,7 @@
     markSkipped: markSkipped,
     getDaily: getDaily,
     bumpDaily: bumpDaily,
+    setDailyCount: setDailyCount,
     getAccountDayCount: getAccountDayCount,
     getDailyQuota: getDailyQuota,
     getEffectiveDailyLimit: getEffectiveDailyLimit,

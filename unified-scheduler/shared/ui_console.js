@@ -446,7 +446,7 @@
                 } else if (typeof first === 'string' && (
                     first.indexOf('[私信]') === 0 || first.indexOf('[战报]') === 0 ||
                     first.indexOf('[话术]') === 0 || first.indexOf('[推广链接]') === 0 ||
-                    first.indexOf('[守箱]') === 0 || first.indexOf('[年龄识别]') === 0 ||
+                    first.indexOf('[年龄识别]') === 0 ||
                     first.indexOf('[诊断]') === 0 || first.indexOf('[赶工]') === 0
                 )) {
                     addLog('chat', level, first + (msg ? ' ' + msg : ''));

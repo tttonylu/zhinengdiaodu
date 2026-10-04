@@ -1,4 +1,4 @@
-# 多开网络 · 运维 SOP（4.2.49+ / 行为 4.2.61）
+# 多开网络 · 运维 SOP（4.4.1+）
 
 指纹/IX **一窗一 Chrome 档**，扩展 storage 不跨窗。握手慢主要靠：**分批开机 + 代理容量 + 插件错峰**，别指望扩展 alone 治本。
 
@@ -19,20 +19,33 @@
 | S0 转帖 | 开跑点后 **+0–15min** 种子抖动，避免 06:00 齐跑 |
 | 导航间隔 | 默认 `nav_min_interval_ms=13000`（OPS 可调） |
 | 延迟空壳 | `loading_shell` 宽限 ~105s；**首次只 soft reload、不 purge** |
-| 媒体 | **4.3.14 默认放行**（`media_load_mode=on`；`auto` 也按 on）；仅显式 `off` 才 DNR 禁重媒体 |
+| 媒体 | **4.4.0 默认禁图**（`media_load_mode=off`；纯 DNR 拦 pbs/video/ton/pbs-mu.twimg.com，无 DOM 硬拦）；转帖/克隆走 fetch 不受影响 |
 | Aw Snap | SW 检测崩溃 title / `chrome-error`（含日文エラー）→ 熔断内 recreate |
 | 软导航（4.2.61） | 粉丝页灌水闸；关注/破冰/养号优先 click·back；共用 soft_reload 冷却 |
 
 ## OPS 阈值
 
-- `media_load_mode`：`on`（默认放行）| `off`（禁重媒体）— **系统配置 → 调度参数 → 媒体加载**（`auto` 已废弃，插件按 on）
+- `media_load_mode`：`off`（默认禁图，纯 DNR）| `on`（放行）— **系统配置 → 调度参数 → 媒体加载**（`auto` 已废弃，按 off 处理）
 - `chat_script_pool`：`dating`（交友）| `job`（兼职粉）— **系统配置 → 调度参数 → 话术池**
 - `nav_min_interval_ms`：多开建议 12000–15000
 
+## 禁图历史与踩坑记录
+
+| 版本 | 方案 | 问题 | 结局 |
+|------|------|------|------|
+| ~4.3.1 | DNR + DOM prototype 劫持（双层拦截） | ① 插件崩溃（Aw Snap）；② DM 私信无法进入 | 全线撤退，默认 on |
+| 4.3.14 | 默认放行（`media_load_mode=on`） | 占内存/带宽 | 权宜之计 |
+| **4.4.0** | **纯 DNR 禁图，移除 DOM 硬拦** | — | 重启禁图，无崩溃风险 |
+
+**踩坑教训：**
+- DOM prototype 劫持（改写 `img.src` / `setAttribute` 等）是 Aw Snap 崩溃的根因，与 X 的 React/Lexical 渲染引擎冲突
+- DNR 只拦 `image`/`media` resourceType，不拦 `fetch`，所以转帖/资料克隆拉图不受影响，无需开闸
+- DNR 的 `requestDomains` 只配 `pbs/video/ton/pbs-mu.twimg.com`，**不含 `abs.twimg.com`**（头像/emoji/壳资源），DM 私信核心功能不受影响
+
 ## IX 注意
 
-若指纹壳 **DNR 无效**：时间线被动图仍会占带宽；克隆/转帖仍走开闸 + BG 代拉。用一台 IX 实机看 Network：页内 img / content fetch / SW fetch 是否都挡住。
+若指纹壳 **DNR 无效**：时间线被动图仍会占带宽；克隆/转帖走 fetch 不受影响。用一台 IX 实机看 Network：页内 img 是否被 block。
 
 ## 回滚
 
-OPS 把 `media_load_mode` 设为 `on` 即卸禁图规则；扩展降回 4.2.47 可去掉错峰/开闸行为。
+OPS 把 `media_load_mode` 设为 `on` 即卸禁图规则，1 分钟内全量生效。

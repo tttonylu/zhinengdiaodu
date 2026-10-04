@@ -345,31 +345,41 @@
     }
   }
 
-  /** 对齐转帖 Lexical 写入：execCommand → paste → InputEvent，读回校验 */
+  function _nr_commentAntiSpamText() {
+    try {
+      var t = String((document.body && document.body.innerText) || '').slice(0, 6000);
+      if (EngineUtils && EngineUtils.looksLikeAntiSpam && EngineUtils.looksLikeAntiSpam(t)) return t;
+    } catch (e) {}
+    return '';
+  }
+
+  /** 对齐转帖 Lexical 写入：拟人键盘输入 → execCommand → paste → InputEvent，读回校验 */
   async function _nr_insertCommentText(editor, text) {
     if (!editor) return false;
     var want = String(text || '');
     if (!want) return false;
-    try { editor.focus(); } catch (_) {}
-    await sleep(120);
 
     function read() {
+      // X 评论框是 Lexical contenteditable，innerText 即真实 state；textContent 兜底
       return ((editor.innerText || editor.textContent || '') + '').trim();
     }
     function looksOk(got) {
-      if (!got) return false;
-      if (got === want) return true;
-      var n = Math.min(12, want.length);
-      return n > 0 && got.indexOf(want.slice(0, n)) >= 0;
+      return !!got && got === want;
     }
 
+    // 4.6.26：改用一次性粘贴（模拟用户复制粘贴）
+    // 不再逐字输入——逐字输入节奏规律+事件多，反而更容易被检测为自动化
+    try { editor.focus(); } catch (_) {}
+    await sleep(rand(200, 500));
+
+    // 先清空
     try {
       document.execCommand('selectAll', false);
-      document.execCommand('insertText', false, want);
-    } catch (e0) {}
-    await sleep(200);
-    if (looksOk(read())) return true;
+      document.execCommand('delete', false);
+    } catch (eClr) {}
+    await sleep(rand(100, 250));
 
+    // 粘贴
     try {
       var dt = new DataTransfer();
       dt.setData('text/plain', want);
@@ -378,30 +388,32 @@
         bubbles: true,
         cancelable: true
       }));
-    } catch (e1) {}
-    await sleep(250);
+    } catch (ePaste) {
+      // 兜底：execCommand
+      try { document.execCommand('insertText', false, want); } catch (_) {}
+    }
+    await sleep(rand(300, 600));
+
     if (looksOk(read())) return true;
 
+    // 重试一次
     try {
-      editor.dispatchEvent(new InputEvent('beforeinput', {
-        inputType: 'insertText',
-        data: want,
+      document.execCommand('selectAll', false);
+      document.execCommand('delete', false);
+    } catch (eClr2) {}
+    await sleep(rand(150, 300));
+    try {
+      var dt2 = new DataTransfer();
+      dt2.setData('text/plain', want);
+      editor.dispatchEvent(new ClipboardEvent('paste', {
+        clipboardData: dt2,
         bubbles: true,
         cancelable: true
       }));
-      editor.dispatchEvent(new InputEvent('input', {
-        inputType: 'insertText',
-        data: want,
-        bubbles: true,
-        cancelable: true
-      }));
-    } catch (e2) {
-      try {
-        editor.textContent = want;
-        editor.dispatchEvent(new Event('input', { bubbles: true }));
-      } catch (e3) {}
+    } catch (_) {
+      try { document.execCommand('insertText', false, want); } catch (_) {}
     }
-    await sleep(200);
+    await sleep(rand(300, 600));
     return looksOk(read());
   }
 
@@ -452,6 +464,11 @@
 
   async function postComment() {
     if (!NurtureTracker.canCommentNow()) return false;
+    if (EngineUtils && EngineUtils.isAntiSpamCooldown && EngineUtils.isAntiSpamCooldown()) {
+      var left = Math.ceil(EngineUtils.msUntilAntiSpamCooldownEnd() / 60000);
+      Logger.info('养号', '评论-反垃圾冷却中，' + left + ' 分钟后再试');
+      return false;
+    }
     var tweet = await pickJapaneseTweet();
     if (!tweet) return false;
     if (!isJapaneseTweet(tweet)) {
@@ -515,14 +532,14 @@
       if (!comment) { Logger.warn('养号', '评论-无可用文字'); return false; }
 
       await _nr_humanClick(textarea);
-      await sleep(300);
+      await sleep(_nr_rand(200, 600));
       var wrote = await _nr_insertCommentText(textarea, comment);
       if (!wrote) {
         Logger.warn('养号', '评论-写入失败');
         await _nr_leaveCommentComposer(navigatedAway);
         return false;
       }
-      await sleep(400);
+      await sleep(_nr_rand(400, 900));
 
       var sendBtn = _nr_findSendBtn(textarea);
       if (!sendBtn || sendBtn.disabled) {
@@ -535,7 +552,7 @@
       var rejected = false;
       var leftComposer = false;
       for (var vi = 0; vi < 12; vi++) {
-        await sleep(1000);
+        await sleep(_nr_rand(800, 1500));
         if (_nr_detectCommentRejectBanner()) {
           rejected = true;
           break;
@@ -551,7 +568,13 @@
       }
 
       if (rejected) {
-        Logger.warn('养号', '评论-平台打回');
+        var antiSpamTxt = _nr_commentAntiSpamText();
+        if (antiSpamTxt && EngineUtils && EngineUtils.markAntiSpamCooldown) {
+          Logger.warn('养号', '评论-命中反垃圾检测，进入冷却');
+          EngineUtils.markAntiSpamCooldown(60, 120);
+        } else {
+          Logger.warn('养号', '评论-平台打回');
+        }
         await _nr_leaveCommentComposer(true);
         await sleep(_nr_rand(2500, 4500));
         return false;
@@ -580,10 +603,14 @@
 
   async function _nr_humanClick(el) {
     if (!el) return;
-    el.focus();
-    await sleep(_nr_rand(73, 211));
-    el.click();
-    await sleep(_nr_rand(121, 322));
+    if (EngineUtils && EngineUtils.humanClick) {
+      await EngineUtils.humanClick(el);
+    } else {
+      el.focus();
+      await sleep(_nr_rand(73, 211));
+      el.click();
+      await sleep(_nr_rand(121, 322));
+    }
   }
 
   function sleep(ms) {

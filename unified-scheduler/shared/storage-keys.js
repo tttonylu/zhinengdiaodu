@@ -47,7 +47,6 @@ var SKeys = (function () {
     SK_CHAT_STEP: 'dan_auto_step',
     SK_CHAT_TARGET: 'dan_target_username',
     SK_ICE_TASK_QUEUE: 'dan_ice_task_queue',
-    SK_INBOX_TASK_QUEUE: 'dan_inbox_task_queue',
     SK_CURRENT_TARGET: 'current_target',
     SK_PAUSED_TILL: 'sg_paused_till',
 
@@ -75,5 +74,9 @@ var SKeys = (function () {
 
     // --- 用户点「停止」：禁止引擎 recover / 克隆续跑拉养号 ---
     LK_USER_PAUSED: 'sg_user_paused',
+
+    // --- 新号自动上路（onboarding）---
+    LK_ONBOARDING_STATE: 'sg_onboarding_state_',
+    SK_ONBOARDING_ACTIVE: 'sg_onboarding_active',
   };
 })();

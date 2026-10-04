@@ -106,18 +106,14 @@
       time_zh: shanghaiTime(),
       url: '',
       chat_phase: '',
-      inbox_phase: '',
-      pulseId: '',
       auto_run: '',
       follow_running: '',
       softRiskUntil: 0
     };
     try { snap.url = String(location.href || ''); } catch (e0) {}
     try { snap.chat_phase = sessionStorage.getItem('dan_chat_phase') || ''; } catch (e1) {}
-    try { snap.inbox_phase = sessionStorage.getItem('dan_inbox_phase') || ''; } catch (e2) {}
-    try { snap.pulseId = sessionStorage.getItem('dan_inbox_queue_pulse') || ''; } catch (e3) {}
-    try { snap.auto_run = sessionStorage.getItem('dan_auto_run') || ''; } catch (e4) {}
-    try { snap.follow_running = localStorage.getItem('matrix_follow_running') || ''; } catch (e5) {}
+    try { snap.auto_run = sessionStorage.getItem('dan_auto_run') || ''; } catch (e2) {}
+    try { snap.follow_running = localStorage.getItem('matrix_follow_running') || ''; } catch (e3) {}
     try {
       var sg = JSON.parse(localStorage.getItem('sg_state') || '{}');
       snap.softRiskUntil = sg.softRiskUntil || 0;

@@ -1,137 +1,382 @@
-#sg-panel {
-  position: fixed; top: 60px; left: 16px; z-index: 2147483640;
-  width: 175px; box-sizing: border-box;
-  background: rgba(13, 17, 23, 0.78);
-  border: 1px solid rgba(48, 54, 61, 0.85);
-  border-radius: 8px;
-  padding: 8px;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  font-size: 11px; color: #c9d1d9;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  transition: width 0.2s ease, height 0.2s ease, border-radius 0.2s ease,
-    padding 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
-  cursor: default;
-  overflow: hidden;
-}
+/* =============================================================================
+   智能调度 — 双圆形悬浮按钮 + 可展开详情面板
+   按钮1：启动/暂停（圆形，绿色播放 / 红色暂停）
+   按钮2：详情展开/收起（圆形，齿轮图标，点击展开/收起面板）
+   ============================================================================= */
 
-/* 收起：半透明状态圆点 */
-#sg-panel.sg-mini {
-  width: 40px; height: 40px; padding: 0;
+/* ==================== 通用圆形悬浮按钮 ==================== */
+.sg-fab {
+  position: fixed;
+  z-index: 2147483640;
+  width: 28px;
+  height: 28px;
   border-radius: 50%;
-  background: rgba(13, 17, 23, 0.55);
-  border-width: 2px;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.35);
-  cursor: grab;
-  display: flex; align-items: center; justify-content: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  user-select: none;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  border: 1.5px solid transparent;
+  box-sizing: border-box;
 }
-#sg-panel.sg-mini:active { cursor: grabbing; }
-
-#sg-panel.sg-status-run {
-  border-color: rgba(63, 185, 80, 0.9);
-  box-shadow: 0 0 10px rgba(63, 185, 80, 0.35), 0 2px 12px rgba(0, 0, 0, 0.3);
+.sg-fab:hover {
+  transform: scale(1.12);
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.45);
 }
-#sg-panel.sg-status-idle {
-  border-color: rgba(139, 148, 158, 0.75);
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.3);
+.sg-fab:active {
+  transform: scale(0.92);
 }
-#sg-panel.sg-status-warn {
-  border-color: rgba(210, 153, 34, 0.95);
-  box-shadow: 0 0 10px rgba(210, 153, 34, 0.35), 0 2px 12px rgba(0, 0, 0, 0.3);
-}
-#sg-panel.sg-status-err {
-  border-color: rgba(248, 81, 73, 0.95);
-  box-shadow: 0 0 10px rgba(248, 81, 73, 0.4), 0 2px 12px rgba(0, 0, 0, 0.3);
-}
-
-#sg-panel .sg-mini-face {
-  display: none;
-  width: 10px; height: 10px; border-radius: 50%;
-  background: #8b949e;
+.sg-fab .sg-fab-icon {
+  font-size: 11px;
+  line-height: 1;
   pointer-events: none;
 }
-#sg-panel.sg-mini .sg-mini-face { display: block; }
-#sg-panel.sg-status-run .sg-mini-face { background: #3fb950; }
-#sg-panel.sg-status-idle .sg-mini-face { background: #8b949e; }
-#sg-panel.sg-status-warn .sg-mini-face { background: #d29922; }
-#sg-panel.sg-status-err .sg-mini-face { background: #f85149; }
 
-#sg-panel.sg-mini .sg-header,
-#sg-panel.sg-mini .sg-body { display: none !important; }
-
-#sg-panel .sg-header {
-  display: flex; align-items: center; gap: 4px;
-  margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1px solid rgba(33, 38, 45, 0.9);
-  font-weight: 700; font-size: 11px; color: #58a6ff;
-  cursor: grab; user-select: none;
+/* ==================== 按钮1：启动/暂停 ==================== */
+.sg-fab-run {
+  background: rgba(13, 17, 23, 0.85);
 }
-#sg-panel .sg-header-title { flex: 1; }
-#sg-panel .sg-toggle { font-size: 10px; color: #484f58; margin-left: auto; }
-#sg-panel #sg-collapse-btn {
-  background: none; border: none; color: #8b949e;
-  cursor: pointer; font-size: 10px; padding: 0 4px; line-height: 1;
+
+/* 停止状态 - 绿色播放 */
+.sg-fab-run.sg-fab-stopped {
+  background: linear-gradient(135deg, #238636, #2ea043);
+  border-color: rgba(63, 185, 80, 0.8);
+}
+.sg-fab-run.sg-fab-stopped .sg-fab-icon {
+  color: #fff;
+  padding-left: 1px;
+}
+
+/* 运行中状态 - 红色暂停 */
+.sg-fab-run.sg-fab-running {
+  background: linear-gradient(135deg, #da3633, #f85149);
+  border-color: rgba(248, 81, 73, 0.8);
+  animation: sgPulse 2s ease-in-out infinite;
+}
+.sg-fab-run.sg-fab-running .sg-fab-icon {
+  color: #fff;
+}
+
+@keyframes sgPulse {
+  0%, 100% {
+    box-shadow: 0 2px 8px rgba(248, 81, 73, 0.4), 0 0 0 0 rgba(248, 81, 73, 0.35);
+  }
+  50% {
+    box-shadow: 0 2px 8px rgba(248, 81, 73, 0.4), 0 0 0 5px rgba(248, 81, 73, 0);
+  }
+}
+
+/* 状态色边框（叠加） */
+.sg-fab-run.sg-status-warn {
+  border-color: rgba(210, 153, 34, 0.95) !important;
+}
+.sg-fab-run.sg-status-err {
+  border-color: rgba(248, 81, 73, 0.95) !important;
+  animation: sgPulseErr 1.2s ease-in-out infinite;
+}
+@keyframes sgPulseErr {
+  0%, 100% {
+    box-shadow: 0 2px 8px rgba(248, 81, 73, 0.5), 0 0 0 0 rgba(248, 81, 73, 0.5);
+  }
+  50% {
+    box-shadow: 0 2px 8px rgba(248, 81, 73, 0.5), 0 0 0 6px rgba(248, 81, 73, 0);
+  }
+}
+
+/* ==================== 按钮2：详情齿轮 ==================== */
+.sg-fab-gear {
+  background: rgba(13, 17, 23, 0.85);
+  border-color: rgba(48, 54, 61, 0.9);
+}
+.sg-fab-gear .sg-fab-icon {
+  color: #8b949e;
+  font-size: 12px;
+  transition: transform 0.3s ease;
+}
+.sg-fab-gear:hover .sg-fab-icon {
+  color: #58a6ff;
+}
+.sg-fab-gear.sg-panel-open .sg-fab-icon {
+  color: #58a6ff;
+  transform: rotate(90deg);
+}
+
+/* 设置按钮状态色 */
+.sg-fab-gear.sg-status-run {
+  border-color: rgba(63, 185, 80, 0.6);
+}
+.sg-fab-gear.sg-status-run .sg-fab-icon {
+  color: #3fb950;
+}
+.sg-fab-gear.sg-status-warn {
+  border-color: rgba(210, 153, 34, 0.7);
+}
+.sg-fab-gear.sg-status-warn .sg-fab-icon {
+  color: #d29922;
+}
+.sg-fab-gear.sg-status-err {
+  border-color: rgba(248, 81, 73, 0.7);
+}
+.sg-fab-gear.sg-status-err .sg-fab-icon {
+  color: #f85149;
+}
+
+/* ==================== 详情浮动面板 ==================== */
+.sg-detail-panel {
+  position: fixed;
+  z-index: 2147483639;
+  width: 280px;
+  max-height: 70vh;
+  background: rgba(13, 17, 23, 0.94);
+  border: 1px solid rgba(48, 54, 61, 0.9);
+  border-radius: 10px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  display: none;
+  flex-direction: column;
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 11px;
+  color: #c9d1d9;
+}
+.sg-detail-panel.sg-show {
+  display: flex;
+  animation: sgPanelFadeIn 0.2s ease-out;
+}
+
+@keyframes sgPanelFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* 面板头部 */
+.sg-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(33, 38, 45, 0.9);
   flex-shrink: 0;
 }
-#sg-panel #sg-collapse-btn:hover { color: #c9d1d9; }
+.sg-panel-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #c9d1d9;
+}
+.sg-panel-version {
+  font-size: 9px;
+  color: #8b949e;
+  margin-left: 6px;
+  flex: 1;
+}
 
-#sg-panel .sg-row {
-  display: flex; justify-content: space-between; padding: 2px 0;
+/* 标签页 */
+.sg-panel-tabs {
+  display: flex;
+  padding: 0 6px;
+  border-bottom: 1px solid rgba(33, 38, 45, 0.9);
+  flex-shrink: 0;
+  background: rgba(22, 27, 34, 0.5);
 }
-#sg-panel .sg-row .lbl { color: #8b949e; }
-#sg-panel .sg-row .val { font-weight: 600; }
-#sg-panel .sg-row .val.g { color: #3fb950; }
-#sg-panel .sg-row .val.b { color: #58a6ff; }
-#sg-panel .sg-row .val.y { color: #d29922; }
-#sg-panel .sg-row .val.r { color: #f85149; }
-#sg-panel .sg-row .val.coor { color: #bc8cff; }
-#sg-panel .sg-divider {
-  height: 1px; background: rgba(33, 38, 45, 0.9); margin: 4px 0;
-}
-#sg-panel .sg-btns {
-  display: flex; gap: 4px; flex-wrap: wrap; margin-top: 3px;
-}
-#sg-panel .sg-btns button {
-  flex: 1; min-width: 42px; padding: 4px 4px; border: none; border-radius: 4px;
-  font-size: 10px; font-weight: 600; cursor: pointer; transition: 0.15s;
+.sg-tab-btn {
+  flex: 1;
+  padding: 7px 4px;
+  background: none;
+  border: none;
+  color: #8b949e;
+  font-size: 10px;
+  font-weight: 500;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: all 0.15s;
   font-family: inherit;
+  white-space: nowrap;
 }
-#sg-panel .sg-btns .sg-start { background: #238636; color: #fff; }
-#sg-panel .sg-btns .sg-start:hover { filter: brightness(1.2); }
-#sg-panel .sg-btns .sg-stop  { background: #da3633; color: #fff; }
-#sg-panel .sg-btns .sg-stop:hover  { filter: brightness(1.15); }
-#sg-panel .sg-btns .sg-outline { background: transparent; border: 1px solid #30363d; color: #8b949e; }
-#sg-panel .sg-btns .sg-outline:hover { background: rgba(33, 38, 45, 0.8); }
-#sg-panel .sg-module-row {
-  display: flex; gap: 6px; justify-content: center; margin-top: 4px; flex-wrap: wrap;
+.sg-tab-btn:hover {
+  color: #c9d1d9;
 }
-#sg-panel .sg-fold {
-  font-size: 10px; color: #8b949e; margin-top: 4px;
+.sg-tab-btn.sg-tab-active {
+  color: #58a6ff;
+  border-bottom-color: #58a6ff;
 }
-#sg-panel .sg-fold > summary {
-  cursor: pointer; user-select: none; color: #8b949e; list-style: none;
+
+/* 面板内容区 */
+.sg-panel-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 12px;
+}
+.sg-panel-body::-webkit-scrollbar {
+  width: 5px;
+}
+.sg-panel-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+.sg-panel-body::-webkit-scrollbar-thumb {
+  background: #30363d;
+  border-radius: 3px;
+}
+.sg-panel-body::-webkit-scrollbar-thumb:hover {
+  background: #484f58;
+}
+
+/* 配额区块 */
+.sg-quota-section {
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(33, 38, 45, 0.8);
+}
+.sg-quota-section:last-child {
+  margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom: none;
+}
+.sg-quota-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: #58a6ff;
+  margin-bottom: 6px;
+  padding-left: 6px;
+  border-left: 2px solid #58a6ff;
+}
+.sg-quota-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
   padding: 2px 0;
+  font-size: 10px;
 }
-#sg-panel .sg-fold > summary::-webkit-details-marker { display: none; }
-#sg-panel .sg-fold > summary::before {
-  content: '▸'; display: inline-block; width: 1em; color: #484f58;
-  transition: transform 0.15s;
+.sg-quota-label {
+  color: #8b949e;
 }
-#sg-panel .sg-fold[open] > summary::before { transform: rotate(90deg); }
-#sg-panel .sg-fold > summary:hover { color: #c9d1d9; }
-#sg-panel .sg-progress {
-  height: 3px; background: #21262d; border-radius: 2px; margin-top: 4px; overflow: hidden;
+.sg-quota-val {
+  font-weight: 600;
+  color: #c9d1d9;
 }
-#sg-panel .sg-progress .sg-fill {
-  height: 100%; background: linear-gradient(90deg, #1d9bf0, #3fb950); border-radius: 2px;
+
+/* 进度条 */
+.sg-detail-panel .sg-progress {
+  height: 3px;
+  background: #21262d;
+  border-radius: 2px;
+  margin: 3px 0 4px;
+  overflow: hidden;
+}
+.sg-detail-panel .sg-progress .sg-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #1d9bf0, #3fb950);
+  border-radius: 2px;
   transition: width 0.5s;
 }
-#sg-panel .sg-warn {
-  margin-top: 4px; font-size: 9px; padding: 3px 5px;
-  border-radius: 3px; display: none;
+
+/* 模块开关网格 */
+.sg-module-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  margin-top: 4px;
 }
-#sg-panel .sg-warn.show { display: block; }
-#sg-panel .sg-warn.info { background: rgba(26, 42, 58, 0.85); color: #58a6ff; }
-#sg-panel .sg-warn.err  { background: rgba(58, 26, 26, 0.85); color: #f85149; }
-#sg-panel #row-test-monitor-log { border-left: 2px solid rgba(56, 139, 253, 0.45); padding-left: 6px; }
-#sg-panel #btn-test-monitor.sg-on { color: #79c0ff; border-color: #388bfd; }
+.sg-toggle-btn {
+  padding: 4px 6px;
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  background: rgba(22, 27, 34, 0.6);
+  color: #8b949e;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+  font-family: inherit;
+}
+.sg-toggle-btn:hover {
+  border-color: #484f58;
+  background: rgba(33, 38, 45, 0.8);
+}
+.sg-toggle-btn.sg-toggle-on {
+  border-color: #238636;
+  color: #3fb950;
+  background: rgba(46, 160, 67, 0.1);
+}
+.sg-toggle-btn.sg-toggle-off {
+  border-color: #da3633;
+  color: #f85149;
+  background: rgba(248, 81, 73, 0.1);
+}
+
+/* 通用按钮 */
+.sg-detail-panel .sg-btns {
+  display: flex; gap: 3px; flex-wrap: wrap;
+}
+.sg-detail-panel .sg-btns button {
+  flex: 1; min-width: 50px; padding: 3px 6px;
+  border: none; border-radius: 4px;
+  font-size: 9px; font-weight: 600; cursor: pointer;
+  transition: all 0.15s;
+  font-family: inherit;
+}
+.sg-detail-panel .sg-outline {
+  background: transparent;
+  border: 1px solid #30363d !important;
+  color: #8b949e;
+}
+.sg-detail-panel .sg-outline:hover {
+  background: rgba(33, 38, 45, 0.8) !important;
+  border-color: #484f58 !important;
+}
+
+/* 通用行 */
+.sg-detail-panel .sg-row {
+  display: flex; justify-content: space-between; padding: 1px 0;
+}
+.sg-detail-panel .sg-row .lbl { color: #8b949e; font-size: 9px; }
+.sg-detail-panel .sg-row .val { font-weight: 600; font-size: 10px; color: #c9d1d9; }
+
+/* 命令提示 */
+.sg-cmd-msg {
+  font-size: 10px;
+  min-height: 1.3em;
+  text-align: center;
+  color: #8b949e;
+  margin-top: 6px;
+}
+
+/* 兼容样式 */
+#row-test-monitor-log {
+  border-left: 2px solid rgba(56, 139, 253, 0.45);
+  padding-left: 6px;
+  font-size: 9px;
+  line-height: 1.5;
+}
+.sg-rp-tg-chip {
+  font-size: 9px;
+  background: #21262d;
+  color: #58a6ff;
+  border: 1px solid #30363d;
+  border-radius: 3px;
+  padding: 1px 5px;
+  cursor: pointer;
+  margin: 1px;
+}
+.sg-rp-tg-chip:hover {
+  background: #161b22;
+  border-color: #58a6ff;
+}
+
+/* 响应式：小屏幕 */
+@media (max-width: 480px) {
+  .sg-detail-panel {
+    width: 240px;
+    max-height: 60vh;
+  }
+}

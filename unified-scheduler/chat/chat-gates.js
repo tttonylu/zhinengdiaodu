@@ -126,9 +126,12 @@
     return true;
   }
 
-  /** 终端完结：盾牌+催加已发完 / 显式关闭 / 婉拒 / 拉黑 */
+  /** 终端完结：盾牌+催加已发完 / 显式关闭 / 婉拒 / 拉黑 / round≥3 */
   function isChatFullyClosed(entry) {
     if (!entry) return false;
+    // 目标库已标记 done 或 round≥3 → 完结（与 C1/C2 语义对齐，修旧数据 kickCount 未回填的漏网）
+    if (entry.done) return true;
+    if ((entry.round || 0) >= 3) return true;
     if (entry.chatClosedAt || entry.finalKickSentAt || entry.rejectSentAt || entry.blockedAt) return true;
     return getKickCount(entry) >= KICK_MAX_COUNT;
   }
@@ -138,10 +141,6 @@
     return getKickCount(entry) >= 1;
   }
 
-  /**
-   * 未读驱动 final_kick 已废；AD 后第二次跟进由 kickCount===1 + getRoundMessage 发 final_kick_message。
-   * API 恒 false，避免旧守箱路径误开人。
-   */
   function canSendFinalKickNow(/* handle, entry */) {
     return false;
   }

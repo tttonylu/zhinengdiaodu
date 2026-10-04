@@ -400,12 +400,131 @@
         var rl = RemoteSettings.followDailyLimit(day);
         if (rl != null && rl > 0) return rl;
       }
-      var table = { 1: 18, 2: 48, 3: 95, 4: 155, 5: 205, 6: 255 };
-      return table[day >= 6 ? 6 : day] || 255;
+      var table = { 1: 85, 2: 145, 3: 202, 4: 255, 5: 292, 6: 300 };
+      return table[day >= 6 ? 6 : day] || 300;
     } catch (e) { return 255; }
   }
   function rnd(m, x) { return Math.floor(Math.random() * (x - m + 1)) + m; }
   function shanghaiDate() { return new Date().toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' }); }
+
+  /** 上海自然日 YYYY-MM-DD（与 ConfigSync 一致，避免格式不一致导致跨日失效） */
+  function shanghaiDayKey() {
+    try {
+      return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' });
+    } catch (e) {
+      var d = new Date(Date.now() + 8 * 3600 * 1000);
+      return d.toISOString().slice(0, 10);
+    }
+  }
+
+  /** 归一化日期字符串为 YYYY-MM-DD，兼容 zh-CN / 缺零格式 */
+  function toShanghaiDayKey(raw) {
+    if (!raw) return '';
+    var s = String(raw).trim();
+    var m = s.match(/^(\d{4})[/-](\d{1,2})[/-](\d{1,2})/);
+    if (m) {
+      return m[1] + '-' + String(m[2]).padStart(2, '0') + '-' + String(m[3]).padStart(2, '0');
+    }
+    return s;
+  }
+
+  /**
+   * 本地跨日兜底清零关注配额（不等 ConfigSync 也能自动清）。
+   * 场景：关注配额耗尽后引擎闲置，ConfigSync 可能失败或 OPS 日数未推进，
+   *       此时靠调度器 tick 定期检测上海日期变更，本地直接清零。
+   */
+  function ensureFollowDailyRollover() {
+    try {
+      var h = String(getMyHandle() || '').replace(/^@/, '').replace(/#guard$/i, '').toLowerCase();
+      if (!h || h === 'unknown' || h === '未知账号') return false;
+      var key = 'matrix_stats_' + h;
+      var st = {};
+      try { st = JSON.parse(localStorage.getItem(key) || '{}') || {}; } catch (eSt) { st = {}; }
+      var today = shanghaiDayKey();
+      var lastDate = toShanghaiDayKey(st.date);
+      if (!lastDate || lastDate === today) return false;
+
+      // 跨日：清零今日关注数、解除旧配额锁
+      st.follows_today = 0;
+      delete st.daily_limit;
+      st.date = today;
+      localStorage.setItem(key, JSON.stringify(st));
+
+      // 清掉 quota_exhausted / quota 终止态，允许新一天重跑
+      try {
+        var ms = JSON.parse(sessionStorage.getItem('sg_module_follow') || '{}') || {};
+        if (ms.phase === 'quota_exhausted' || ms.phase === 'quota') {
+          ms.phase = 'idle';
+          ms.running = false;
+          sessionStorage.setItem('sg_module_follow', JSON.stringify(ms));
+        }
+      } catch (eMs) {}
+
+      // 清掉 followNextDelayUntil 冷却锁
+      try {
+        var sg = JSON.parse(localStorage.getItem(K.LK_STATE) || '{}') || {};
+        if (sg.followNextDelayUntil && sg.followNextDelayUntil > Date.now()) {
+          sg.followNextDelayUntil = 0;
+          localStorage.setItem(K.LK_STATE, JSON.stringify(sg));
+        }
+      } catch (eSg) {}
+
+      Logger.info('调度', '本地跨日清零关注配额: ' + lastDate + ' → ' + today + ' @' + h);
+      return true;
+    } catch (e) {
+      Logger.warn('调度', '本地跨日清零关注配额失败: ' + e.message);
+      return false;
+    }
+  }
+
+  /**
+   * 本地跨日重置养号配额（不等引擎启动也能自动清）。
+   * 场景：养号配额用完后引擎停止，跨日后 NurtureTracker.maybeReset 无人调用，
+   *       调度器 tick 定期检测并触发重置，同时清 quota_exhausted 终止态。
+   */
+  function ensureNurtureDailyRollover() {
+    try {
+      if (typeof NurtureTracker === 'undefined' || !NurtureTracker.maybeReset) return false;
+      var h = String(getMyHandle() || '').replace(/^@/, '').replace(/#guard$/i, '').toLowerCase();
+
+      // 先调用 maybeReset（其内部已改为上海日期比较，跨日会自动 resetDaily）
+      var statsBefore = NurtureTracker.getStats();
+      NurtureTracker.maybeReset();
+      var statsAfter = NurtureTracker.getStats();
+
+      // 判断是否真的发生了跨日重置：每日已用量从 >0 变为 0
+      var wasUsed = false;
+      if (statsBefore && statsBefore.daily && statsBefore.daily.used) {
+        for (var k in statsBefore.daily.used) {
+          if ((statsBefore.daily.used[k] || 0) > 0) { wasUsed = true; break; }
+        }
+      }
+      var nowZero = true;
+      if (statsAfter && statsAfter.daily && statsAfter.daily.used) {
+        for (var k2 in statsAfter.daily.used) {
+          if ((statsAfter.daily.used[k2] || 0) > 0) { nowZero = false; break; }
+        }
+      }
+
+      if (wasUsed && nowZero) {
+        // 清掉 quota_exhausted 终止态，允许新一天重跑
+        try {
+          var ms = JSON.parse(sessionStorage.getItem('sg_module_nurture') || '{}') || {};
+          if (ms.phase === 'quota_exhausted' || ms.phase === 'done' || ms.phase === 'completed') {
+            ms.phase = 'idle';
+            ms.running = false;
+            sessionStorage.setItem('sg_module_nurture', JSON.stringify(ms));
+          }
+        } catch (eMs) {}
+        Logger.info('调度', '本地跨日重置养号配额 @' + (h || 'unknown'));
+        return true;
+      }
+      return false;
+    } catch (e) {
+      Logger.warn('调度', '本地跨日重置养号配额失败: ' + e.message);
+      return false;
+    }
+  }
 
   /** 自动模式：以 sg_state.running 为准（供调度与引擎共用） */
   function isAutoMode() {
@@ -528,11 +647,13 @@
   }
   function stopRepost(reason) {
     try {
-      sessionStorage.removeItem(K.SK_REPOST_RUNNING || 'sg_repost_running');
+      // 不直接删 sg_repost_running key：repost-engine 在 isProcessing 中会延迟 stop，
+      // 直接删 key 会让 EngineUtils.isActive 返回 false，打断 repostTweet 流程。
+      // 改为只派发 stop 命令事件，由 repost-engine 的 stop() 函数决定何时真正清理 key。
       window.dispatchEvent(new CustomEvent('sg-repost-command', {
         detail: { command: 'stop', reason: reason || 'cmd' }
       }));
-      Logger.info('调度', '停止转帖引擎');
+      Logger.info('调度', '停止转帖引擎' + (reason === 'cmd' ? '' : '(' + reason + ')'));
     } catch (e) {}
   }
   function repostStatusSnap() {
@@ -568,7 +689,7 @@
     return out;
   }
   function profileCloneSnap() {
-    var out = { running: false, label: '', needsRun: false, done: false };
+    var out = { running: false, label: '', needsRun: false, done: false, lastError: '' };
     try {
       if (typeof ProfileClone !== 'undefined') {
         out.running = !!(ProfileClone.isRunning && ProfileClone.isRunning());
@@ -581,6 +702,10 @@
           out.failed = !!st.failed;
           out.source = st.source || '';
           out.attempts = st.attempts || 0;
+          out.lastError = st.lastError || '';
+          out.textDone = !!st.textDone;
+          out.mediaDone = !!st.mediaDone;
+          out.mediaPartial = !!st.mediaPartial;
         }
       } else {
         out.running = sessionStorage.getItem(K.SK_PROFILE_CLONE_RUNNING || 'sg_profile_clone_running') === 'true';
@@ -598,6 +723,279 @@
     });
   }
 
+  // =============================================================================
+  // 新号自动上路（onboarding）：Day1 未就绪时，自动克隆资料 → 转帖 → 就绪
+  // 无来源则等待，超时后养号兜底
+  // =============================================================================
+  var ONBOARD_MAX_ATTEMPTS = 3;
+  var ONBOARD_SOURCE_WAIT_MS = 90 * 60 * 1000; // 等来源最多 90 分钟
+  var ONBOARD_SOURCE_CHECK_MS = 2 * 60 * 1000;  // 每 2 分钟查一次来源
+
+  function onboardKey() {
+    try {
+      var h = (localStorage.getItem(K.LK_MY_HANDLE) || 'unknown').replace(/@|#guard/gi, '').toLowerCase().trim();
+      return (K.LK_ONBOARDING_STATE || 'sg_onboarding_state_') + h;
+    } catch (e) { return 'sg_onboarding_state_unknown'; }
+  }
+  function getOnboardState() {
+    try { return JSON.parse(localStorage.getItem(onboardKey())) || null; } catch (e) { return null; }
+  }
+  function saveOnboardState(st) {
+    try { localStorage.setItem(onboardKey(), JSON.stringify(st)); } catch (e) {}
+  }
+  function clearOnboardState() {
+    try { localStorage.removeItem(onboardKey()); } catch (e) {}
+    try { sessionStorage.removeItem(K.SK_ONBOARDING_ACTIVE || 'sg_onboarding_active'); } catch (e) {}
+  }
+
+  function onboardHasSource() {
+    try {
+      var targets = JSON.parse(localStorage.getItem(K.LK_REPOST_TARGETS || 'sg_repost_targets') || '[]') || [];
+      return targets.length > 0;
+    } catch (e) { return false; }
+  }
+
+  function onboardTick() {
+    try {
+      var day = getDayCount();
+      if (day >= 2) { clearOnboardState(); return false; }
+      if (typeof StageDetector !== 'undefined' && StageDetector.isNewAccountReady && StageDetector.isNewAccountReady()) {
+        clearOnboardState();
+        return false;
+      }
+      if (typeof ProfileClone === 'undefined') return false;
+    } catch (eChk) { return false; }
+
+    var st = getOnboardState() || {
+      phase: 'idle',
+      startedAt: Date.now(),
+      sourceWaitStartedAt: 0,
+      cloneAttempts: 0,
+      repostAttempts: 0,
+      repostLastAttemptAt: 0,
+      lastError: '',
+      lastErrorPhase: ''
+    };
+
+    try { sessionStorage.setItem(K.SK_ONBOARDING_ACTIVE || 'sg_onboarding_active', 'true'); } catch (eSk) {}
+
+    var pcSnap = profileCloneSnap();
+    var rpSnap = repostStatusSnap();
+    var now = Date.now();
+
+    // ---------- idle：首次进入，判断起点 ----------
+    if (st.phase === 'idle') {
+      // 克隆已经完成 → 直接进转帖
+      if (pcSnap.done && !pcSnap.failed) {
+        st.phase = 'reposting';
+        saveOnboardState(st);
+        Logger.info('新号上路', '资料克隆已完成，直接进入转帖阶段');
+        // fall through to reposting
+      } else if (!onboardHasSource()) {
+        // 无来源 → 等待
+        st.phase = 'waiting_source';
+        st.sourceWaitStartedAt = now;
+        saveOnboardState(st);
+        Logger.info('新号上路', '无转帖来源，等待中（最长 90 分钟）');
+        return 'idle_with_nurture';
+      } else {
+        // 有来源 + 克隆没完成 → 开始克隆
+        st.phase = 'cloning';
+        saveOnboardState(st);
+        Logger.info('新号上路', '检测到来源，开始资料克隆');
+        try {
+          ProfileClone.ensureBeforeNurture('https://x.com/home', { nurtureAfter: false, force: true });
+        } catch (eStartCl) {}
+        return true;
+      }
+    }
+
+    // ---------- waiting_source：等来源 ----------
+    if (st.phase === 'waiting_source') {
+      if (onboardHasSource()) {
+        // 来源来了 → 开始克隆
+        st.phase = 'cloning';
+        st.sourceWaitStartedAt = 0;
+        saveOnboardState(st);
+        Logger.info('新号上路', '检测到新来源，开始资料克隆');
+        try {
+          ProfileClone.ensureBeforeNurture('https://x.com/home', { nurtureAfter: false, force: true });
+        } catch (eStartCl) {}
+        return true;
+      }
+      var waited = now - (st.sourceWaitStartedAt || 0);
+      if (waited >= ONBOARD_SOURCE_WAIT_MS) {
+        // 超时 → 养号兜底
+        st.phase = 'fallback_nurture';
+        st.lastError = 'source_wait_timeout';
+        saveOnboardState(st);
+        Logger.warn('新号上路', '等来源超时（' + Math.round(waited/60000) + ' 分钟），进入养号兜底');
+        return false;
+      }
+      try {
+        if (!coPrev._onboardSrcLogAt || now - coPrev._onboardSrcLogAt > ONBOARD_SOURCE_CHECK_MS) {
+          Logger.info('新号上路', '等待来源中 ' + Math.round(waited/60000) + '/' + Math.round(ONBOARD_SOURCE_WAIT_MS/60000) + ' 分钟');
+          coPrev._onboardSrcLogAt = now;
+        }
+      } catch (eLg) {}
+      return 'idle_with_nurture';
+    }
+
+    // ---------- cloning：资料克隆中 ----------
+    if (st.phase === 'cloning') {
+      if (pcSnap.running) {
+        try {
+          if (!coPrev._onboardLogAt || now - coPrev._onboardLogAt > 60000) {
+            Logger.info('新号上路', '资料克隆中 ' + (pcSnap.label || '') + ' attempt=' + (st.cloneAttempts + 1));
+            coPrev._onboardLogAt = now;
+          }
+        } catch (eLg) {}
+        return true;
+      }
+      // 克隆成功（done 且非 failed）
+      if (pcSnap.done && !pcSnap.failed) {
+        st.phase = 'reposting';
+        st.cloneAttempts = 0;
+        saveOnboardState(st);
+        Logger.info('新号上路', '资料克隆完成，进入转帖阶段');
+        // fall through to reposting
+      } else if (pcSnap.skipped) {
+        // 克隆被跳过
+        var skipReason = pcSnap.lastError || 'skipped';
+        if (skipReason === 'no_source' || !onboardHasSource()) {
+          st.phase = 'waiting_source';
+          st.sourceWaitStartedAt = now;
+          st.cloneAttempts = 0;
+          st.lastError = 'clone_skipped:' + skipReason;
+          saveOnboardState(st);
+          Logger.info('新号上路', '克隆因无来源被跳过，进入等来源阶段');
+          return 'idle_with_nurture';
+        }
+        // 其他原因跳过 → 当失败处理
+        st.cloneAttempts = (st.cloneAttempts || 0) + 1;
+        st.lastError = 'clone_skipped:' + skipReason;
+        st.lastErrorPhase = 'clone';
+        if (st.cloneAttempts >= ONBOARD_MAX_ATTEMPTS) {
+          st.phase = 'failed';
+          st.lastError = 'clone_exhausted:' + st.cloneAttempts + ':' + skipReason;
+          saveOnboardState(st);
+          Logger.warn('新号上路', '克隆连续跳过 ' + st.cloneAttempts + ' 次，放弃 reason=' + skipReason);
+          return false;
+        }
+        // 重试
+        saveOnboardState(st);
+        Logger.info('新号上路', '克隆被跳过（' + skipReason + '），第 ' + st.cloneAttempts + ' 次重试');
+        try {
+          if (ProfileClone.resetMedia) ProfileClone.resetMedia();
+          ProfileClone.ensureBeforeNurture('https://x.com/home', { nurtureAfter: false, force: true });
+        } catch (eRetry) {}
+        return true;
+      } else if (pcSnap.failed || !pcSnap.done) {
+        // 克隆失败 或 未在运行且未完成（异常终止）
+        st.cloneAttempts = (st.cloneAttempts || 0) + 1;
+        st.lastError = pcSnap.lastError || 'clone_failed';
+        st.lastErrorPhase = 'clone';
+        if (st.cloneAttempts >= ONBOARD_MAX_ATTEMPTS) {
+          // 3 次都失败 → 如果文本已完成（只是图片挂了），仍然进转帖（资料部分成功总比全失败好）
+          if (pcSnap.textDone) {
+            st.phase = 'reposting';
+            st.lastError = 'clone_media_failed:' + (pcSnap.lastError || '');
+            saveOnboardState(st);
+            Logger.warn('新号上路', '资料克隆图片部分失败，但文本已完成，继续转帖阶段 err=' + pcSnap.lastError);
+            // fall through to reposting
+          } else {
+            st.phase = 'failed';
+            st.lastError = 'clone_exhausted:' + st.cloneAttempts + ':' + (pcSnap.lastError || 'unknown');
+            saveOnboardState(st);
+            Logger.warn('新号上路', '资料克隆耗尽 ' + st.cloneAttempts + ' 次，最后错误=' + st.lastError);
+            return false;
+          }
+        } else {
+          // 重试
+          saveOnboardState(st);
+          Logger.info('新号上路', '资料克隆失败，第 ' + st.cloneAttempts + ' 次重试 err=' + (pcSnap.lastError || ''));
+          try {
+            if (ProfileClone.resetMedia) ProfileClone.resetMedia();
+            ProfileClone.ensureBeforeNurture('https://x.com/home', { nurtureAfter: false, force: true });
+          } catch (eRetry) {}
+          return true;
+        }
+      }
+    }
+
+    // ---------- reposting：转帖中 ----------
+    if (st.phase === 'reposting') {
+      if (rpSnap.running) {
+        try {
+          if (!coPrev._onboardRpLogAt || now - coPrev._onboardRpLogAt > 60000) {
+            Logger.info('新号上路', '转帖中 @' + (rpSnap.current || '') + ' ' + (rpSnap.daily.used || 0) + '/' + (rpSnap.daily.cap || 0));
+            coPrev._onboardRpLogAt = now;
+          }
+        } catch (eLg) {}
+        return true;
+      }
+      // 检查是否已发过帖
+      var postedOk = false;
+      try {
+        var h4 = (localStorage.getItem(K.LK_MY_HANDLE) || 'unknown').replace(/@|#guard/gi, '').toLowerCase();
+        postedOk = localStorage.getItem('sg_repost_posted_ok_' + h4) === '1';
+      } catch (ePo) {}
+      if (postedOk) {
+        st.phase = 'done';
+        saveOnboardState(st);
+        clearOnboardState();
+        Logger.info('新号上路', '资料+转帖完成，新号就绪！');
+        return false;
+      }
+      // 转帖未跑或已停但没成功
+      // 节流：两次启动之间至少隔 3 分钟，避免 3 次重试 30 秒内烧完
+      var timeSinceLastRp = now - (st.repostLastAttemptAt || 0);
+      if (timeSinceLastRp < 3 * 60 * 1000 && st.repostAttempts > 0) {
+        // 冷却期，先养号并行
+        return 'idle_with_nurture';
+      }
+      // 检查日限：如果今日已达上限但 postedOk 还是 false
+      // 正常情况下 dailyUsed>0 意味着 postedOk 也应该是 true（markPosted 和 bumpDaily 同路径）
+      // 如果不一致，说明是旧数据或异常，不烧重试次数，等明天日限重置
+      var dailyUsed = rpSnap.daily.used || 0;
+      var dailyCap = rpSnap.daily.cap || 3;
+      if (dailyUsed >= dailyCap && dailyCap > 0) {
+        try {
+          if (!coPrev._onboardRpWaitLogAt || now - coPrev._onboardRpWaitLogAt > 300000) {
+            Logger.info('新号上路', '转帖日限 ' + dailyUsed + '/' + dailyCap + ' 已用完，等待次日重置');
+            coPrev._onboardRpWaitLogAt = now;
+          }
+        } catch (eLg) {}
+        return 'idle_with_nurture';
+      }
+      // 启动转帖
+      st.repostAttempts = (st.repostAttempts || 0) + 1;
+      st.repostLastAttemptAt = now;
+      if (st.repostAttempts >= ONBOARD_MAX_ATTEMPTS) {
+        st.phase = 'failed';
+        st.lastError = 'repost_exhausted:' + st.repostAttempts;
+        st.lastErrorPhase = 'repost';
+        saveOnboardState(st);
+        Logger.warn('新号上路', '转帖耗尽 ' + st.repostAttempts + ' 次，放弃');
+        return false;
+      }
+      saveOnboardState(st);
+      Logger.info('新号上路', '启动转帖（第 ' + st.repostAttempts + ' 次）— 19:00-23:00 必须发帖时段');
+      try {
+        // 新号上路转帖设 manual_slot：跳过时段判定，避免 19:00 前被协调器误杀
+        sessionStorage.setItem('sg_repost_manual_slot', '1');
+        startRepost('', { autoSlot: false, freshRound: true });
+      } catch (eStartRp) {}
+      return true;
+    }
+
+    // done / failed / fallback_nurture → 不再参与调度
+    return false;
+  }
+  function onboardIsActive() {
+    try { return sessionStorage.getItem(K.SK_ONBOARDING_ACTIVE || 'sg_onboarding_active') === 'true'; } catch (e) { return false; }
+  }
+
   function setUserPaused(on) {
     try {
       var key = (K && K.LK_USER_PAUSED) || 'sg_user_paused';
@@ -608,7 +1006,7 @@
 
   /** pool_pop 飞行窗：防短 tick 双领号；与 coEngineAlive starting/popping 宽限对齐 */
   var FOLLOW_POP_FLIGHT_KEY = 'sg_follow_pop_inflight';
-  var MODULE_START_GRACE_MS = 10000;
+  var MODULE_START_GRACE_MS = 30000; // 4.6.23：10s→30s，页面加载慢时给引擎足够心跳宽限，避免误判幽灵导致连环跳转
   function clearFollowPopFlight() {
     try { sessionStorage.removeItem(FOLLOW_POP_FLIGHT_KEY); } catch (eClrF) {}
   }
@@ -873,17 +1271,6 @@
     try { forceInbox = sessionStorage.getItem('sg_chat_force_inbox') === 'true'; } catch (eF) {}
     var h = getMyHandle();
     if (h && h !== 'unknown') {
-      // 旁路入口也要日龄闸（面板「只私信」/恢复不得绕过 coStart）
-      if (!isChatDayAllowedCo()) {
-        Logger.warn('调度', '拒绝 startChat：Day' + getDayCount() + ' 不私信（≥3 才开）');
-        try {
-          if (typeof SgTelemetry !== 'undefined') {
-            SgTelemetry.emit('scheduler.chat_blocked', { reason: 'day_lt_3', day: getDayCount(), via: 'startChat' });
-          }
-        } catch (eDay) {}
-        try { sessionStorage.setItem(K.SK_CHAT_AUTO_RUN, 'false'); } catch (eAr) {}
-        return;
-      }
       var already = !forceInbox
         && sessionStorage.getItem(K.SK_CHAT_AUTO_RUN) === 'true'
         && coIsRunning('chat')
@@ -900,16 +1287,9 @@
           refreshScrmGate();
           return;
         }
+        // 4.4.1：fail-open —— 闸门未就绪不拦截，直接放行
         if (!gate) {
-          // 无缓存：先查再决定，fail-closed
-          refreshScrmGate(function (g) {
-            if (!g || !g.allow) {
-              Logger.info('调度', 'SCRM闸门拦截私信: ' + ((g && g.reason) || '未放行'));
-              return;
-            }
-            startChat(targetUrl);
-          });
-          return;
+          refreshScrmGate(); // 后台异步刷新，不阻塞
         }
       }
       sessionStorage.setItem(K.SK_CHAT_AUTO_RUN, 'true');
@@ -1086,9 +1466,21 @@
               }
               var ft = r.account.today_follow_count != null ? r.account.today_follow_count : r.today_follow_count;
               var localF = parseInt(stats.follows_today, 10) || 0;
+              var resetDayHb = '';
+              try {
+                var rdRaw = String(stats.follows_reset_day || '');
+                var mRd = rdRaw.match(/^(\d{4})[/-](\d{1,2})[/-](\d{1,2})/);
+                if (mRd) resetDayHb = mRd[1] + '-' + String(mRd[2]).padStart(2, '0') + '-' + String(mRd[3]).padStart(2, '0');
+              } catch (eRd) {}
+              var skipBoostHb = !!(resetDayHb && todayKey && resetDayHb === todayKey && !rolledLocal);
               if (ft != null) {
                 var remoteF = parseInt(ft, 10) || 0;
-                if (rolledLocal || remoteF > localF) stats.follows_today = remoteF;
+                if (rolledLocal) {
+                  stats.follows_today = remoteF;
+                  try { delete stats.follows_reset_day; } catch (eDelHb) {}
+                } else if (remoteF > localF && !skipBoostHb) {
+                  stats.follows_today = remoteF;
+                }
               }
               if (stats.follows_today == null) stats.follows_today = 0;
               stats.date = todayKey || stats.date;
@@ -1111,6 +1503,11 @@
       if (typeof ProfileClone !== 'undefined' && ProfileClone.abort) ProfileClone.abort('user_stop');
     } catch (ePc2) {}
     stopAll(); S.running = false; S.engine = 'idle'; S.followPhase = 'idle';
+    // 清掉软风控钉养号的残留状态，防止停后被 tick 余震拉起来
+    try { S.nurtureOnly = false; } catch (eNo) {}
+    try { sessionStorage.removeItem(K.SK_TAB_RUNNING); } catch (eTab) {}
+    try { sessionStorage.removeItem('sg_debt_only'); } catch (eDebt) {}
+    try { sessionStorage.removeItem('sg_repost_auto_slot'); } catch (eRpSlot) {}
     setUserPaused(true);
     Logger.info('调度', '暂停'); saveSG(); coPauseScheduler();
     try { sessionStorage.removeItem('sg_scheduler_booted'); } catch (e) {}
@@ -1399,6 +1796,10 @@
       if (!RepostTracker.getTargets().length) return false;
       if (RepostTracker.isAutoTimedOut()) return false;
       if (RepostTracker.dailyExhausted && RepostTracker.dailyExhausted()) return false;
+      // 手动转帖：用户主动启动即放行，跳过 19:00 时段判定（避免白天手动测试被协调器误杀）
+      var isManualSlot = false;
+      try { isManualSlot = sessionStorage.getItem('sg_repost_manual_slot') === '1'; } catch (eMs) {}
+      if (isManualSlot) return true;
       if (RepostTracker.isInRepostWindowNow && !RepostTracker.isInRepostWindowNow()) return false;
       else if (!RepostTracker.isInRepostWindowNow && RepostTracker.isPastStartTime && !RepostTracker.isPastStartTime()) return false;
       return true;
@@ -1466,10 +1867,8 @@
     var age = chatProgressAgeMsCo();
     var urlNow = '';
     var chatPh = '';
-    var inboxPh = '';
     try { urlNow = String((typeof location !== 'undefined' && location.href) || ''); } catch (eU) {}
     try { chatPh = sessionStorage.getItem('dan_chat_phase') || ''; } catch (eCp) {}
-    try { inboxPh = sessionStorage.getItem('dan_inbox_phase') || ''; } catch (eIp) {}
     var onPin = /\/i\/chat\/pin|passcode|dm_pin/i.test(urlNow)
       || (sessionStorage.getItem('sg_dm_pin_give_up') === '1');
     var freezeMod = 'chat_outbound';
@@ -1477,9 +1876,6 @@
     if (onPin || why === 'pin_blocked') {
       freezeMod = 'chat_pin';
       label = 'PIN卡死';
-    } else if (chatPh === 'inbox' || inboxPh) {
-      freezeMod = 'chat_inbox';
-      label = '守箱假活';
     } else if (chatPh === 'outbound' || chatPh === 'followup') {
       freezeMod = 'chat_outbound';
       label = '出站假活';
@@ -1491,7 +1887,7 @@
           why: why || '',
           progress_age_ms: age,
           url: urlNow,
-          phase: inboxPh || chatPh || '',
+          phase: chatPh || '',
           chat_phase: chatPh,
           label: label,
           pulseId: (function () {
@@ -1499,7 +1895,7 @@
               var L = readChatLeaseCo();
               if (L && L.pulseId) return L.pulseId;
             } catch (e1) {}
-            try { return sessionStorage.getItem('dan_inbox_queue_pulse') || ''; } catch (e2) { return ''; }
+            return '';
           })(),
           unread_unresolved: !!softPulseUnreadUnresolved()
         });
@@ -1511,14 +1907,14 @@
       if (!skipFreeze && typeof SgDiagContract !== 'undefined' && SgDiagContract.enterFreeze) {
         SgDiagContract.enterFreeze({
           module: freezeMod,
-          stage: inboxPh || chatPh || 'executing',
+          stage: chatPh || 'executing',
           reason: 'zombie_' + (why || 'stale'),
           code: 'diag_zombie',
           hint: label + '：' + (why || '') + ' 进度 ' + Math.round(age / 1000) + 's 无刷新 → 已冻结取证',
           pulseId: (function () {
             try {
               var L2 = readChatLeaseCo();
-              return (L2 && L2.pulseId) || sessionStorage.getItem('dan_inbox_queue_pulse') || '';
+              return (L2 && L2.pulseId) || '';
             } catch (e3) { return ''; }
           })(),
           extra: { progress_age_ms: age, reclaim_why: why || '', chat_phase: chatPh, url: urlNow }
@@ -1532,10 +1928,7 @@
         var softNow = coLoadSg();
         var softPhNow = (softNow && softNow.softRiskPhase) || '';
         var inSoftChat = softRiskActive(softNow) && (softPhNow === 'chat1' || softPhNow === 'chat2');
-        var ran = false;
-        try { ran = sessionStorage.getItem('sg_soft_risk_pulse_ran') === '1'; } catch (eR) {}
-        // 守箱脉冲已废：不能再依赖 pulse_ran；软窗 chat 段假活一律推进
-        if (inSoftChat || (ran && !isSoftRiskInboxPulsePhaseCo(softNow))) {
+        if (inSoftChat) {
           try { markSoftRiskChatDoneOnAbnormal(); } catch (eM) {}
         }
       }
@@ -1548,7 +1941,6 @@
     try { sessionStorage.setItem(K.SK_CHAT_AUTO_RUN, 'false'); } catch (eA) {}
     // 假活回收时清挂起开人，避免 keep 永远卡在 opening 空转
     try {
-      sessionStorage.removeItem('dan_inbox_opening');
       sessionStorage.removeItem('dan_auto_step');
       sessionStorage.removeItem('current_target');
     } catch (eOp) {}
@@ -1557,7 +1949,6 @@
   try {
     if (typeof window !== 'undefined') {
       window.__sgReclaimChatZombie = reclaimChatZombieCo;
-      window.__sgIsChatDayAllowed = isChatDayAllowedCo;
       window.__sgGetMyHandle = getMyHandle;
       if (!window.__sgDmPinGiveUpBound) {
         window.__sgDmPinGiveUpBound = true;
@@ -1596,22 +1987,6 @@
       var chatPhaseAlive = '';
       try { chatPhaseAlive = sessionStorage.getItem('dan_chat_phase') || ''; } catch (eP0) {}
       var sgAlive = coLoadSg();
-      // 进度心跳只约束守箱/扫箱段：破冰 outbound 间隔常>45s，不能按同一阈值假死
-      var inboxProgressGate = chatPhaseAlive === 'inbox' || isSoftRiskInboxPulsePhaseCo(sgAlive);
-      if (inboxProgressGate && !isChatProgressAliveCo()) return false;
-      // 软风控扫描/inbox 相位却停在粉丝页等非私信 URL → 判死，否则 hasRun 永真、关注拉不起来
-      try {
-        var path = String((typeof location !== 'undefined' && location.pathname) || '').toLowerCase();
-        var onDm = path.indexOf('/i/chat') >= 0 || path.indexOf('/messages') >= 0;
-        var needInbox = isSoftRiskInboxPulsePhaseCo(sgAlive) || chatPhaseAlive === 'inbox';
-        if (needInbox && !onDm) {
-          var startedAt = 0;
-          try {
-            startedAt = parseInt((JSON.parse(sessionStorage.getItem('sg_module_chat') || '{}').startedAt) || '0', 10) || 0;
-          } catch (eS) {}
-          if (startedAt && (Date.now() - startedAt > 45000)) return false;
-        }
-      } catch (eOff) {}
       return true;
     }
     if (name === 'nurture') {
@@ -1646,10 +2021,6 @@
     coWrite(n, { running: false, phase: 'idle', targetUrl: '', startedAt: 0, lastActive: Date.now() });
     Logger.info('Coor','停止: '+n);
   }
-  /** Day1–2 禁止一切私信启动；仅 Day≥3 */
-  function isChatDayAllowedCo() {
-    try { return getDayCount() >= 3; } catch (e) { return false; }
-  }
 
   function coStart(n, url) {
     var m = coModules[n]; if (!m) return;
@@ -1670,7 +2041,7 @@
     // 慢网跳页节流：距上次整页导航不足间隔则本 tick 推迟（避免连环 sg-*-command）
     try {
       if (isAutoMode() && url) {
-        var minGap = 10000;
+        var minGap = 30000; // 4.6.23：10s→30s，减少连环跳转，给页面足够加载时间
         try {
           if (typeof SchedulerGate !== 'undefined' && SchedulerGate.navMinIntervalMs) {
             minGap = SchedulerGate.navMinIntervalMs();
@@ -1697,15 +2068,7 @@
         }
       }
     } catch (eDefer) {}
-    if (n === 'chat' && !isChatDayAllowedCo()) {
-      Logger.warn('Coor', '拒绝启动 chat：Day' + getDayCount() + ' 不私信（≥3 才开）');
-      try {
-        if (typeof SgTelemetry !== 'undefined') {
-          SgTelemetry.emit('scheduler.chat_blocked', { reason: 'day_lt_3', day: getDayCount() });
-        }
-      } catch (eTb) {}
-      return;
-    }
+    // 4.3.32：取消私信天数限制，Day1 即可私信（原 Day≥3 闸门已移除）
     // 4.2.26：废除 Day≤2 须先养号才开关注（养号常空转导致整天 0 粉）；仍保留 prefer 养号在前
     if (!url && n !== 'chat') {
       Logger.warn('Coor', '拒绝启动 ' + n + '：目标页为空');
@@ -1747,17 +2110,7 @@
           startedAt: Date.now(),
           url: url || ''
         };
-        try {
-          var existingPulse = sessionStorage.getItem('dan_inbox_queue_pulse') || '';
-          if (existingPulse && isInboxUrl) lease.pulseId = existingPulse;
-        } catch (ePid) {}
         writeChatLeaseCo(lease);
-        // 与 C3 共用 pulse：必须写入 dan_inbox_queue_pulse，否则 clear 后 beginChatLease 会另开 id，OPS 断链
-        try {
-          if (isInboxUrl && lease.pulseId) {
-            sessionStorage.setItem('dan_inbox_queue_pulse', lease.pulseId);
-          }
-        } catch (eSync) {}
         noteChatProgressCo('co_start');
         try {
           if (typeof SgTelemetry !== 'undefined' && SgTelemetry.emitRoundStart) {
@@ -1779,18 +2132,9 @@
         } catch (eRs) {}
         if (softRiskActive(sgC, Date.now())) {
           // 4.1.36：守箱废除后粉丝队列两检都不要 soft drain(5开/4分) 帽，否则 chat2 被掐轮转不过来
-          var watchOn = false;
-          try { watchOn = !!isChatInboxWatchEnabledCo(); } catch (eW) { watchOn = false; }
-          if (watchOn && sgC.softRiskOutboundDone) {
-            if (!sessionStorage.getItem('sg_chat_session_deadline')) beginSoftRiskChatSession();
-          } else {
-            clearChatSessionCaps();
-          }
+          clearChatSessionCaps();
         } else if (isInboxUrl) {
-          var watchOn2 = false;
-          try { watchOn2 = !!isChatInboxWatchEnabledCo(); } catch (eW2) { watchOn2 = false; }
-          if (watchOn2) beginInterruptChatSession();
-          else clearChatSessionCaps();
+          clearChatSessionCaps();
         } else {
           clearChatSessionCaps();
         }
@@ -1856,7 +2200,6 @@
     sg.softRiskStartedAt = 0;
     sg.softFillMode = '';
     try {
-      sessionStorage.removeItem('sg_soft_risk_pulse_ran');
       sessionStorage.removeItem('sg_soft_risk_pulse_retry');
       sessionStorage.removeItem('sg_soft_risk_pulse_reason');
       sessionStorage.removeItem('sg_soft_unread_retry');
@@ -2106,7 +2449,7 @@
     if (sg && sg.softRiskMode === 'nurture') {
       return { mode: 'nurture_only', allowChat: false, reason: 'sticky_nurture', day: day };
     }
-    if (!isChatDayAllowedCo()) return { mode: 'nurture_only', allowChat: false, reason: 'day_lt_3', day: day };
+    // 4.3.32：Day1 即可私信，日龄不再挡
     if (!chatTimeOk) return { mode: 'nurture_only', allowChat: false, reason: 'outside_chat_hours', day: day };
     return { mode: 'chat_fill', allowChat: true, reason: '', day: day };
   }
@@ -2376,11 +2719,6 @@
     sg = sg || coLoadSg();
     var phase = (sg && sg.softRiskPhase) || 'chat1';
     return softRiskActive(sg) && !sg.softRiskChatDone && phase === 'chat1';
-  }
-
-  /** 守箱已废除：永不进入「扫箱脉冲」相位 */
-  function isSoftRiskInboxPulsePhaseCo(sg) {
-    return false;
   }
 
   if (typeof window !== 'undefined') {
@@ -2722,11 +3060,6 @@
     return n;
   }
 
-  /** 守箱已废除：恒 false */
-  function isChatInboxWatchEnabledCo() {
-    return false;
-  }
-
   function softPulseUnreadUnresolved() {
     return false;
   }
@@ -2783,15 +3116,10 @@
   function buildProdVerifyChecklist(sg, debt) {
     sg = sg || coLoadSg();
     debt = debt || countChatDebtBreakdown();
-    var inboxMin = Math.round((sg.chatInboxToday || 0) / 60);
-    var inboxWatchAt = null;
-    try { inboxWatchAt = sessionStorage.getItem('dan_inbox_watch_started_at'); } catch (eW) {}
     var freezePending = countChatFreezePending(sg);
     return [
       { id: 'ice_pending_pool', ok: debt.icePending > 0, label: '破冰池有目标', detail: 'icePending=' + debt.icePending },
       { id: 'ad_debt_watch', ok: debt.adDebt > 0 || debt.icePending > 0, label: 'adDebt 或待破冰', detail: 'adDebt=' + debt.adDebt + ' actionableAd=' + (typeof window.__sgChatDebtCounts === 'function' ? (window.__sgChatDebtCounts().actionableAd || 0) : '?') },
-      { id: 'inbox_watch_start', ok: !debt.adDebt && !debt.kickDebt || inboxWatchAt, label: '有债时出现 inbox_watch', detail: inboxWatchAt ? 'started' : 'none' },
-      { id: 'inbox_minutes', ok: inboxMin > 0 || (debt.adDebt === 0 && debt.kickDebt === 0), label: '守箱时长', detail: 'inboxMin=' + inboxMin },
       { id: 'rush_freeze_pending', ok: freezePending >= 0, label: '赶工 pending', detail: 'pending=' + freezePending + ' (round≥1)' }
     ];
   }
@@ -2868,12 +3196,10 @@
     try {
       if (typeof SgTimeBudget !== 'undefined' && SgTimeBudget.snapshot) timeBudget = SgTimeBudget.snapshot(sg);
     } catch (eTb) {}
-    var lastInboxWatchAt = null;
     var debtOnly = false;
     var actionableAdDebt = 0;
     var actionableKickDebt = 0;
     try {
-      lastInboxWatchAt = sessionStorage.getItem('dan_inbox_watch_started_at');
       debtOnly = sessionStorage.getItem('sg_debt_only') === 'true';
       if (typeof window.__sgChatDebtCounts === 'function') {
         var ac = window.__sgChatDebtCounts();
@@ -2908,7 +3234,6 @@
       replyPending: countReplyPendingCo(),
       targetDbCount: debt.targetCount,
       slaOverdueCount: countSlaOverdue(),
-      lastInboxWatchAt: lastInboxWatchAt ? parseInt(lastInboxWatchAt, 10) : null,
       opsGateReason: opsGateReason,
       debtOnly: debtOnly,
       chatPolicy: chatPolicy,
@@ -3007,7 +3332,6 @@
     try {
       if (getFollowedToday() < getLimit()) return false;
     } catch (eQ) { return false; }
-    if (!isChatDayAllowedCo()) return false;
     try {
       if (countFanRosterChatDebtCo() > 0) return true;
       if (countActionableReplyCo() > 0) return true;
@@ -3338,6 +3662,24 @@
   function coTick() {
     if (coTickLock) return; coTickLock = true; coLastTick = Date.now();
     try {
+      // 纯维护任务（即使暂停也跑）：本地跨日兜底清零配额
+      try { ensureFollowDailyRollover(); } catch (eRoll) {}
+      try { ensureNurtureDailyRollover(); } catch (eNurtRoll) {}
+
+      // 快速通道：用户暂停中 → 直接返回，不跑任何调度/检测
+      // （避免停了之后 tick 还在做冻结检测、软风控拉养号等"余震"操作）
+      if (!coRunning && !S.running) {
+        // 仅做一件事：防假活——如果还有 module state 标记 running，清掉
+        try {
+          ['follow', 'chat', 'nurture', 'repost'].forEach(function (n) {
+            try {
+              var ms = coRead(n);
+              if (ms && ms.running) coStop(n);
+            } catch (eAl) {}
+          });
+        } catch (eAlign) {}
+        return;
+      }
       // 冻结心跳：自动模式即使停在 /home 养号也要扫永久冻结层（B3 导出）
       try {
         var sgFreeze = coLoadSg();
@@ -3376,6 +3718,44 @@
         priority = coerced.priority || priority;
       } catch (eCoerceS0) {}
       priority = stripRepostFromPriority(priority);
+
+      // 新号自动上路：Day1 未就绪时优先跑 onboarding（克隆→转帖→就绪）
+      var onboardResult = false;
+      try { onboardResult = onboardTick(); } catch (eOb) { onboardResult = false; }
+      if (onboardResult === true) {
+        // onboarding 进行中：独占，其它模块让路
+        try {
+          if (!coPrev._onboardTickLogAt || Date.now() - coPrev._onboardTickLogAt > 60000) {
+            var obSt = getOnboardState() || {};
+            Logger.info('Coor', '新号上路中 phase=' + (obSt.phase || '?'));
+            coPrev._onboardTickLogAt = Date.now();
+          }
+        } catch (eObLg) {}
+        try {
+          var obSt2 = getOnboardState() || {};
+          var obPhaseLabel = obSt2.phase || 'idle';
+          if (obPhaseLabel === 'cloning') obPhaseLabel = '资料克隆中';
+          else if (obPhaseLabel === 'reposting') obPhaseLabel = '转帖中';
+          else if (obPhaseLabel === 'waiting_source') obPhaseLabel = '等来源';
+          else if (obPhaseLabel === 'failed') obPhaseLabel = '失败:' + (obSt2.lastError || '').slice(0, 20);
+          window.dispatchEvent(new CustomEvent('sg-coordinator-tick', {
+            detail: {
+              engine: 'coor', stage: stage, autoMode: coRunning, runningModule: 'onboarding',
+              dayCount: getDayCount(), followedToday: getFollowedToday(), followLimit: getLimit(),
+              isChatTime: readWorkChatHours().isChatTime, isWorkTime: readWorkChatHours().isWorkTime,
+              followRunning: false, chatRunning: false, nurtureRunning: false,
+              repostRunning: false, profileClone: profileCloneSnap(),
+              whyIdle: '新号上路: ' + obPhaseLabel,
+              onboarding: obSt2
+            }
+          }));
+        } catch (eObTick) {}
+        coSave(coPrev);
+        return;
+      } else if (onboardResult === 'idle_with_nurture') {
+        // 等来源阶段：养号可正常排
+        // 不拦截，继续走正常调度
+      }
       var sgTick = coLoadSg();
       var nowTick = Date.now();
       sgTick = ensureChatFreezeSg(sgTick);
@@ -3798,28 +4178,28 @@
               continue;
             }
           }
-          // 心跳超时检测（90秒无更新 → 强制停止；follow/nurture 进诊断冻结）
-          if (ms.lastActive && Date.now() - ms.lastActive > 90000) {
-            Logger.info('Coor', k + ' 心跳超时，强制停止');
+          // 4.6.30：心跳超时检测（10min 无更新 → 强制停止；follow/nurture 仅告警 + stop，不进冻结）
+          if (ms.lastActive && Date.now() - ms.lastActive > 600000) {
+            Logger.info('Coor', k + ' 心跳超时(10min)，强制停止');
             if (k === 'chat') {
-              reclaimChatZombieCo('module_lastActive_90s');
+              reclaimChatZombieCo('module_lastActive_10min');
             } else {
               if (coModules[k] && coModules[k]._startedAt) {
                 if (k === 'follow') coRecordDur('follow', coModules[k]._startedAt);
                 if (k === 'nurture') coRecordDur('nurture', coModules[k]._startedAt);
               }
+              // follow/nurture：只停 + 遥测告警，冻结只留给明确异常证据场景（CMD-11）
               try {
-                if ((k === 'follow' || k === 'nurture') && typeof SgDiagContract !== 'undefined') {
-                  SgDiagContract.noteAction(k, 'running', 'heartbeat_timeout');
-                  SgDiagContract.enterFreeze({
+                if (typeof SgTelemetry !== 'undefined') {
+                  SgTelemetry.emit('scheduler.module_stuck', {
                     module: k,
-                    stage: 'running',
-                    reason: 'module_lastActive_90s',
-                    code: 'diag_stale',
-                    hint: k + ' 心跳 90s 无更新 → 诊断冻结取证'
+                    reason: 'module_lastActive_10min',
+                    lastActive: ms.lastActive,
+                    elapsed: Date.now() - ms.lastActive,
+                    stage: coModules[k]._startedAt ? 'running' : 'idle'
                   });
                 }
-              } catch (eDf) {}
+              } catch (eTl) {}
               coStop(k);
             }
           } else {
@@ -4070,36 +4450,7 @@
                 }
               }
             } catch (eCoH) {}
-          } else if (!isChatDayAllowedCo()) {
-            canGo = false;
-            chatBlockReason = 'day_lt_3';
-            Logger.info('Coor', '  跳过 chat (Day' + getDayCount() + ' 不私信，≥3 才开)');
-            try {
-              if (!coPrev._dayLt3At || Date.now() - coPrev._dayLt3At > 60000) {
-                coPrev._dayLt3At = Date.now();
-                if (typeof SgTelemetry !== 'undefined') {
-                  SgTelemetry.emit('scheduler.chat_blocked', { reason: 'day_lt_3', day: getDayCount() });
-                }
-              }
-            } catch (eDay) {}
-            // 软风控只排了 chat 时：压成养号，避免整窗空转
-            try {
-              if (softRiskActive(sg, now)) {
-                coerceSoftRiskNoChat(sg);
-                try {
-                  if (typeof SgTelemetry !== 'undefined') {
-                    SgTelemetry.emit('scheduler.soft_risk_chat_blocked_fallback', { reason: 'day_lt_3', phase: 'nurture' });
-                  }
-                } catch (eFb1) {}
-                if (priority.length === 1 && priority[0] === 'chat') {
-                  priority = ['nurture'];
-                  j = -1; // 下轮 for 从 nurture 再试
-                  continue;
-                }
-              }
-            } catch (eCo) {}
-          } else if (launchPolicy && !launchPolicy.allowChat
-            && !(launchPolicy.reason === 'day_lt_3' && isChatDayAllowedCo())) {
+          } else if (launchPolicy && !launchPolicy.allowChat) {
             canGo = false;
             chatBlockReason = launchPolicy.reason || 'policy';
             Logger.info('Coor', '  跳过 chat (策略: ' + (launchPolicy.reason || 'blocked') + ')');
@@ -4123,12 +4474,6 @@
           } else if (softRiskActive(sg, now) && !sg.softRiskChatDone) {
             canGo = true;
             Logger.info('Coor', '  chat: 软风控' + ((sg.softRiskPhase || '') === 'chat2' ? 'chat2' : ((sg.softRiskPhase || '') === 'nurture' ? '养号段误启' : 'chat1')) + '启动（按人混发）');
-          } else if (softRiskActive(sg, now) && sg.softRiskChatDone
-            && isChatInboxWatchEnabledCo()
-            && !chatSessionCapReached()
-            && (countActionableReplyCo() > 0 || countActionableKickDebtFromDB() > 0)) {
-            canGo = true;
-            Logger.info('Coor','  chat: 软风控可行动债 hold');
           } else {
             // 4.1.38/4.1.64：长冷却废除；仅显式 nextAt。满配额有债且在私信时段内才放行清债（过点不赶债）
             var leftMs = chatCooldownLeftMs(sg, now);
@@ -4179,13 +4524,11 @@
             } catch (eTbGo) {}
           }
           // SCRM：检测通过且在线才放行（进线数字不参与）；赶工窗同样遵守
+          // 4.4.1：fail-open —— 闸门未就绪不拦截
           if (canGo) {
             var scrmG = getScrmGateSync();
             if (!scrmG) {
-              canGo = false;
-              chatBlockReason = 'scrm_pending';
-              refreshScrmGate();
-              Logger.info('Coor', '  跳过 chat (SCRM闸门查询中)');
+              refreshScrmGate(); // 后台异步刷新，不阻塞
             } else if (!scrmG.allow_chat) {
               canGo = false;
               chatBlockReason = 'scrm';
@@ -4553,6 +4896,11 @@
     } catch (eEv) {}
 
     var sg0 = coLoadSg();
+
+    // 初始化时立即做一次跨日检测（不用等第一个 tick 周期）
+    try { ensureFollowDailyRollover(); } catch (eInitRoll) {}
+    try { ensureNurtureDailyRollover(); } catch (eInitNurtRoll) {}
+
     if (sg0.running) {
       S.running = true;
       coStartScheduler();
@@ -4614,26 +4962,45 @@
                       var stRf = {};
                       try { stRf = JSON.parse(localStorage.getItem(keyRf) || '{}') || {}; } catch (eSt) { stRf = {}; }
                       var oldLock = parseInt(stRf.daily_limit, 10) || 0;
-                      
+                      var oldUsed = parseInt(stRf.follows_today, 10) || 0;
                       try {
-                        delete stRf.daily_limit;
                         var todayRf = '';
                         try { todayRf = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' }); } catch (eTd) {}
                         if (todayRf) stRf.date = todayRf;
+                        // 4.3.30：清零今日已关 + 重抽上限（否则 used≥新锁仍显示满）
+                        stRf.follows_today = 0;
+                        stRf.follows_reset_day = todayRf || stRf.date || '';
+                        delete stRf.daily_limit;
+                        var dayRf = Math.max(1, parseInt(stRf.day_count, 10) || 1);
+                        var pickMin = 15;
+                        var pickMax = 20;
+                        try {
+                          if (typeof RemoteSettings !== 'undefined' && RemoteSettings.followDayRange) {
+                            var rngRf = RemoteSettings.followDayRange(dayRf);
+                            if (rngRf) {
+                              pickMin = Math.max(1, parseInt(rngRf.min, 10) || pickMin);
+                              pickMax = Math.max(pickMin, parseInt(rngRf.max, 10) || pickMax);
+                            }
+                          }
+                        } catch (eRng) {}
+                        if (pickMax < pickMin) { var tSwap = pickMin; pickMin = pickMax; pickMax = tSwap; }
+                        stRf.daily_limit = pickMin + Math.floor(Math.random() * (pickMax - pickMin + 1));
                         localStorage.setItem(keyRf, JSON.stringify(stRf));
                         ok = true;
-                        
-                        // 无论如何清除 followNextDelayUntil，确保新配置拉取后能正常起步
                         try {
                           var sgY = coLoadSg();
-                          if ((sgY.followNextDelayUntil || 0) > Date.now()) {
-                            sgY.followNextDelayUntil = 0;
-                            coSaveSg(sgY);
-                            Logger.info('调度', '远程重锁后清除 followNextDelayUntil');
-                          }
+                          sgY.followNextDelayUntil = 0;
+                          coSaveSg(sgY);
                         } catch (eClrD) {}
-                        
-                        Logger.info('调度', '远程重锁关注日限: 已清除旧锁(' + oldLock + ')，等待引擎按新配置重抽');
+                        try {
+                          var msRf = JSON.parse(sessionStorage.getItem('sg_module_follow') || '{}') || {};
+                          if (msRf.phase === 'quota_exhausted' || msRf.phase === 'quota') {
+                            msRf.phase = 'idle';
+                            msRf.running = false;
+                            sessionStorage.setItem('sg_module_follow', JSON.stringify(msRf));
+                          }
+                        } catch (eMsRf) {}
+                        Logger.info('调度', '远程重锁关注日限: 已关' + oldUsed + '→0 旧锁' + oldLock + '→新锁' + stRf.daily_limit + ' Day' + dayRf);
                       } catch (eWrite) {
                         Logger.warn('调度', '远程重锁关注日限写失败');
                       }
@@ -4646,7 +5013,7 @@
                   ok = false;
                   try {
                     [
-                      'chat_target_db', 'dan_reject_users', 'dan_ice_task_queue', 'dan_inbox_task_queue',
+                      'chat_target_db', 'dan_reject_users', 'dan_ice_task_queue',
                       'dan_session_scanned', 'sg_fan_roster_baseline', 'dan_completed_targets',
                       'dan_ops_round_map', 'sg_chat_lease', 'sg_diag_freeze'
                     ].forEach(function (k) {
@@ -4654,9 +5021,42 @@
                     });
                     try {
                       var sgW = coLoadSg();
+                      // 4.6.29：一次性清全部软风控+私信状态，避免残留
+                      // 之前只清了 phase/until/chatDone + freeze，漏了 chatPass/outboundDone/
+                      // chatNextAllowedAt/mode/overtimeMs 等，导致重置后仍被冷却或相位残留卡住
                       sgW.softRiskPhase = '';
                       sgW.softRiskUntil = 0;
+                      sgW.softRiskMode = '';
                       sgW.softRiskChatDone = false;
+                      sgW.softRiskOutboundDone = false;
+                      sgW.softRiskChatPass = 0;
+                      sgW.softRiskIceExtendMs = 0;
+                      sgW.softRiskOvertimeMs = 0;
+                      sgW.softRiskStartedAt = 0;
+                      sgW.softFillMode = '';
+                      sgW.chatNextAllowedAt = 0;
+                      // 同步清定格快照：重置后目标库重建，firstSeen 都是新时间，
+                      // 旧的 chatFreezeAt 会把所有新粉判成「定格后新粉」→ 全 freeze 跳过，
+                      // 导致当天一个破冰都发不出去。
+                      sgW.chatFreezeDate = '';
+                      sgW.chatFreezeAt = 0;
+                      sgW.chatFreezeHandles = [];
+                      sgW.chatFreezeSealed = false;
+                      // 4.6.30：清当日私信时长/轮次（出站帽/总帽），
+                      // 不然重置了目标库但出站帽到了 chat 还是不跑，等于半拉子重置。
+                      sgW.chatDate = '';
+                      sgW.chatTotalToday = 0;
+                      sgW.chatOutboundToday = 0;
+                      sgW.chatInboxToday = 0;
+                      sgW.chatRoundsToday = 0;
+                      sgW.chatLastEndAt = 0;
+                      // 同步清内存态 S，免得本 tab 下一次 tick 还读旧值（4.6.30 补 nurtureOnly）
+                      try {
+                        S.chatDate = '';
+                        S.chatRoundsToday = 0;
+                        S.chatLastEndAt = 0;
+                        S.nurtureOnly = false;
+                      } catch (eS) {}
                       coSaveSg(sgW);
                     } catch (eSgW) {}
                     try {
@@ -4664,7 +5064,11 @@
                       for (var si = 0; si < sessionStorage.length; si++) {
                         var sk = sessionStorage.key(si);
                         if (!sk) continue;
-                        if (/^dan_|^sg_chat_|current_target|dan_auto_step|dan_ice_|dan_inbox_/.test(sk)) {
+                        // 4.6.29：补清 ops_target_rounds / sg_soft_chat2_prepared / sg_soft_risk_* 等
+                        // 漏清 ops_target_rounds 会导致 getEffectiveFanRound 仍取 OPS 轮次≥1
+                        // → 全员判 completed → 队列为空 → 误报「发完」转回养号
+                        // 4.6.30：补 sg_debt_* 前缀（仅清债模式残留会导致 harvest 直接 return 0）
+                        if (/^dan_|^sg_chat_|^sg_soft_|^sg_debt_|^ops_|current_target|dan_auto_step|dan_ice_/.test(sk)) {
                           killKeys.push(sk);
                         }
                       }
@@ -4672,8 +5076,18 @@
                         try { sessionStorage.removeItem(k); } catch (eSk) {}
                       });
                     } catch (eSs) {}
+                    // 4.6.30：跨 tab 广播——其他 tab 的 sessionStorage 是各自独立的，
+                    // reset 命令只清了当前 tab，粉丝页/私信页的 sessionStorage 纹丝不动，
+                    // 导致 ops_target_rounds / completed_targets / session_scanned 残留，
+                    // 全员判 completed → pending=0 → 债=0。
+                    // 写 localStorage 递增标记，所有 tab 通过 storage 事件收到后自清。
+                    try {
+                      var prevSeq = parseInt(localStorage.getItem('sg_reset_chat_seq') || '0', 10) || 0;
+                      localStorage.setItem('sg_reset_chat_seq', String(prevSeq + 1));
+                      localStorage.setItem('sg_reset_chat_at', String(Date.now()));
+                    } catch (eBroadcast) {}
                     ok = true;
-                    Logger.info('调度', '远程重置私信本地底账完成');
+                    Logger.info('调度', '远程重置私信本地底账完成（已广播所有tab）');
                     try { showToast && showToast('已清本地私信底账', '#3fb950', 2500); } catch (eT) {}
                   } catch (eWipe) {
                     ok = false;
@@ -4742,6 +5156,20 @@
       manualChatTest();
     });
   } catch (eEv) {}
+
+  // 页面内直发命令：G1 主控 / E4 浮层的手动按钮统一走这里，绕过 SW（避免 SW 休眠丢消息）
+  try {
+    window.addEventListener('sg-page-cmd', function (ev) {
+      var a = ev && ev.detail && ev.detail.action;
+      if (!a) return;
+      if (a === 'sg_scheduler_start') { schedulerStart(); return; }
+      if (a === 'sg_scheduler_pause') { schedulerPause(); return; }
+      if (a === 'sg_manual_follow') { manualFollow(); return; }
+      if (a === 'sg_manual_chat') { manualChat(); return; }
+      if (a === 'sg_nurture_only') { toggleNurtureOnly(); return; }
+      if (a === 'sg_manual_repost') { manualRepost(); return; }
+    });
+  } catch (eEv2) {}
 
   // ==================== 消息监听 ====================
   if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
@@ -4812,6 +5240,55 @@
   }
 
   window.addEventListener('beforeunload', saveSG);
+
+  // ====== 跨 tab 私信重置广播：storage 事件监听 ======
+  // sessionStorage 按 tab 隔离，reset 命令在别的 tab 执行时清不到这里。
+  // 通过 localStorage 的 sg_reset_chat_seq 变化广播，每个 tab 自己清 sessionStorage。
+  (function () {
+    var RESET_KEY = 'sg_reset_chat_seq';
+    var lastSeq = 0;
+    try { lastSeq = parseInt(localStorage.getItem(RESET_KEY) || '0', 10) || 0; } catch (e) {}
+    function clearChatSessionStorage(why) {
+      try {
+        var killKeys = [];
+        for (var si = 0; si < sessionStorage.length; si++) {
+          var sk = sessionStorage.key(si);
+          if (!sk) continue;
+          if (/^dan_|^sg_chat_|^sg_soft_|^sg_debt_|^ops_|current_target|dan_auto_step|dan_ice_/.test(sk)) {
+            killKeys.push(sk);
+          }
+        }
+        killKeys.forEach(function (k) {
+          try { sessionStorage.removeItem(k); } catch (eRk) {}
+        });
+        console.log('[调度-重置广播] ' + (why || 'storage_event') + '：已清本 tab sessionStorage (' + killKeys.length + ' 项)');
+        try { showToast && showToast('🔄 私信底账已重置（本tab）', '#3fb950', 2000); } catch (eT) {}
+      } catch (e) {}
+    }
+    try {
+      window.addEventListener('storage', function (e) {
+        if (!e || e.key !== RESET_KEY) return;
+        var newSeq = parseInt(e.newValue || '0', 10) || 0;
+        if (newSeq > lastSeq) {
+          lastSeq = newSeq;
+          clearChatSessionStorage('storage_event');
+        }
+      });
+    } catch (eL) {}
+    try {
+      document.addEventListener('visibilitychange', function () {
+        if (document.hidden) return;
+        try {
+          var cur = parseInt(localStorage.getItem(RESET_KEY) || '0', 10) || 0;
+          if (cur > lastSeq) {
+            lastSeq = cur;
+            clearChatSessionStorage('visibility_check');
+          }
+        } catch (eChk) {}
+      });
+    } catch (eVc) {}
+  })();
+
   setTimeout(init, 1500);
 
   // ==================== 诊断 API ====================

@@ -49,6 +49,40 @@
         } catch (e) { return true; }
     }
 
+    /** 关注防老外：假名/汉字/半角假名/扩展汉字（对齐 profile-clone；不要求假名——日名常纯汉字） */
+    function hasJapaneseText(s) {
+        return /[\u3040-\u30ff\u3400-\u9fff\uff66-\uff9f]/.test(String(s || ''));
+    }
+
+    /**
+     * 关注对象日文门（纯函数，可单测）。
+     * name∨bio 有日文即过；有日文不按长度踢；onlyJapanese 关时仅踢空壳。
+     * @returns {{ pass: boolean, reason: string, isJp: boolean, isPureEng: boolean }}
+     */
+    function decideFollowTargetJa(name, bio, onlyJapanese) {
+        var n = String(name || '').trim();
+        var b = String(bio || '').trim();
+        var content = [n, b].filter(Boolean).join(' | ');
+        var isJp = hasJapaneseText(n) || hasJapaneseText(b);
+        var isPureEng = /[a-zA-Z]/.test(content) && !isJp;
+        var isEmpty = !content;
+        if (onlyJapanese) {
+            if (isJp) return { pass: true, reason: 'ja', isJp: true, isPureEng: false };
+            if (isEmpty) return { pass: false, reason: 'empty', isJp: false, isPureEng: false };
+            if (isPureEng) return { pass: false, reason: 'pure_eng', isJp: false, isPureEng: true };
+            return { pass: false, reason: 'no_ja', isJp: false, isPureEng: false };
+        }
+        if (isEmpty) return { pass: false, reason: 'empty', isJp: isJp, isPureEng: isPureEng };
+        return { pass: true, reason: 'all_mode', isJp: isJp, isPureEng: isPureEng };
+    }
+
+    try {
+        window.SgFollowJaGate = {
+            hasJapaneseText: hasJapaneseText,
+            decideFollowTargetJa: decideFollowTargetJa
+        };
+    } catch (eGate) {}
+
     function isNurtureLockEnabled() {
         if (localStorage.getItem('matrix_nurture_lock') === 'true') return true;
         try {
@@ -3287,23 +3321,33 @@
         if (!editor) return false;
         var want = String(text || '');
         if (!want) return false;
-        try { editor.focus(); } catch (_) {}
-        await __nr_sleep(120);
         function read() {
+            // X 评论框是 Lexical contenteditable，innerText 即真实 state；textContent 兜底
             return ((editor.innerText || editor.textContent || '') + '').trim();
         }
         function looksOk(got) {
-            if (!got) return false;
-            if (got === want) return true;
-            var n = Math.min(12, want.length);
-            return n > 0 && got.indexOf(want.slice(0, n)) >= 0;
+            return !!got && got === want;
         }
+
+        // 第一层：拟人键盘事件链（与 nurture/repost 对齐，走 Lexical 正规输入通道）
+        try {
+            if (typeof EngineUtils !== 'undefined' && EngineUtils.typeTextHumanLike) {
+                var humanOk = await EngineUtils.typeTextHumanLike(editor, want);
+                if (humanOk && looksOk(read())) return true;
+            }
+        } catch (eHuman) {}
+
+        // 第二层：execCommand
+        try { editor.focus(); } catch (_) {}
+        await __nr_sleep(120);
         try {
             document.execCommand('selectAll', false);
             document.execCommand('insertText', false, want);
         } catch (e0) {}
         await __nr_sleep(200);
         if (looksOk(read())) return true;
+
+        // 第三层：paste
         try {
             var dt = new DataTransfer();
             dt.setData('text/plain', want);
@@ -3311,6 +3355,8 @@
         } catch (e1) {}
         await __nr_sleep(250);
         if (looksOk(read())) return true;
+
+        // 第四层：InputEvent / textContent 兜底
         try {
             editor.dispatchEvent(new InputEvent('beforeinput', { inputType: 'insertText', data: want, bubbles: true, cancelable: true }));
             editor.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: want, bubbles: true, cancelable: true }));
@@ -3585,41 +3631,120 @@ async function handleFollowButton(cell) {
             }
         }));
 
-        // 防老外：获取用户简介内容，检测是否是日语用户
-        let rawText = cell.innerText || "";
-        let lines = rawText.split('\n').map(l => l.trim()).filter(l => l.length > 0);
-        let rawBtnText = followBtn.innerText ? followBtn.innerText.trim() : '';
-        let content = lines.filter(l => l !== rawBtnText).join(' | ');
+        // 防老外：name∨bio 分提合并判定（4.6.37）
+        // 根因修复：4.6.25 只读 bio 会丢掉昵称日文；length>8 会误踢短日文名/简介。
+        let displayName = '';
+        let bioText = '';
+        const rawBtnText = followBtn.innerText ? followBtn.innerText.trim() : '';
+        try {
+            // 1) 显示名：UserName 区内第一个非 @handle 文本
+            const nameRoot = cell.querySelector('[data-testid="UserName"]');
+            if (nameRoot) {
+                const nameNodes = nameRoot.querySelectorAll('span, div[dir="auto"]');
+                for (let ni = 0; ni < nameNodes.length; ni++) {
+                    const t = (nameNodes[ni].innerText || nameNodes[ni].textContent || '').replace(/\s+/g, ' ').trim();
+                    if (!t || t.startsWith('@')) continue;
+                    if (t === rawBtnText) continue;
+                    // 跳过纯 handle 形态（无空格的短英数）
+                    if (/^[A-Za-z0-9_]{1,15}$/.test(t)) continue;
+                    displayName = t;
+                    break;
+                }
+            }
+            // 兜底：cell 内短 dir=auto（优先含日文）
+            if (!displayName) {
+                const shortCands = cell.querySelectorAll('div[dir="auto"]');
+                let bestShort = '';
+                let bestShortScore = -1;
+                for (let si = 0; si < shortCands.length; si++) {
+                    const t = (shortCands[si].innerText || '').replace(/\s+/g, ' ').trim();
+                    if (!t || t.startsWith('@') || t === rawBtnText) continue;
+                    if (t.length > 40) continue; // 长文更像简介
+                    let score = t.length;
+                    if (hasJapaneseText(t)) score += 1000;
+                    if (score > bestShortScore) {
+                        bestShortScore = score;
+                        bestShort = t;
+                    }
+                }
+                if (bestShort) displayName = bestShort;
+            }
 
-        const isJp = /[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]/.test(content);
-        const isPureEng = /[a-zA-Z]/.test(content) && !isJp;
-        const isSubstantial = content.length > 8;
+            // 2) 简介：UserDescription 优先；展开「更多」；点「显示原文」
+            let bioEl = null;
+            const testidCandidates = cell.querySelectorAll('[data-testid="UserDescription"], [data-testid="tweetText"]');
+            if (testidCandidates.length > 0) bioEl = testidCandidates[0];
+            if (!bioEl) {
+                // 扫全部 dir=auto，优先含日文且非名字的长文本（避免抢英文昵称）
+                const allDivs = cell.querySelectorAll('div[dir="auto"]');
+                let bestBio = null;
+                let bestBioScore = -1;
+                for (let di = 0; di < allDivs.length; di++) {
+                    const t = (allDivs[di].innerText || '').trim();
+                    if (!t || t.startsWith('@') || t === rawBtnText) continue;
+                    if (displayName && t === displayName) continue;
+                    // 短非日文易是按钮/元数据；短日文简介必须保留（验收：≤8 字日文也过）
+                    if (t.length <= 10 && !hasJapaneseText(t)) continue;
+                    let score = t.length;
+                    if (hasJapaneseText(t)) score += 1000;
+                    if (score > bestBioScore) {
+                        bestBioScore = score;
+                        bestBio = allDivs[di];
+                    }
+                }
+                bioEl = bestBio;
+            }
+            if (bioEl) {
+                const showMoreBtn = cell.querySelector(
+                    '[role="button"][aria-label*="更多"], [role="button"][aria-label*="more"],' +
+                    '[role="button"][aria-label*="見る"], [role="button"][aria-label*="さらに"]'
+                );
+                if (showMoreBtn && bioEl.innerText && bioEl.innerText.length < 50) {
+                    try {
+                        showMoreBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                        await sleep(300);
+                    } catch (eSm) {}
+                }
+                // 显示原文：避免自动英译把日文简介变成 isPureEng
+                try {
+                    const revealNodes = cell.querySelectorAll('button, [role="button"], span[role="button"], a');
+                    for (let ri = 0; ri < revealNodes.length; ri++) {
+                        const lab = ((revealNodes[ri].innerText || revealNodes[ri].getAttribute('aria-label') || '') + '')
+                            .replace(/\s+/g, ' ').trim();
+                        if (!lab || lab.length > 60) continue;
+                        if (/Translate|翻译|翻訳/i.test(lab) && !/original|原文/i.test(lab)) continue;
+                        if (/Show original|See original|查看原文|顯示原文|原文を表示|원문 보기/i.test(lab)) {
+                            try { revealNodes[ri].click(); } catch (eRv) {}
+                            await sleep(350);
+                            break;
+                        }
+                    }
+                } catch (eReveal) {}
+                bioText = (bioEl.innerText || bioEl.textContent || '').trim();
+            }
+        } catch (eBio) {}
 
-        // 读取"只点击日本人"设置（远程优先）
+        // 兜底：整行 innerText 拆行（旧逻辑）——仅在 name/bio 都空时
+        if (!displayName && !bioText) {
+            try {
+                let rawText = cell.innerText || '';
+                let lines = rawText.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+                lines = lines.filter(l => l !== rawBtnText && !l.startsWith('@'));
+                if (lines.length > 0) displayName = lines[0];
+                if (lines.length > 1) bioText = lines.slice(1).join(' | ');
+            } catch (eFb) {}
+        }
+
         const onlyJapanese = isOnlyJapaneseEnabled();
-
-        if (onlyJapanese) {
-            // 只点击日本人模式
-            if (isPureEng || !isJp || !isSubstantial) {
-                cell.style.cssText += 'opacity: 0.15; filter: grayscale(100%); border: 1px solid red;';
-                updateStats("【防线】非目标号，剔除...");
-                cell.setAttribute('data-matrix-processed', 'true');
-                { const _r = cell.getBoundingClientRect(); if (_r.bottom > window.innerHeight) window.scrollBy({ top: _r.bottom - window.innerHeight + 50, behavior: 'smooth' }); }
-                await sleep(randomInt(700, 1200));
-                __markFanProcessed(currentBlogger, handle);
-                return 'filtered';
-            }
-        } else {
-            // 全部点击模式 - 只过滤太短的内容
-            if (!isSubstantial) {
-                cell.style.cssText += 'opacity: 0.15; filter: grayscale(100%); border: 1px solid red;';
-                updateStats("【防线】内容过短，剔除...");
-                cell.setAttribute('data-matrix-processed', 'true');
-                { const _r = cell.getBoundingClientRect(); if (_r.bottom > window.innerHeight) window.scrollBy({ top: _r.bottom - window.innerHeight + 50, behavior: 'smooth' }); }
-                await sleep(randomInt(700, 1200));
-                __markFanProcessed(currentBlogger, handle);
-                return 'filtered';
-            }
+        const jaGate = decideFollowTargetJa(displayName, bioText, onlyJapanese);
+        if (!jaGate.pass) {
+            cell.style.cssText += 'opacity: 0.15; filter: grayscale(100%); border: 1px solid red;';
+            updateStats(onlyJapanese ? '【防线】非目标号，剔除...' : '【防线】内容为空，剔除...');
+            cell.setAttribute('data-matrix-processed', 'true');
+            { const _r = cell.getBoundingClientRect(); if (_r.bottom > window.innerHeight) window.scrollBy({ top: _r.bottom - window.innerHeight + 50, behavior: 'smooth' }); }
+            await sleep(randomInt(700, 1200));
+            __markFanProcessed(currentBlogger, handle);
+            return 'filtered';
         }
 
         // 获取用户设置的总间隔时间
@@ -3673,15 +3798,61 @@ async function handleFollowButton(cell) {
                 __markFanProcessed(currentBlogger, handle);
             } catch (ePreMark) {}
 
-            // 安全点击：只点按钮，阻止冒泡到 UserCell 头像/链接（否则会进 profile 触发整页纠偏）
+            // 确保按钮滚到视口内再点击（长简介 cell 高时按钮可能在视口外）
             try {
-                var clickOpts = { bubbles: true, cancelable: true, view: window };
-                followBtn.dispatchEvent(new MouseEvent('pointerdown', clickOpts));
-                followBtn.dispatchEvent(new MouseEvent('mousedown', clickOpts));
-                followBtn.dispatchEvent(new MouseEvent('mouseup', clickOpts));
-                followBtn.dispatchEvent(new MouseEvent('click', clickOpts));
-            } catch (eClkSafe) {
-                try { followBtn.click(); } catch (eClk2) {}
+                var btnRect = followBtn.getBoundingClientRect();
+                if (btnRect.top < 0 || btnRect.bottom > window.innerHeight) {
+                    followBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    await sleep(400);
+                }
+            } catch (eSv) {}
+
+            // 点击关注按钮：优先用 EngineUtils.humanClick（完整鼠标事件序列，兼容比特浏览器等严格环境）
+            // 4.6.31 B3：真兜底——每层点击后读回按钮状态，确认已关注才停止，否则继续下一层（§B3）
+            var clickedOk = false;
+            try {
+                if (typeof EngineUtils !== 'undefined' && EngineUtils.humanClick) {
+                    await EngineUtils.humanClick(followBtn);
+                    await sleep(500);
+                    var postHumanState = __followBtnState(followBtn);
+                    clickedOk = postHumanState.state === 'already';
+                    console.log('[关注点击] humanClick try=1 result=' + (clickedOk ? 'already' : postHumanState.reason));
+                }
+            } catch (eHc) {
+                console.log('[关注点击] humanClick try=1 exception=' + (eHc && eHc.message));
+            }
+            if (!clickedOk) {
+                try {
+                    // PointerEvent 完整序列（现代浏览器更原生，比特浏览器可能更认可）
+                    var po = { bubbles: true, cancelable: true, pointerId: 1, pointerType: 'mouse', button: 0, buttons: 1 };
+                    followBtn.dispatchEvent(new PointerEvent('pointerover', po));
+                    followBtn.dispatchEvent(new PointerEvent('pointerenter', po));
+                    await sleep(50);
+                    followBtn.dispatchEvent(new PointerEvent('pointerdown', po));
+                    await sleep(80);
+                    try { if (followBtn.focus) followBtn.focus(); } catch (_) {}
+                    followBtn.dispatchEvent(new PointerEvent('pointerup', po));
+                    await sleep(30);
+                    followBtn.dispatchEvent(new PointerEvent('click', po));
+                    await sleep(500);
+                    var postPeState = __followBtnState(followBtn);
+                    clickedOk = postPeState.state === 'already';
+                    console.log('[关注点击] PointerEvent try=2 result=' + (clickedOk ? 'already' : postPeState.reason));
+                } catch (ePe) {
+                    console.log('[关注点击] PointerEvent try=2 exception=' + (ePe && ePe.message));
+                }
+            }
+            if (!clickedOk) {
+                try {
+                    // 最后兜底：原生 click()
+                    followBtn.click();
+                    await sleep(500);
+                    var postClkState = __followBtnState(followBtn);
+                    clickedOk = postClkState.state === 'already';
+                    console.log('[关注点击] nativeClick try=3 result=' + (clickedOk ? 'already' : postClkState.reason));
+                } catch (eClk) {
+                    console.log('[关注点击] nativeClick try=3 exception=' + (eClk && eClk.message));
+                }
             }
             // 截断父级 <a> 导航：点击后若已离开粉丝列表，立刻 soft back
             try {
@@ -3697,7 +3868,11 @@ async function handleFollowButton(cell) {
                     }
                 }
             } catch (eNavGuard) {}
-            document.dispatchEvent(new CustomEvent('matrix-diagnostic', { detail: { text: '✅ 已点击关注: @' + handle } }));
+            if (clickedOk) {
+                document.dispatchEvent(new CustomEvent('matrix-diagnostic', { detail: { text: '✅ 已点击关注: @' + handle } }));
+            } else {
+                document.dispatchEvent(new CustomEvent('matrix-diagnostic', { detail: { text: '⚠️ 关注三层点击均未确认: @' + handle + '（走未确认流程，不计配额）' } }));
+            }
             
             // 点击后风控检测（蓝条可能略晚出现，未确认前再扫一次）
             await sleep(2000);

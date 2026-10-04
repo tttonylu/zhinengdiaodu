@@ -1,17 +1,40 @@
 // =============================================================================
-// 智能调度 — 控制面板 UI
-// 单组件两态：半透明状态圆点 ↔ 半透明卡片（同位置）
+// 智能调度 — 控制面板 UI（双圆形按钮 + 可展开详情面板）
+// 按钮1：启动/暂停（圆形，一键切换）
+// 按钮2：详情面板（圆形齿轮，点击展开/收起浮动面板）
 // =============================================================================
 
 (function () {
   'use strict';
 
-  if (document.getElementById('sg-panel')) return;
+  if (document.getElementById('sg-fab-run')) return;
 
-  var data = {};
-  var panel = null;
-  var isCollapsed = true;
+  var CACHE_KEY = 'sg_panel_data_cache';
+
+  // 从本地缓存加载数据
+  var data = (function () {
+    try {
+      var raw = localStorage.getItem(CACHE_KEY);
+      if (raw) return JSON.parse(raw);
+    } catch (e) {}
+    return {};
+  })();
+
+  var runBtn = null;      // 启动/暂停按钮
+  var gearBtn = null;     // 设置按钮
+  var detailPanel = null; // 详情浮动面板
+  var panelOpen = false;
   var didDrag = false;
+  var activeTab = 'quota'; // quota | logs | settings
+
+  // 保存数据到本地缓存
+  function saveCache() {
+    try {
+      localStorage.setItem(CACHE_KEY, JSON.stringify(data));
+    } catch (e) {}
+  }
+
+  // ==================== 工具函数 ====================
 
   function getSwitches() {
     try {
@@ -28,12 +51,12 @@
       var btn = document.getElementById('btn-toggle-' + m[i]);
       if (!btn) continue;
       if (sw[k[i]] !== false) {
-        btn.style.color = '#3fb950';
-        btn.style.borderColor = '#238636';
+        btn.classList.add('sg-toggle-on');
+        btn.classList.remove('sg-toggle-off');
         btn.textContent = labels[i] + ' ON';
       } else {
-        btn.style.color = '#f85149';
-        btn.style.borderColor = '#da3633';
+        btn.classList.add('sg-toggle-off');
+        btn.classList.remove('sg-toggle-on');
         btn.textContent = labels[i] + ' OFF';
       }
     }
@@ -62,33 +85,18 @@
   }
 
   function refreshRepostTargetsRow() {
-    var row = document.getElementById('row-rp-tg');
-    var el = document.getElementById('v-rp-tg');
     var countEl = document.getElementById('v-rp-tg-count');
     var listEl = document.getElementById('v-rp-tg-list');
     var list = getRepostTargetList();
-    if (row && el) {
-      row.style.display = 'flex';
-      if (!list.length) {
-        el.textContent = '空(点拉取)';
-        el.style.color = '#f0883e';
-        el.title = 'OPS 账号页填写转帖来源后，点「拉取来源」';
-      } else {
-        el.textContent = list.map(function (h) { return '@' + h; }).join(' ');
-        el.title = el.textContent;
-        el.style.color = '#8b949e';
-      }
-    }
     if (countEl) countEl.textContent = String(list.length);
     if (listEl) {
       if (!list.length) {
-        listEl.innerHTML = '<span style="color:#f0883e">暂无来源。OPS 填好转帖来源后点「拉取来源」</span>';
+        listEl.innerHTML = '<span style="color:#f0883e">暂无来源</span>';
       } else {
         listEl.innerHTML = list.map(function (h) {
           return '<button type="button" class="sg-rp-tg-chip" data-handle="' + h + '" '
-            + 'title="打开 @' + h + ' 主页（可手动复制）" '
-            + 'style="font-size:10px;background:#21262d;color:#58a6ff;border:1px solid #30363d;'
-            + 'border-radius:4px;padding:2px 6px;cursor:pointer;margin:1px">'
+            + 'style="font-size:9px;background:#21262d;color:#58a6ff;border:1px solid #30363d;'
+            + 'border-radius:3px;padding:1px 5px;cursor:pointer;margin:1px">'
             + '@' + h + '</button>';
         }).join('');
       }
@@ -106,7 +114,7 @@
       setMsg('ConfigSync 未就绪', '#f85149');
       return;
     }
-    setMsg('正在从 OPS 拉取来源号…', '#d29922');
+    setMsg('拉取中…', '#d29922');
     var settled = false;
     var finish = function () {
       if (settled) return;
@@ -114,8 +122,8 @@
       try { window.removeEventListener('sg-config-synced', onSynced); } catch (eR) {}
       try { refreshRepostTargetsRow(); } catch (e3) {}
       var n = getRepostTargetList().length;
-      if (n) setMsg('已同步 ' + n + ' 个来源：' + getRepostTargetList().map(function (h) { return '@' + h; }).join(' '), '#3fb950');
-      else setMsg('仍无来源（检查 OPS 该号「转帖来源」是否已保存）', '#f0883e');
+      if (n) setMsg('已同步 ' + n + ' 个', '#3fb950');
+      else setMsg('仍无来源', '#f0883e');
     };
     var onSynced = function () { finish(); };
     try { window.addEventListener('sg-config-synced', onSynced); } catch (eA) {}
@@ -127,46 +135,23 @@
     setTimeout(finish, 3500);
   }
 
-  function loadPanelPos() {
+  function loadBtnPos(key, defaultPos) {
     try {
-      var p = JSON.parse(localStorage.getItem('sg_panel_pos') || '{}');
+      var p = JSON.parse(localStorage.getItem(key) || '{}');
       if (p && p.left) return p;
     } catch (e) {}
-    try {
-      var f = JSON.parse(localStorage.getItem('sg_float_pos') || '{}');
-      if (f && f.left) return f;
-    } catch (e2) {}
-    return { left: '16px', top: '60px' };
+    return defaultPos;
   }
 
-  function savePanelPos() {
-    if (!panel) return;
-    localStorage.setItem('sg_panel_pos', JSON.stringify({
-      left: panel.style.left,
-      top: panel.style.top
+  function saveBtnPos(btn, key) {
+    if (!btn) return;
+    localStorage.setItem(key, JSON.stringify({
+      left: btn.style.left,
+      top: btn.style.top
     }));
   }
 
-  function applyCollapse() {
-    if (!panel) return;
-    if (isCollapsed) {
-      panel.classList.add('sg-mini');
-      panel.title = '智能调度（点击展开）';
-    } else {
-      panel.classList.remove('sg-mini');
-      panel.title = '';
-    }
-  }
-
-  function setCollapsed(next) {
-    isCollapsed = !!next;
-    localStorage.setItem('sg_panel_collapsed', isCollapsed ? '1' : '0');
-    applyCollapse();
-  }
-
-  /** 圆点状态色：run / idle / warn / err（自动空闲≠运行中） */
-  function updateStatusClass() {
-    if (!panel) return;
+  function getStatusClass() {
     var d = data || {};
     var cls = 'sg-status-idle';
 
@@ -188,8 +173,29 @@
     else if (running) cls = 'sg-status-run';
     else cls = 'sg-status-idle';
 
-    panel.classList.remove('sg-status-run', 'sg-status-idle', 'sg-status-warn', 'sg-status-err');
-    panel.classList.add(cls);
+    return cls;
+  }
+
+  function updateRunBtnStatus() {
+    if (!runBtn) return;
+    var d = data || {};
+    var isRunning = !!(d.autoMode || d.runningModule || d.followRunning ||
+      d.chatRunning || d.nurtureRunning || d.repostRunning);
+    var statusCls = getStatusClass();
+
+    runBtn.classList.remove('sg-status-run', 'sg-status-idle', 'sg-status-warn', 'sg-status-err');
+    runBtn.classList.remove('sg-fab-running', 'sg-fab-stopped');
+    runBtn.classList.add(statusCls);
+
+    if (isRunning) {
+      runBtn.classList.add('sg-fab-running');
+      runBtn.innerHTML = '<span class="sg-fab-icon">⏸</span>';
+      runBtn.title = '点击暂停调度';
+    } else {
+      runBtn.classList.add('sg-fab-stopped');
+      runBtn.innerHTML = '<span class="sg-fab-icon">▶</span>';
+      runBtn.title = '点击启动调度';
+    }
   }
 
   function flashCmd(ok, text) {
@@ -204,47 +210,23 @@
   }
 
   function sendCmd(action, label) {
-    chrome.runtime.sendMessage({ action: action }, function (r) {
-      if (chrome.runtime.lastError) {
-        flashCmd(false, (label || action) + '：' + chrome.runtime.lastError.message);
-        return;
-      }
-      if (r && r.ok && r.delivered !== false) {
-        flashCmd(true, (label || action) + '：已下发');
-      } else {
-        flashCmd(false, (label || action) + '：' + ((r && r.error) || '页面未响应'));
-      }
-    });
-  }
-
-  function refreshExtVerBadge() {
     try {
-      var verEl = document.getElementById('v-ext-ver');
-      if (!verEl || typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.getManifest) return;
-      var manVer = chrome.runtime.getManifest().version;
-      verEl.textContent = 'v' + manVer;
-      verEl.title = chrome.runtime.getManifest().description || '';
-      var build = (typeof window !== 'undefined' && window.__SG_SCHED_BUILD__) ? String(window.__SG_SCHED_BUILD__) : '';
-      if (build && manVer && build !== manVer) {
-        verEl.textContent = 'v' + manVer + '·请刷新页面';
-        verEl.style.color = '#f85149';
-        verEl.title = '扩展已是 v' + manVer + '，但本页脚本仍是 v' + build + '。请在 x.com 标签按 Ctrl+Shift+R 强刷（不是只重载扩展）';
-      } else {
-        verEl.style.color = '';
-      }
-    } catch (eVer) {}
+      window.dispatchEvent(new CustomEvent('sg-page-cmd', { detail: { action: action } }));
+      flashCmd(true, (label || action) + '：已下发');
+    } catch (e) {
+      flashCmd(false, (label || action) + '：' + (e && e.message ? e.message : '页面未响应'));
+    }
   }
 
   function onTick(e) {
     var next = (e && e.detail) || {};
-    // 合并字段，避免某一路 tick 缺字段把面板刷成空
     for (var k in next) {
       if (Object.prototype.hasOwnProperty.call(next, k) && next[k] !== undefined) {
         data[k] = next[k];
       }
     }
     try { window._sgLastTick = data; } catch (eLt) {}
-    refreshExtVerBadge();
+    saveCache();
     render();
   }
 
@@ -276,7 +258,7 @@
         row.style.display = 'none';
         return;
       }
-      row.style.display = 'flex';
+      row.style.display = 'block';
       el.innerHTML = lines.map(function (l) { return '<div>' + String(l).replace(/</g, '&lt;') + '</div>'; }).join('');
     });
   }
@@ -306,7 +288,6 @@
     var rowStats = document.getElementById('row-test-monitor');
     var rowLog = document.getElementById('row-test-monitor-log');
     var statsEl = document.getElementById('v-test-monitor-stats');
-    var logEl = document.getElementById('row-test-monitor-log');
     if (!btn) return;
     var on = false;
     var sess = null;
@@ -331,13 +312,13 @@
         + ' · 错误 ' + (sess.errors ? sess.errors.length : 0)
         + ' · 状态变 ' + (s.state_changes || 0);
     }
-    if (logEl && on && typeof SgTestMonitor !== 'undefined' && SgTestMonitor.getRecent) {
+    if (rowLog && on && typeof SgTestMonitor !== 'undefined' && SgTestMonitor.getRecent) {
       var recent = SgTestMonitor.getRecent(3);
       if (!recent || !recent.length) {
-        logEl.innerHTML = '<div style="color:#484f58">等待事件…</div>';
+        rowLog.innerHTML = '<div style="color:#484f58">等待事件…</div>';
         return;
       }
-      logEl.innerHTML = recent.map(function (r) {
+      rowLog.innerHTML = recent.map(function (r) {
         var hint = '';
         if (r.type === 'state_change' && r.data && r.data.diff) {
           var keys = Object.keys(r.data.diff);
@@ -369,10 +350,59 @@
     btn.title = '清债/赶工已停用：软风控内短扫回复';
   }
 
-  function bindClick(id, fn) {
-    var el = document.getElementById(id);
-    if (el) el.addEventListener('click', fn);
-    return el;
+  function updateNewAcctReadyUi() {
+    try {
+      var el = document.getElementById('v-newacct-detail');
+      if (!el) return;
+      var row = document.getElementById('row-newacct-detail');
+      var h = (localStorage.getItem('matrix_my_handle') || '').replace(/^@/, '').replace(/#guard$/i, '').toLowerCase();
+      var day = 1;
+      try { day = parseInt((JSON.parse(localStorage.getItem('matrix_stats_' + h) || '{}')).day_count, 10) || 1; } catch (eD) {}
+
+      if (day >= 2) {
+        if (row) row.style.display = 'none';
+        return;
+      }
+      if (row) row.style.display = '';
+
+      var manuallyReady = false;
+      try { manuallyReady = localStorage.getItem('sg_newacct_ready_' + h) === '1'; } catch (eM) {}
+      if (manuallyReady) {
+        el.textContent = '已就绪（手动）';
+        el.style.color = '#3fb950';
+        return;
+      }
+
+      var profileOk = false;
+      try {
+        var pcs = localStorage.getItem('sg_profile_clone_state_' + h);
+        if (pcs) {
+          var st = JSON.parse(pcs);
+          if (st && (st.done || st.textDone)) profileOk = true;
+        }
+      } catch (eP) {}
+
+      var postOk = false;
+      try {
+        if (typeof RepostTracker !== 'undefined' && RepostTracker.hasPostedOk) postOk = !!RepostTracker.hasPostedOk();
+        else postOk = localStorage.getItem('sg_repost_posted_ok_' + h) === '1';
+      } catch (ePost) {}
+
+      if (profileOk && postOk) {
+        el.textContent = '已就绪';
+        el.style.color = '#3fb950';
+      } else {
+        var parts = [];
+        if (!profileOk) parts.push('资料');
+        if (!postOk) parts.push('发帖');
+        el.textContent = '缺' + parts.join('+');
+        el.style.color = '#f85149';
+      }
+    } catch (e) {}
+  }
+
+  function guardChatDayOrFlash(label) {
+    return true;
   }
 
   function waitForBody(fn) {
@@ -380,189 +410,435 @@
     setTimeout(function () { waitForBody(fn); }, 100);
   }
 
-  waitForBody(build);
+  // ==================== 拖拽支持 ====================
 
-  function build() {
-    panel = document.createElement('div');
-    panel.id = 'sg-panel';
-    panel.className = 'sg-status-idle';
-    panel.innerHTML = ''
-      + '<div class="sg-mini-face" aria-hidden="true"></div>'
-      + '<div class="sg-header" id="sg-header-bar">'
-      + '  <span class="sg-header-title">智能调度 <span id="v-ext-ver" style="font-size:9px;color:#8b949e;font-weight:normal">--</span></span>'
-      + '  <span class="sg-toggle" id="sg-mode-badge">--</span>'
-      + '  <button type="button" id="sg-collapse-btn" title="收起">−</button>'
-      + '</div>'
-      + '<div class="sg-body" id="sg-body">'
-      + '  <div class="sg-row"><span class="lbl">引擎</span><span class="val b" id="v-engine">--</span></div>'
-      + '  <div class="sg-row" id="row-why" style="display:none"><span class="lbl">原因</span><span class="val" id="v-why" style="font-size:10px;color:#f0883e;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">--</span></div>'
-      + '  <div class="sg-row" id="row-soft" style="display:none"><span class="lbl">软风控</span><span class="val y" id="v-soft" style="font-size:10px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">--</span></div>'
-      + '  <div class="sg-row" id="row-challenge" style="display:none"><span class="lbl">验证</span><span class="val r" id="v-challenge" style="font-size:10px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">--</span></div>'
-      + '  <div class="sg-row" id="row-freeze" style="display:none"><span class="lbl">定格</span><span class="val y" id="v-freeze" style="font-size:10px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">--</span></div>'
-      + '  <div class="sg-row" id="row-chat-min" style="display:none"><span class="lbl">私信分</span><span class="val" id="v-chat-min" style="font-size:10px;">--</span></div>'
-      + '  <div class="sg-row" id="row-script-pool"><span class="lbl">话术池</span><span class="val" id="v-script-pool" style="font-size:10px;">--</span></div>'
-      + '  <div class="sg-row" id="row-chat-debt" style="display:none"><span class="lbl">债</span><span class="val" id="v-chat-debt" style="font-size:10px;">--</span></div>'
-      + '  <div class="sg-row" id="row-reply-state" style="display:none"><span class="lbl">回复</span><span class="val" id="v-reply-state" style="font-size:10px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">--</span></div>'
-      + '  <div class="sg-row"><span class="lbl">轮次</span><span class="val" id="v-round">--</span></div>'
-      + '  <div class="sg-row"><span class="lbl">天数</span><span class="val" id="v-day">--</span></div>'
-      + '  <div class="sg-row"><span class="lbl">关注</span><span class="val" id="v-follow">--</span></div>'
-      + '  <div class="sg-row"><span class="lbl">养号</span><span class="val" id="v-nurture">--</span></div>'
-      + '  <div class="sg-row"><span class="lbl">转帖</span><span class="val" id="v-repost">--</span></div>'
-      + '  <div class="sg-row" id="row-pc" style="display:none"><span class="lbl">资料</span><span class="val" id="v-pc" style="font-size:10px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">--</span></div>'
-      + '  <div class="sg-row" id="row-rp-tg" style="display:none"><span class="lbl">来源</span><span class="val" id="v-rp-tg" style="font-size:9px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">--</span></div>'
-      + '  <div class="sg-divider"></div>'
-      + '  <div class="sg-row"><span class="lbl">博主</span><span class="val" id="v-creator" style="font-size:10px;overflow:hidden;text-overflow:ellipsis;max-width:120px;">--</span></div>'
-      + '  <div class="sg-progress"><div class="sg-fill" id="v-progress" style="width:0%"></div></div>'
-      + '  <div class="sg-warn" id="v-warn"></div>'
-      + '  <div class="sg-divider"></div>'
-      + '  <div class="sg-row" id="row-tel-recent" style="display:none;flex-direction:column;align-items:flex-start;gap:2px">'
-      + '    <span class="lbl" style="width:100%">最近日志</span>'
-      + '    <span id="v-tel-recent" style="font-size:9px;color:#8b949e;line-height:1.35;max-height:52px;overflow:hidden;width:100%"></span>'
-      + '  </div>'
-      + '  <div class="sg-btns">'
-      + '    <button class="sg-start" id="btn-auto">自动</button>'
-      + '    <button class="sg-stop" id="btn-stop">停止</button>'
-      + '  </div>'
-      + '  <div class="sg-module-row">'
-      + '    <button class="sg-toggle-btn" id="btn-toggle-nu" style="font-size:10px;background:#1a2332;color:#58a6ff;border:1px solid #30363d;border-radius:4px;padding:2px 8px;cursor:pointer;">养号</button>'
-      + '    <button class="sg-toggle-btn" id="btn-toggle-fw" style="font-size:10px;background:#1a2332;color:#58a6ff;border:1px solid #30363d;border-radius:4px;padding:2px 8px;cursor:pointer;">关注</button>'
-      + '    <button class="sg-toggle-btn" id="btn-toggle-ch" style="font-size:10px;background:#1a2332;color:#58a6ff;border:1px solid #30363d;border-radius:4px;padding:2px 8px;cursor:pointer;">私信</button>'
-      + '    <button class="sg-toggle-btn" id="btn-toggle-rp" style="font-size:10px;background:#1a2332;color:#58a6ff;border:1px solid #30363d;border-radius:4px;padding:2px 8px;cursor:pointer;">转帖</button>'
-      + '  </div>'
-      + '  <details id="sg-repost-panel" class="sg-fold" open>'
-      + '    <summary>转帖来源 <span id="v-rp-tg-count" style="color:#58a6ff">0</span></summary>'
-      + '    <div id="v-rp-tg-list" style="margin-top:4px;display:flex;flex-wrap:wrap;gap:2px;min-height:1.2em"></div>'
-      + '    <div class="sg-btns" style="margin-top:4px">'
-      + '      <button type="button" class="sg-outline" id="btn-rp-pull" title="立刻从 OPS 同步该号转帖来源" style="font-size:10px">拉取来源</button>'
-      + '      <button type="button" class="sg-outline" id="btn-rp-manual" title="手动跑转帖（自动失败时用）" style="font-size:10px;border-color:#58a6ff;color:#58a6ff">手动只转帖</button>'
-      + '    </div>'
-      + '    <div style="font-size:9px;color:#8b949e;line-height:1.35;margin-top:2px">点 @号可开主页手抄；自动不通就用「手动只转帖」</div>'
-      + '  </details>'
-      + '  <div id="sg-cmd-msg" style="font-size:9px;min-height:1.2em;text-align:center;margin-top:2px;color:#8b949e"></div>'
-      + '  <div class="sg-divider"></div>'
-      + '  <details id="sg-manual" class="sg-fold">'
-      + '    <summary>手动模式</summary>'
-      + '    <div class="sg-btns" style="margin-top:4px">'
-      + '      <button class="sg-outline" id="btn-fw">只关注</button>'
-      + '      <button class="sg-outline" id="btn-ch">只私信</button>'
-      + '      <button class="sg-outline" id="btn-ch-test" title="私信测试：4.1.0 起默认跟进队列（非蓝点守箱）；可强制开软风控跟进">私信测试</button>'
-      + '      <button class="sg-outline" id="btn-debt-only" title="清债已停用" disabled>已关清债</button>'
-      + '      <button class="sg-outline" id="btn-dry-run" title="干跑预览：不发信只记录话术">干跑预览</button>'
-      + '      <button class="sg-outline" id="btn-24h-test" title="24h 测试模式：私信与工作窗口全天放开">24h测试</button>'
-      + '      <button class="sg-outline" id="btn-nu">纯养号</button>'
-      + '      <button class="sg-outline" id="btn-rp">只转帖</button>'
-      + '    </div>'
-      + '  </details>'
-      + '  <details id="sg-diag" class="sg-fold">'
-      + '    <summary>诊断与日志</summary>'
-      + '    <div class="sg-btns" style="margin-top:4px">'
-      + '      <button class="sg-outline" id="btn-diag-upload" style="font-size:10px">上报诊断</button>'
-      + '      <button class="sg-outline" id="btn-diag-copy" style="font-size:10px">复制诊断</button>'
-      + '      <button class="sg-outline" id="btn-diag-unfreeze" style="font-size:10px;display:none;border-color:#f85149;color:#f85149" title="解除诊断冻结，允许调度继续">解除冻结</button>'
-      + '      <button class="sg-outline" id="btn-reply-trace" style="font-size:10px" title="链路诊断（快照）。Shift+点击=闭环诊断（自动导航+OPS）。定位 DB→收件箱→会话→闸门 卡点并复制">回复链路</button>'
-      + '    <div id="sg-diag-freeze-bar" style="display:none;margin:6px 0 0;padding:6px 8px;border:1px solid #f85149;border-radius:6px;background:rgba(248,81,73,.12);font-size:10px;color:#f85149;line-height:1.4"></div>'
-      + '    </div>'
-      + '    <div class="sg-btns" style="margin-top:2px">'
-      + '      <button class="sg-outline" id="btn-open-log" style="font-size:10px;width:100%" title="打开 X-Matrix 日志监视器">打开日志</button>'
-      + '    </div>'
-      + '    <div class="sg-btns" style="margin-top:2px">'
-      + '      <button class="sg-outline" id="btn-test-monitor" style="font-size:10px;width:100%" title="日志常态：加载即自动记录，关键事件自动上报 OPS，无需手动开启">日志常态</button>'
-      + '    </div>'
-      + '    <div class="sg-row" id="row-test-monitor" style="display:none">'
-      + '      <span class="lbl">日志</span>'
-      + '      <span class="val" id="v-test-monitor-stats" style="font-size:9px;color:#8b949e;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">记录 0</span>'
-      + '    </div>'
-      + '    <div id="row-test-monitor-log" style="display:none;font-size:9px;color:#8b949e;line-height:1.35;max-height:48px;overflow:hidden;margin:2px 0 4px"></div>'
-      + '    <div class="sg-btns" id="row-test-monitor-btns" style="margin-top:2px;display:none">'
-      + '      <button class="sg-outline" id="btn-test-export" style="font-size:9px">导出日志</button>'
-      + '      <button class="sg-outline" id="btn-test-upload" style="font-size:9px">补传快照</button>'
-      + '      <button class="sg-outline" id="btn-test-clear" style="font-size:9px">清空</button>'
-      + '    </div>'
-      + '  </details>'
-      + '  <details id="sg-servers" class="sg-fold">'
-      + '    <summary>服务器</summary>'
-      + '    <div style="margin-top:6px;display:flex;flex-direction:column;gap:4px">'
-      + '      <label style="display:block">OPS'
-      + '        <input id="sg-ops-url" type="text" spellcheck="false" '
-      + '          style="width:100%;box-sizing:border-box;margin-top:2px;padding:3px 6px;border-radius:4px;border:1px solid #30363d;background:#0d1117;color:#c9d1d9;font-size:10px">'
-      + '      </label>'
-      + '      <label style="display:block">号池'
-      + '        <input id="sg-pool-url" type="text" spellcheck="false" '
-      + '          style="width:100%;box-sizing:border-box;margin-top:2px;padding:3px 6px;border-radius:4px;border:1px solid #30363d;background:#0d1117;color:#c9d1d9;font-size:10px">'
-      + '      </label>'
-      + '      <button type="button" id="sg-save-servers" class="sg-outline" style="width:100%;padding:4px 0;font-size:10px">保存地址</button>'
-      + '      <span id="sg-servers-hint" style="font-size:9px;color:#8b949e;line-height:1.35">默认内网；不通自动：号池 haochi1 / OPS kongzhi1</span>'
-      + '      <span id="sg-servers-msg" style="font-size:9px;min-height:1.2em"></span>'
-      + '    </div>'
-      + '  </details>'
-      + '</div>';
-    document.body.appendChild(panel);
+  function makeDraggable(btn, storageKey) {
+    var dragEl = null, dragStartX = 0, dragStartY = 0, dragOrigX = 0, dragOrigY = 0;
+    var DRAG_THRESH = 4;
 
-    try { refreshExtVerBadge(); } catch (eVer) {}
+    function onDown(e) {
+      if (e.target.tagName === 'BUTTON' || e.target.tagName === 'INPUT') return;
+      e.preventDefault();
+      dragEl = btn;
+      didDrag = false;
+      var clientX = e.touches ? e.touches[0].clientX : e.clientX;
+      var clientY = e.touches ? e.touches[0].clientY : e.clientY;
+      dragStartX = clientX;
+      dragStartY = clientY;
+      dragOrigX = parseInt(btn.style.left, 10) || 0;
+      dragOrigY = parseInt(btn.style.top, 10) || 0;
+      btn.style.transition = 'none';
+    }
 
-    // 位置：优先 panel，否则迁移 float
-    var savedPos = loadPanelPos();
-    panel.style.left = savedPos.left || '16px';
-    panel.style.top = savedPos.top || '60px';
-    panel.style.right = 'auto';
-    panel.style.bottom = 'auto';
+    function onMove(e) {
+      if (!dragEl) return;
+      var clientX = e.touches ? e.touches[0].clientX : e.clientX;
+      var clientY = e.touches ? e.touches[0].clientY : e.clientY;
+      var dx = clientX - dragStartX, dy = clientY - dragStartY;
+      if (!didDrag && (Math.abs(dx) > DRAG_THRESH || Math.abs(dy) > DRAG_THRESH)) didDrag = true;
+      if (!didDrag) return;
+      dragEl.style.left = Math.max(0, dragOrigX + dx) + 'px';
+      dragEl.style.top = Math.max(0, dragOrigY + dy) + 'px';
+      var maxX = window.innerWidth - dragEl.offsetWidth;
+      if (parseInt(dragEl.style.left, 10) > maxX) dragEl.style.left = maxX + 'px';
+      var maxY = window.innerHeight - dragEl.offsetHeight;
+      if (parseInt(dragEl.style.top, 10) > maxY) dragEl.style.top = maxY + 'px';
 
-    // 默认收起；仅当明确存了 '0' 时展开
-    isCollapsed = localStorage.getItem('sg_panel_collapsed') !== '0';
-    applyCollapse();
+      // 面板跟随齿轮按钮
+      if (btn === gearBtn && panelOpen && detailPanel) {
+        positionDetailPanel();
+      }
+    }
 
-    bindClick('btn-auto', function () { sendCmd('sg_scheduler_start', '自动'); });
-    bindClick('btn-stop', function () { sendCmd('sg_scheduler_pause', '停止'); });
-    bindClick('btn-open-log', function () {
-      try {
-        if (window.__matrix_console__ && typeof window.__matrix_console__.show === 'function') {
-          window.__matrix_console__.show();
-          flashCmd(true, '已打开日志监视器');
-        } else {
-          flashCmd(false, '日志模块未加载');
-        }
-      } catch (e) {
-        flashCmd(false, '打开日志失败');
+    function onUp() {
+      if (!dragEl) return;
+      dragEl.style.transition = '';
+      if (didDrag) saveBtnPos(dragEl, storageKey);
+      dragEl = null;
+      setTimeout(function () { didDrag = false; }, 0);
+    }
+
+    btn.addEventListener('mousedown', onDown);
+    btn.addEventListener('touchstart', onDown, { passive: false });
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('touchmove', onMove, { passive: false });
+    document.addEventListener('mouseup', onUp);
+    document.addEventListener('touchend', onUp);
+  }
+
+  function clampToViewport(btn) {
+    if (!btn) return;
+    var btnW = btn.offsetWidth || 28;
+    var btnH = btn.offsetHeight || 28;
+    var vw = window.innerWidth;
+    var vh = window.innerHeight;
+    var left = parseInt(btn.style.left, 10) || 0;
+    var top = parseInt(btn.style.top, 10) || 0;
+    if (left < 0) left = 12;
+    if (top < 0) top = 12;
+    if (left > vw - btnW) left = Math.max(0, vw - btnW - 12);
+    if (top > vh - btnH) top = Math.max(0, vh - btnH - 12);
+    btn.style.left = left + 'px';
+    btn.style.top = top + 'px';
+  }
+
+  function resetBtnPositions() {
+    if (!runBtn || !gearBtn) return;
+    runBtn.style.left = '12px';
+    runBtn.style.top = '50px';
+    gearBtn.style.left = '12px';
+    gearBtn.style.top = '84px';
+    try {
+      localStorage.removeItem('sg_fab_run_pos');
+      localStorage.removeItem('sg_fab_gear_pos');
+    } catch (e) {}
+    if (panelOpen && detailPanel) positionDetailPanel();
+  }
+
+  // ==================== 详情面板 ====================
+
+  function positionDetailPanel() {
+    if (!detailPanel || !gearBtn) return;
+    var gearRect = gearBtn.getBoundingClientRect();
+    var panelW = 280;
+    var panelH = Math.min(detailPanel.scrollHeight || 400, window.innerHeight * 0.7);
+
+    // 默认在齿轮按钮右边
+    var left = gearRect.right + 8;
+    var top = gearRect.top;
+
+    // 如果右边放不下，放左边
+    if (left + panelW > window.innerWidth - 8) {
+      left = gearRect.left - panelW - 8;
+    }
+    // 如果左边也放不下，贴右边缘
+    if (left < 8) left = 8;
+
+    // 垂直方向：如果下面放不下，向上对齐
+    if (top + panelH > window.innerHeight - 8) {
+      top = window.innerHeight - panelH - 8;
+    }
+    if (top < 8) top = 8;
+
+    detailPanel.style.left = left + 'px';
+    detailPanel.style.top = top + 'px';
+  }
+
+  function toggleDetailPanel() {
+    if (!detailPanel) {
+      buildDetailPanel();
+    }
+    panelOpen = !panelOpen;
+    if (panelOpen) {
+      detailPanel.classList.add('sg-show');
+      gearBtn.classList.add('sg-panel-open');
+      positionDetailPanel();
+      refreshPanelData();
+    } else {
+      detailPanel.classList.remove('sg-show');
+      gearBtn.classList.remove('sg-panel-open');
+    }
+  }
+
+  function closeDetailPanel() {
+    if (detailPanel && panelOpen) {
+      panelOpen = false;
+      detailPanel.classList.remove('sg-show');
+      gearBtn.classList.remove('sg-panel-open');
+    }
+  }
+
+  function switchDetailTab(tab) {
+    activeTab = tab;
+    if (!detailPanel) return;
+    var tabs = detailPanel.querySelectorAll('.sg-tab-btn');
+    var panels = detailPanel.querySelectorAll('.sg-tab-panel');
+    tabs.forEach(function (t) {
+      if (t.dataset.tab === tab) {
+        t.classList.add('sg-tab-active');
+      } else {
+        t.classList.remove('sg-tab-active');
       }
     });
-    function panelDayCount() {
-      try {
-        if (window._sgLastTick && window._sgLastTick.dayCount) return parseInt(window._sgLastTick.dayCount, 10) || 1;
-      } catch (e0) {}
-      try {
-        var h = (localStorage.getItem('matrix_my_handle') || '').replace(/^@/, '').replace(/#guard$/i, '').toLowerCase();
-        if (h) return parseInt((JSON.parse(localStorage.getItem('matrix_stats_' + h) || '{}')).day_count, 10) || 1;
-      } catch (e1) {}
-      return 1;
-    }
-    function guardChatDayOrFlash(label) {
-      var day = panelDayCount();
-      if (day >= 3) return true;
-      flashCmd(false, 'Day' + day + ' 不私信（Day3起），已拒绝' + (label ? '「' + label + '」' : ''));
-      return false;
-    }
-    bindClick('btn-fw', function () { sendCmd('sg_manual_follow', '只关注'); });
-    bindClick('btn-ch', function () {
-      if (!guardChatDayOrFlash('只私信')) return;
+    panels.forEach(function (p) {
+      if (p.id === 'sg-tab-' + tab) {
+        p.style.display = 'block';
+      } else {
+        p.style.display = 'none';
+      }
+    });
+  }
+
+  function refreshPanelData() {
+    try { updateToggleBtns(getSwitches()); } catch (e) {}
+    try { updateDebtOnlyBtn(); updateDryRunBtn(); updateTest24hBtn(); updateTestMonitorUi(); } catch (e) {}
+    try { refreshRepostTargetsRow(); } catch (e) {}
+    try { refreshTelemetryRecent(); } catch (e) {}
+    try { updateNewAcctReadyUi(); } catch (e) {}
+    try {
+      chrome.runtime.sendMessage({ action: 'get_servers' }, function (r) {
+        if (!r || !r.ok) return;
+        var opsEl = document.getElementById('sg-ops-url');
+        var poolEl = document.getElementById('sg-pool-url');
+        if (opsEl) opsEl.value = r.ops_server || '';
+        if (poolEl) poolEl.value = r.pool_server || '';
+      });
+    } catch (e) {}
+  }
+
+  function buildDetailPanel() {
+    detailPanel = document.createElement('div');
+    detailPanel.id = 'sg-detail-panel';
+    detailPanel.className = 'sg-detail-panel';
+    detailPanel.innerHTML = ''
+      + '<div class="sg-panel-header">'
+      + '  <span class="sg-panel-title">智能调度</span>'
+      + '  <span class="sg-panel-version" id="v-ext-ver-detail">--</span>'
+      + '</div>'
+      + '<div class="sg-panel-tabs">'
+      + '  <button type="button" class="sg-tab-btn sg-tab-active" data-tab="quota">📊 明细</button>'
+      + '  <button type="button" class="sg-tab-btn" data-tab="logs">📋 日志</button>'
+      + '  <button type="button" class="sg-tab-btn" data-tab="settings">⚙ 设置</button>'
+      + '</div>'
+      + '<div class="sg-panel-body">'
+
+      // ===== 标签页1：明细配额 =====
+      + '  <div class="sg-tab-panel" id="sg-tab-quota">'
+      + '    <div class="sg-quota-section">'
+      + '      <div class="sg-quota-title">关注</div>'
+      + '      <div class="sg-quota-row">'
+      + '        <span class="sg-quota-label">今日已关注</span>'
+      + '        <span class="sg-quota-val" id="v-quota-follow">0 / 200</span>'
+      + '      </div>'
+      + '      <div class="sg-progress"><div class="sg-fill" id="v-quota-follow-bar" style="width:0%"></div></div>'
+      + '      <div class="sg-quota-row">'
+      + '        <span class="sg-quota-label">当前轮次</span>'
+      + '        <span class="sg-quota-val" id="v-quota-round">--</span>'
+      + '      </div>'
+      + '    </div>'
+
+      + '    <div class="sg-quota-section">'
+      + '      <div class="sg-quota-title">私信</div>'
+      + '      <div class="sg-quota-row">'
+      + '        <span class="sg-quota-label">状态</span>'
+      + '        <span class="sg-quota-val" id="v-quota-chat">--</span>'
+      + '      </div>'
+      + '      <div class="sg-quota-row" id="row-chat-min-detail" style="display:none">'
+      + '        <span class="sg-quota-label">私信时长</span>'
+      + '        <span class="sg-quota-val" id="v-chat-min-detail">--</span>'
+      + '      </div>'
+      + '      <div class="sg-quota-row" id="row-chat-debt-detail" style="display:none">'
+      + '        <span class="sg-quota-label">债务</span>'
+      + '        <span class="sg-quota-val" id="v-chat-debt-detail">--</span>'
+      + '      </div>'
+      + '      <div class="sg-quota-row">'
+      + '        <span class="sg-quota-label">话术池</span>'
+      + '        <span class="sg-quota-val" id="v-script-pool-detail">--</span>'
+      + '      </div>'
+      + '    </div>'
+
+      + '    <div class="sg-quota-section">'
+      + '      <div class="sg-quota-title">养号</div>'
+      + '      <div class="sg-quota-row">'
+      + '        <span class="sg-quota-label">今日点赞</span>'
+      + '        <span class="sg-quota-val" id="v-quota-nurture">--</span>'
+      + '      </div>'
+      + '    </div>'
+
+      + '    <div class="sg-quota-section">'
+      + '      <div class="sg-quota-title">转帖</div>'
+      + '      <div class="sg-quota-row">'
+      + '        <span class="sg-quota-label">今日转帖</span>'
+      + '        <span class="sg-quota-val" id="v-quota-repost">--</span>'
+      + '      </div>'
+      + '      <div class="sg-quota-row">'
+      + '        <span class="sg-quota-label">来源数量</span>'
+      + '        <span class="sg-quota-val" id="v-rp-tg-count">0</span>'
+      + '      </div>'
+      + '      <div id="v-rp-tg-list" style="margin-top:4px;display:flex;flex-wrap:wrap;gap:1px;min-height:1.2em"></div>'
+      + '      <div class="sg-btns" style="margin-top:6px">'
+      + '        <button type="button" class="sg-outline" id="btn-rp-pull" style="font-size:9px">拉取来源</button>'
+      + '        <button type="button" class="sg-outline" id="btn-rp-manual" style="font-size:9px;border-color:#58a6ff;color:#58a6ff">只转帖</button>'
+      + '      </div>'
+      + '    </div>'
+
+      + '    <div class="sg-quota-section">'
+      + '      <div class="sg-quota-title">账号</div>'
+      + '      <div class="sg-quota-row">'
+      + '        <span class="sg-quota-label">天数</span>'
+      + '        <span class="sg-quota-val" id="v-quota-day">Day 1</span>'
+      + '      </div>'
+      + '      <div class="sg-quota-row" id="row-newacct-detail">'
+      + '        <span class="sg-quota-label">新号就绪</span>'
+      + '        <span class="sg-quota-val" id="v-newacct-detail">--</span>'
+      + '      </div>'
+      + '      <div class="sg-quota-row" id="row-pc-detail" style="display:none">'
+      + '        <span class="sg-quota-label">资料克隆</span>'
+      + '        <span class="sg-quota-val" id="v-pc-detail">--</span>'
+      + '      </div>'
+      + '      <div class="sg-quota-row">'
+      + '        <span class="sg-quota-label">引擎状态</span>'
+      + '        <span class="sg-quota-val" id="v-quota-engine">--</span>'
+      + '      </div>'
+      + '    </div>'
+
+      + '    <div id="sg-cmd-msg" class="sg-cmd-msg"></div>'
+      + '  </div>'
+
+      // ===== 标签页2：日志报错 =====
+      + '  <div class="sg-tab-panel" id="sg-tab-logs" style="display:none">'
+      + '    <div class="sg-quota-section">'
+      + '      <div class="sg-quota-title">诊断工具</div>'
+      + '      <div class="sg-btns" style="margin-top:4px">'
+      + '        <button class="sg-outline" id="btn-diag-upload" style="font-size:9px">上报诊断</button>'
+      + '        <button class="sg-outline" id="btn-diag-copy" style="font-size:9px">复制诊断</button>'
+      + '        <button class="sg-outline" id="btn-diag-unfreeze" style="font-size:9px;display:none;border-color:#f85149;color:#f85149">解除冻结</button>'
+      + '        <button class="sg-outline" id="btn-reply-trace" style="font-size:9px" title="链路诊断">回复链路</button>'
+      + '      </div>'
+      + '      <div id="sg-diag-freeze-bar" style="display:none;margin:6px 0 0;padding:6px;border:1px solid #f85149;border-radius:4px;background:rgba(248,81,73,.12);font-size:9px;color:#f85149;line-height:1.4"></div>'
+      + '    </div>'
+
+      + '    <div class="sg-quota-section">'
+      + '      <div class="sg-quota-title">日志监控</div>'
+      + '      <div class="sg-btns" style="margin-top:4px">'
+      + '        <button class="sg-outline" id="btn-open-log" style="font-size:9px;width:100%">打开日志监视器</button>'
+      + '      </div>'
+      + '      <div class="sg-btns" style="margin-top:4px">'
+      + '        <button class="sg-outline" id="btn-test-monitor" style="font-size:9px;width:100%">日志常态</button>'
+      + '      </div>'
+      + '      <div class="sg-row" id="row-test-monitor" style="display:none;margin-top:4px">'
+      + '        <span class="lbl">日志统计</span>'
+      + '        <span class="val" id="v-test-monitor-stats" style="font-size:9px;color:#8b949e">记录 0</span>'
+      + '      </div>'
+      + '      <div id="row-test-monitor-log" style="display:none;font-size:9px;color:#8b949e;line-height:1.5;max-height:60px;overflow:hidden;margin:4px 0 6px;padding-left:6px;border-left:2px solid rgba(56,139,253,0.45)"></div>'
+      + '      <div class="sg-btns" id="row-test-monitor-btns" style="margin-top:4px;display:none">'
+      + '        <button class="sg-outline" id="btn-test-export" style="font-size:9px">导出</button>'
+      + '        <button class="sg-outline" id="btn-test-upload" style="font-size:9px">补传</button>'
+      + '        <button class="sg-outline" id="btn-test-clear" style="font-size:9px">清空</button>'
+      + '      </div>'
+      + '    </div>'
+
+      + '    <div class="sg-quota-section" id="row-tel-recent" style="display:none">'
+      + '      <div class="sg-quota-title">最近日志</div>'
+      + '      <div id="v-tel-recent" style="font-size:9px;color:#8b949e;line-height:1.5;margin-top:4px;max-height:80px;overflow:hidden"></div>'
+      + '    </div>'
+      + '  </div>'
+
+      // ===== 标签页3：设置 =====
+      + '  <div class="sg-tab-panel" id="sg-tab-settings" style="display:none">'
+      + '    <div class="sg-quota-section">'
+      + '      <div class="sg-quota-title">模块开关</div>'
+      + '      <div class="sg-module-grid">'
+      + '        <button class="sg-toggle-btn" id="btn-toggle-nu">养号 ON</button>'
+      + '        <button class="sg-toggle-btn" id="btn-toggle-fw">关注 ON</button>'
+      + '        <button class="sg-toggle-btn" id="btn-toggle-ch">私信 ON</button>'
+      + '        <button class="sg-toggle-btn" id="btn-toggle-rp">转帖 ON</button>'
+      + '      </div>'
+      + '    </div>'
+
+      + '    <div class="sg-quota-section">'
+      + '      <div class="sg-quota-title">手动模式</div>'
+      + '      <div class="sg-btns" style="margin-top:4px">'
+      + '        <button class="sg-outline" id="btn-fw">只关注</button>'
+      + '        <button class="sg-outline" id="btn-ch">只私信</button>'
+      + '        <button class="sg-outline" id="btn-ch-test" title="私信测试">私信测试</button>'
+      + '      </div>'
+      + '      <div class="sg-btns" style="margin-top:4px">'
+      + '        <button class="sg-outline" id="btn-nu">纯养号</button>'
+      + '        <button class="sg-outline" id="btn-rp">只转帖</button>'
+      + '        <button class="sg-outline" id="btn-dry-run" title="干跑预览">干跑预览</button>'
+      + '      </div>'
+      + '      <div class="sg-btns" style="margin-top:4px">'
+      + '        <button class="sg-outline" id="btn-24h-test" title="24h测试模式">24h测试</button>'
+      + '        <button class="sg-outline" id="btn-debt-only" disabled>已关清债</button>'
+      + '      </div>'
+      + '      <div class="sg-btns" style="margin-top:4px">'
+      + '        <button class="sg-outline" id="btn-mark-ready" title="标记新号为已就绪" style="font-size:9px;border-color:#3fb950;color:#3fb950">标记就绪</button>'
+      + '        <button class="sg-outline" id="btn-mark-posted" title="标记本号已发过帖" style="font-size:9px;border-color:#3fb950;color:#3fb950">标记已发帖</button>'
+      + '      </div>'
+      + '    </div>'
+
+      + '    <div class="sg-quota-section">'
+      + '      <div class="sg-quota-title">服务器地址</div>'
+      + '      <div style="margin-top:4px;display:flex;flex-direction:column;gap:4px">'
+      + '        <label style="display:block;font-size:9px;color:#8b949e">OPS'
+      + '          <input id="sg-ops-url" type="text" spellcheck="false" '
+      + '            style="width:100%;box-sizing:border-box;margin-top:2px;padding:3px 6px;border-radius:3px;border:1px solid #30363d;background:#0d1117;color:#c9d1d9;font-size:9px">'
+      + '        </label>'
+      + '        <label style="display:block;font-size:9px;color:#8b949e">号池'
+      + '          <input id="sg-pool-url" type="text" spellcheck="false" '
+      + '            style="width:100%;box-sizing:border-box;margin-top:2px;padding:3px 6px;border-radius:3px;border:1px solid #30363d;background:#0d1117;color:#c9d1d9;font-size:9px">'
+      + '        </label>'
+      + '        <button type="button" id="sg-save-servers" class="sg-outline" style="width:100%;padding:3px 0;font-size:9px">保存地址</button>'
+      + '        <span id="sg-servers-hint" style="font-size:8px;color:#8b949e;line-height:1.4">默认内网；不通自动：号池 haochi1 / OPS kongzhi1</span>'
+      + '        <span id="sg-servers-msg" style="font-size:9px;min-height:1.2em"></span>'
+      + '      </div>'
+      + '    </div>'
+      + '  </div>'
+
+      + '</div>';
+
+    document.body.appendChild(detailPanel);
+
+    // 标签页切换
+    var tabBtns = detailPanel.querySelectorAll('.sg-tab-btn');
+    tabBtns.forEach(function (btn) {
+      btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        switchDetailTab(btn.dataset.tab);
+      });
+    });
+
+    // 点击面板内部不冒泡到 body
+    detailPanel.addEventListener('click', function (e) {
+      e.stopPropagation();
+    });
+
+    // 绑定各种按钮事件
+    bindDetailEvents();
+
+    // 版本号
+    try {
+      if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getManifest) {
+        var verEl = document.getElementById('v-ext-ver-detail');
+        if (verEl) verEl.textContent = 'v' + chrome.runtime.getManifest().version;
+      }
+    } catch (e) {}
+  }
+
+  function bindDetailEvents() {
+    // 模块开关
+    bindElClick('btn-toggle-nu', function () {
+      var sw = getSwitches(); setSwitch('nurture', sw.nurture === false);
+    });
+    bindElClick('btn-toggle-fw', function () {
+      var sw = getSwitches(); setSwitch('follow', sw.follow === false);
+    });
+    bindElClick('btn-toggle-ch', function () {
+      var sw = getSwitches(); setSwitch('chat', sw.chat === false);
+    });
+    bindElClick('btn-toggle-rp', function () {
+      var sw = getSwitches(); setSwitch('repost', sw.repost === false);
+    });
+
+    // 手动模式
+    bindElClick('btn-fw', function () { sendCmd('sg_manual_follow', '只关注'); });
+    bindElClick('btn-ch', function () {
+      if (guardChatDayOrFlash('只私信')) return;
       sendCmd('sg_manual_chat', '只私信');
     });
-    bindClick('btn-ch-test', function () {
+    bindElClick('btn-ch-test', function () {
       if (!guardChatDayOrFlash('私信测试')) return;
       try {
         sessionStorage.setItem('sg_chat_force_inbox', 'true');
         sessionStorage.removeItem('sg_debt_only');
-        // 4.1.0：默认走跟进；仍发测试命令，content 侧 Force 会改 followup
         window.dispatchEvent(new CustomEvent('sg-chat-test-command'));
-        flashCmd(true, '私信测试：已触发（跟进/破冰，非蓝点守箱）');
+        flashCmd(true, '私信测试：已触发');
       } catch (e) {
-        flashCmd(false, '私信测试触发失败：' + ((e && e.message) || 'unknown'));
+        flashCmd(false, '私信测试触发失败');
       }
     });
-    bindClick('btn-debt-only', function () {
-      flashCmd(false, '清债已停用（软风控短扫）');
-      updateDebtOnlyBtn();
-    });
-    bindClick('btn-dry-run', function () {
+    bindElClick('btn-dry-run', function () {
       try {
         var on = sessionStorage.getItem('sg_chat_dry_run') === 'true';
         sessionStorage.setItem('sg_chat_dry_run', on ? 'false' : 'true');
@@ -570,32 +846,65 @@
         updateDryRunBtn();
       } catch (e) { flashCmd(false, '干跑切换失败'); }
     });
-    bindClick('btn-24h-test', function () {
+    bindElClick('btn-24h-test', function () {
       try {
         var on = localStorage.getItem('sg_test_24h') === 'true';
         localStorage.setItem('sg_test_24h', on ? 'false' : 'true');
-        flashCmd(true, on ? '24h测试 OFF（恢复时间窗）' : '24h测试 ON（私信全天放开）');
+        flashCmd(true, on ? '24h测试 OFF' : '24h测试 ON');
         updateTest24hBtn();
       } catch (e) { flashCmd(false, '24h测试切换失败'); }
     });
-    bindClick('btn-diag-upload', function () {
+    bindElClick('btn-debt-only', function () {
+      flashCmd(false, '清债已停用（软风控短扫）');
+      updateDebtOnlyBtn();
+    });
+    bindElClick('btn-nu', function () { sendCmd('sg_nurture_only', '纯养号'); });
+    bindElClick('btn-rp', function () { sendCmd('sg_manual_repost', '只转帖'); });
+    bindElClick('btn-mark-ready', function () {
+      try {
+        var h = (localStorage.getItem('matrix_my_handle') || '').replace(/^@/, '').replace(/#guard$/i, '').toLowerCase();
+        if (!h || h === 'unknown') { flashCmd(false, '未识别账号'); return; }
+        localStorage.setItem('sg_newacct_ready_' + h, '1');
+        flashCmd(true, '已标记新号就绪');
+        updateNewAcctReadyUi();
+      } catch (e) { flashCmd(false, '标记失败'); }
+    });
+    bindElClick('btn-mark-posted', function () {
+      try {
+        var hs = [];
+        if (typeof RepostTracker !== 'undefined' && RepostTracker.markOwnPosted) {
+          hs = RepostTracker.markOwnPosted() || [];
+        } else {
+          var h = (localStorage.getItem('matrix_my_handle') || '').replace(/^@/, '').replace(/#guard$/i, '').toLowerCase().trim();
+          if (h && h !== 'unknown') { localStorage.setItem('sg_repost_posted_ok_' + h, '1'); hs = [h]; }
+        }
+        if (!hs.length) { flashCmd(false, '未识别账号'); return; }
+        flashCmd(true, '已标记已发帖');
+        updateNewAcctReadyUi();
+      } catch (e) { flashCmd(false, '标记失败'); }
+    });
+
+    // 转帖
+    bindElClick('btn-rp-pull', function () { pullRepostTargetsFromOps(); });
+    bindElClick('btn-rp-manual', function () { sendCmd('sg_manual_repost', '手动只转帖'); });
+
+    // 诊断
+    bindElClick('btn-diag-upload', function () {
       if (typeof SgTelemetry === 'undefined' || !SgTelemetry.uploadSnapshot) {
-        flashCmd(false, '观测模块未加载');
-        return;
+        flashCmd(false, '观测模块未加载'); return;
       }
       if (SgTelemetry.getBotId && SgTelemetry.getBotId() === 'unknown') {
-        flashCmd(false, '账号未识别，请先登录/心跳');
-        return;
+        flashCmd(false, '账号未识别'); return;
       }
       flashCmd(true, '打包中…');
       SgTelemetry.uploadSnapshot(collectDiagExtra()).then(function (result) {
         var sid = result && result.response && result.response.snapshot_id;
-        flashCmd(true, sid ? ('已上报 #' + sid) : '诊断已上报 OPS');
+        flashCmd(true, sid ? ('已上报 #' + sid) : '诊断已上报');
         refreshTelemetryRecent();
       }).catch(function (err) {
         var msg = '上报失败';
-        if (err && err.message === 'account_unknown') msg = '账号未识别，请刷新X页面后重试';
-        else if (err && err.message === 'upload_in_progress') msg = '上次上报进行中，请稍候';
+        if (err && err.message === 'account_unknown') msg = '账号未识别';
+        else if (err && err.message === 'upload_in_progress') msg = '上次上报进行中';
         else if (err && err.response) {
           if (err.response.error === 'account_not_registered') msg = '账号未注册 OPS';
           else if (err.response.msg) msg = String(err.response.msg);
@@ -604,7 +913,7 @@
         flashCmd(false, msg);
       });
     });
-    bindClick('btn-diag-unfreeze', function () {
+    bindElClick('btn-diag-unfreeze', function () {
       try {
         if (typeof SgDiagContract !== 'undefined' && SgDiagContract.clearFreeze) {
           SgDiagContract.clearFreeze('panel');
@@ -618,14 +927,11 @@
         var btn = document.getElementById('btn-diag-unfreeze');
         if (bar) bar.style.display = 'none';
         if (btn) btn.style.display = 'none';
-      } catch (e) {
-        flashCmd(false, '解冻失败');
-      }
+      } catch (e) { flashCmd(false, '解冻失败'); }
     });
-    bindClick('btn-diag-copy', function () {
+    bindElClick('btn-diag-copy', function () {
       if (typeof SgTelemetry === 'undefined' || !SgTelemetry.copySnapshotText) {
-        flashCmd(false, '观测模块未加载');
-        return;
+        flashCmd(false, '观测模块未加载'); return;
       }
       SgTelemetry.copySnapshotText(collectDiagExtra()).then(function () {
         flashCmd(true, '已复制到剪贴板');
@@ -635,7 +941,7 @@
         flashCmd(false, msg);
       });
     });
-    bindClick('btn-reply-trace', function (ev) {
+    bindElClick('btn-reply-trace', function (ev) {
       var handle = '';
       try { handle = sessionStorage.getItem('current_target') || ''; } catch (eCT) {}
       if (!handle) {
@@ -645,191 +951,86 @@
           if (rsFallback && rsFallback.target) handle = rsFallback.target;
         } catch (eRSF) {}
       }
-      if (!handle) {
-        flashCmd(false, '无当前目标：先跑一轮私信，或设置 current_target');
-        return;
-      }
+      if (!handle) { flashCmd(false, '无当前目标：先跑一轮私信'); return; }
       var bridge = window.__sgChatBridge || {};
       var useAsync = ev && ev.shiftKey && typeof bridge.debugTraceReplyChainAsync === 'function';
       if (!useAsync && typeof bridge.debugTraceReplyChain !== 'function') {
-        flashCmd(false, '私信模块未就绪');
-        return;
+        flashCmd(false, '私信模块未就绪'); return;
       }
       if (useAsync) {
-        flashCmd(true, '闭环诊断中…（必要时自动导航）');
+        flashCmd(true, '闭环诊断中…');
         bridge.debugTraceReplyChainAsync(handle, { navigate: true }).then(function (result) {
           var trace = (result && result.final) || result;
-          console.log('[回复链路-async] @' + handle, result);
-          if (result && result.pending) {
-            flashCmd(true, '已导航，重载后继续…');
-            return;
-          }
-          if (!trace || trace.error) {
-            flashCmd(false, '闭环诊断失败: ' + ((trace && trace.error) || 'unknown'));
-            return;
-          }
-          try { window.__sgReplyTraceResult = trace; } catch (eStoreA) {}
-          var copyTextA = '@' + handle + ' [async]\n' + (trace.verdict || ('卡点: ' + (trace.stuckAt || '?')));
-          if (trace.chain && trace.chain.length) {
-            for (var iA = 0; iA < trace.chain.length; iA++) {
-              var stA = trace.chain[iA];
-              copyTextA += '\n' + (stA.ok ? '[通过]' : (stA.na ? '[跳过]' : '[失败]')) + ' ' + stA.label
-                + (stA.reason ? '：' + stA.reason : '')
-                + (stA.suggest ? ' → ' + stA.suggest : '');
-            }
-          }
-          try {
-            if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(copyTextA);
-          } catch (eClipA) {}
+          if (result && result.pending) { flashCmd(true, '已导航，重载后继续…'); return; }
+          if (!trace || trace.error) { flashCmd(false, '闭环诊断失败'); return; }
           flashCmd(true, '闭环完成 · ' + (trace.verdict || ''));
         }).catch(function (eAsync) {
-          flashCmd(false, '闭环诊断异常: ' + String((eAsync && eAsync.message) || eAsync));
+          flashCmd(false, '闭环诊断异常');
         });
         return;
       }
       var trace = null;
       try { trace = bridge.debugTraceReplyChain(handle); } catch (eT) { trace = { error: String((eT && eT.message) || eT) }; }
-      console.log('[回复链路] @' + handle, trace);
-      if (!trace || trace.error) {
-        flashCmd(false, '诊断失败: ' + ((trace && trace.error) || 'unknown'));
-        return;
-      }
-      try { window.__sgReplyTraceResult = trace; } catch (eStore) {}
-      var copyText = '@' + handle + '\n' + (trace.verdict || ('卡点: ' + (trace.stuckAt || '?')));
-      if (trace.chain && trace.chain.length) {
-        for (var iT = 0; iT < trace.chain.length; iT++) {
-          var st = trace.chain[iT];
-          copyText += '\n' + (st.ok ? '[通过]' : '[失败]') + ' ' + st.label
-            + (st.reason ? '：' + st.reason : '')
-            + (st.suggest ? ' → ' + st.suggest : '');
-        }
-      }
-      var copied = false;
-      try {
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText(copyText);
-          copied = true;
-        }
-      } catch (eClip) {}
-      if (!copied) {
-        try {
-          var ta = document.createElement('textarea');
-          ta.value = copyText;
-          ta.style.cssText = 'position:fixed;left:-9999px;top:0;';
-          document.body.appendChild(ta);
-          ta.select();
-          copied = document.execCommand('copy');
-          document.body.removeChild(ta);
-        } catch (eTa) {}
-      }
-      flashCmd(true, (copied ? '已复制链路 · ' : '') + (trace.verdict || ''));
+      if (!trace || trace.error) { flashCmd(false, '诊断失败'); return; }
+      flashCmd(true, trace.verdict || '诊断完成');
     });
-    bindClick('btn-test-monitor', function () {
-      if (typeof SgTestMonitor === 'undefined') {
-        flashCmd(false, '日志常态未加载');
-        return;
-      }
+
+    // 日志
+    bindElClick('btn-open-log', function () {
+      try {
+        if (window.__matrix_console__ && typeof window.__matrix_console__.show === 'function') {
+          window.__matrix_console__.show();
+          flashCmd(true, '已打开日志监视器');
+        } else {
+          flashCmd(false, '日志模块未加载');
+        }
+      } catch (e) { flashCmd(false, '打开日志失败'); }
+    });
+    bindElClick('btn-test-monitor', function () {
+      if (typeof SgTestMonitor === 'undefined') { flashCmd(false, '日志常态未加载'); return; }
       try {
         if (SgTestMonitor.isActive()) {
-          flashCmd(true, '日志常态开启中，关键事件自动上报 OPS');
+          flashCmd(true, '日志常态开启中');
         } else {
           SgTestMonitor.start('panel');
           flashCmd(true, '日志常态已恢复');
         }
         updateTestMonitorUi();
-      } catch (e) { flashCmd(false, '日志常态切换失败'); }
+      } catch (e) { flashCmd(false, '切换失败'); }
     });
-    bindClick('btn-test-export', function () {
+    bindElClick('btn-test-export', function () {
       if (typeof SgTestMonitor === 'undefined' || !SgTestMonitor.downloadJson) {
-        flashCmd(false, '日志常态未加载');
-        return;
+        flashCmd(false, '日志常态未加载'); return;
       }
       SgTestMonitor.downloadJson().then(function (res) {
         flashCmd(true, res && res.file ? ('已下载 ' + res.file) : '已导出 JSON');
       }).catch(function () { flashCmd(false, '导出失败'); });
     });
-    bindClick('btn-test-upload', function () {
+    bindElClick('btn-test-upload', function () {
       if (typeof SgTestMonitor === 'undefined' || !SgTestMonitor.uploadOps) {
-        flashCmd(false, '日志常态未加载');
-        return;
-      }
-      if (typeof SgTelemetry !== 'undefined' && SgTelemetry.getBotId && SgTelemetry.getBotId() === 'unknown') {
-        flashCmd(false, '账号未识别');
-        return;
+        flashCmd(false, '日志常态未加载'); return;
       }
       flashCmd(true, '打包中…');
       SgTestMonitor.uploadOps().then(function (result) {
         var sid = result && result.response && result.response.snapshot_id;
-        flashCmd(true, sid ? ('日志快照已上报 #' + sid) : '日志快照已上报 OPS');
+        flashCmd(true, sid ? ('日志快照已上报 #' + sid) : '日志快照已上报');
       }).catch(function (err) {
         var msg = '上报失败';
-        if (err && err.message === 'account_unknown') msg = '账号未识别';
-        else if (err && err.message === 'telemetry_unavailable') msg = '观测模块未加载';
-        else if (err && err.message) msg = err.message;
+        if (err && err.message) msg = err.message;
         flashCmd(false, msg);
       });
     });
-    bindClick('btn-test-clear', function () {
+    bindElClick('btn-test-clear', function () {
       if (typeof SgTestMonitor === 'undefined' || !SgTestMonitor.clear) {
-        flashCmd(false, '日志常态未加载');
-        return;
+        flashCmd(false, '日志常态未加载'); return;
       }
       SgTestMonitor.clear();
       flashCmd(true, '日志记录已清空');
       updateTestMonitorUi();
     });
-    bindClick('btn-nu', function () { sendCmd('sg_nurture_only', '纯养号'); });
-    bindClick('btn-rp', function () { sendCmd('sg_manual_repost', '只转帖'); });
 
-    bindClick('btn-toggle-nu', function () {
-      var sw = getSwitches(); setSwitch('nurture', sw.nurture === false);
-    });
-    bindClick('btn-toggle-fw', function () {
-      var sw = getSwitches(); setSwitch('follow', sw.follow === false);
-    });
-    bindClick('btn-toggle-ch', function () {
-      var sw = getSwitches(); setSwitch('chat', sw.chat === false);
-    });
-    bindClick('btn-toggle-rp', function () {
-      var sw = getSwitches(); setSwitch('repost', sw.repost === false);
-    });
-    bindClick('btn-rp-pull', function () { pullRepostTargetsFromOps(); });
-    bindClick('btn-rp-manual', function () { sendCmd('sg_manual_repost', '手动只转帖'); });
-
-    var listHost = document.getElementById('v-rp-tg-list');
-    if (listHost && !listHost._sgBound) {
-      listHost._sgBound = true;
-      listHost.addEventListener('click', function (ev) {
-        var t = ev.target;
-        if (!t || !t.getAttribute) return;
-        var h = t.getAttribute('data-handle');
-        if (!h) return;
-        ev.preventDefault();
-        try {
-          var url = 'https://x.com/' + h + '?lang=ja';
-          if (typeof SchedulerGate !== 'undefined' && SchedulerGate.go) SchedulerGate.go('panel', url);
-          else location.href = url;
-        } catch (eGo) {
-          try { location.href = 'https://x.com/' + h + '?lang=ja'; } catch (e2) {}
-        }
-      });
-    }
-    try {
-      window.addEventListener('sg-config-synced', function () {
-        try { refreshRepostTargetsRow(); } catch (eS) {}
-      });
-    } catch (eL) {}
-
-    try { refreshRepostTargetsRow(); } catch (eRt) {}
-
-    chrome.runtime.sendMessage({ action: 'get_servers' }, function (r) {
-      if (!r || !r.ok) return;
-      var opsEl = document.getElementById('sg-ops-url');
-      var poolEl = document.getElementById('sg-pool-url');
-      if (opsEl) opsEl.value = r.ops_server || '';
-      if (poolEl) poolEl.value = r.pool_server || '';
-    });
-    bindClick('sg-save-servers', function (e) {
+    // 服务器
+    bindElClick('sg-save-servers', function (e) {
       e.stopPropagation();
       var opsEl = document.getElementById('sg-ops-url');
       var poolEl = document.getElementById('sg-pool-url');
@@ -844,7 +1045,6 @@
           }
         });
       }
-      // 自定义域名需 optional_host_permissions
       try {
         var origins = [];
         [ops, pool].forEach(function (u) {
@@ -870,235 +1070,238 @@
       save();
     });
 
-    bindClick('sg-collapse-btn', function (e) {
-      e.stopPropagation();
-      setCollapsed(true);
+    // 转帖来源列表点击
+    var listHost = document.getElementById('v-rp-tg-list');
+    if (listHost && !listHost._sgBound) {
+      listHost._sgBound = true;
+      listHost.addEventListener('click', function (ev) {
+        var t = ev.target;
+        if (!t || !t.getAttribute) return;
+        var h = t.getAttribute('data-handle');
+        if (!h) return;
+        ev.preventDefault();
+        try {
+          var url = 'https://x.com/' + h + '?lang=ja';
+          if (typeof SchedulerGate !== 'undefined' && SchedulerGate.go) SchedulerGate.go('panel', url);
+          else location.href = url;
+        } catch (eGo) {
+          try { location.href = 'https://x.com/' + h + '?lang=ja'; } catch (e2) {}
+        }
+      });
+    }
+  }
+
+  function bindElClick(id, fn) {
+    var el = document.getElementById(id);
+    if (el) el.addEventListener('click', fn);
+    return el;
+  }
+
+  // ==================== 构建两个悬浮按钮 ====================
+
+  waitForBody(build);
+
+  function build() {
+    // 按钮1：启动/暂停
+    runBtn = document.createElement('div');
+    runBtn.id = 'sg-fab-run';
+    runBtn.className = 'sg-fab sg-fab-run sg-status-idle sg-fab-stopped';
+    runBtn.innerHTML = '<span class="sg-fab-icon">▶</span>';
+    runBtn.title = '点击启动调度（按 ` 键重置按钮位置）';
+    document.body.appendChild(runBtn);
+
+    // 按钮2：设置详情
+    gearBtn = document.createElement('div');
+    gearBtn.id = 'sg-fab-gear';
+    gearBtn.className = 'sg-fab sg-fab-gear';
+    gearBtn.innerHTML = '<span class="sg-fab-icon">⚙</span>';
+    gearBtn.title = '设置与详情（按 ` 键重置按钮位置）';
+    document.body.appendChild(gearBtn);
+
+    // 加载位置
+    var runPos = loadBtnPos('sg_fab_run_pos', { left: '12px', top: '50px' });
+    runBtn.style.left = runPos.left || '12px';
+    runBtn.style.top = runPos.top || '50px';
+
+    var gearPos = loadBtnPos('sg_fab_gear_pos', null);
+    if (gearPos && gearPos.left) {
+      gearBtn.style.left = gearPos.left;
+      gearBtn.style.top = gearPos.top;
+    } else {
+      gearBtn.style.left = runBtn.style.left;
+      gearBtn.style.top = (parseInt(runBtn.style.top, 10) + 36) + 'px';
+    }
+
+    // 确保按钮在视口内
+    setTimeout(function () {
+      clampToViewport(runBtn);
+      clampToViewport(gearBtn);
+      updateRunBtnStatus();
+      // 应用状态色到齿轮按钮
+      var sc = getStatusClass();
+      gearBtn.classList.remove('sg-status-run', 'sg-status-idle', 'sg-status-warn', 'sg-status-err');
+      gearBtn.classList.add(sc);
+    }, 50);
+
+    // 窗口大小变化时重新约束位置
+    window.addEventListener('resize', function () {
+      clampToViewport(runBtn);
+      clampToViewport(gearBtn);
+      if (panelOpen && detailPanel) positionDetailPanel();
     });
 
-    // 收起态点击展开（拖过不展开）
-    panel.addEventListener('click', function (e) {
-      if (!isCollapsed) return;
+    // 快捷键：按 ` 键重置按钮位置
+    document.addEventListener('keydown', function (e) {
+      var tag = (e.target && e.target.tagName) || '';
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || e.target.isContentEditable) return;
+      if (e.key === '`' || e.key === '~') {
+        e.preventDefault();
+        resetBtnPositions();
+      }
+    });
+
+    // 启动/暂停按钮点击
+    runBtn.addEventListener('click', function (e) {
       if (didDrag) return;
-      if (e.target.tagName === 'BUTTON') return;
-      setCollapsed(false);
+      e.stopPropagation();
+      var d = data || {};
+      var isRunning = !!(d.autoMode || d.runningModule || d.followRunning ||
+        d.chatRunning || d.nurtureRunning || d.repostRunning);
+      if (isRunning) {
+        try {
+          data.autoMode = false;
+          data.runningModule = '';
+          data.engine = 'idle';
+          data.followRunning = false;
+          data.chatRunning = false;
+          data.nurtureRunning = false;
+          data.repostRunning = false;
+          saveCache();
+          updateRunBtnStatus();
+        } catch (eUi) {}
+        sendCmd('sg_scheduler_pause', '暂停');
+      } else {
+        sendCmd('sg_scheduler_start', '启动');
+      }
     });
 
-    // ==================== 拖拽 ====================
-    var dragEl = null, dragStartX = 0, dragStartY = 0, dragOrigX = 0, dragOrigY = 0;
-    var DRAG_THRESH = 4;
-
-    function canStartDrag(target) {
-      if (target.tagName === 'BUTTON' || target.tagName === 'INPUT' || target.tagName === 'SELECT') return false;
-      if (target.id === 'sg-collapse-btn') return false;
-      if (isCollapsed) return true;
-      return !!(target.closest && target.closest('#sg-header-bar'));
-    }
-
-    panel.addEventListener('mousedown', function (e) {
-      if (!canStartDrag(e.target)) return;
-      e.preventDefault();
-      dragEl = panel;
-      didDrag = false;
-      dragStartX = e.clientX;
-      dragStartY = e.clientY;
-      dragOrigX = parseInt(panel.style.left, 10) || 0;
-      dragOrigY = parseInt(panel.style.top, 10) || 0;
-      panel.style.transition = 'none';
+    // 设置按钮点击 - 展开/收起详情面板
+    gearBtn.addEventListener('click', function (e) {
+      if (didDrag) return;
+      e.stopPropagation();
+      toggleDetailPanel();
     });
 
-    panel.addEventListener('touchstart', function (e) {
-      if (!canStartDrag(e.target)) return;
-      e.preventDefault();
-      dragEl = panel;
-      didDrag = false;
-      dragStartX = e.touches[0].clientX;
-      dragStartY = e.touches[0].clientY;
-      dragOrigX = parseInt(panel.style.left, 10) || 0;
-      dragOrigY = parseInt(panel.style.top, 10) || 0;
-      panel.style.transition = 'none';
-    }, { passive: false });
-
-    document.addEventListener('mousemove', function (e) {
-      if (!dragEl) return;
-      var dx = e.clientX - dragStartX, dy = e.clientY - dragStartY;
-      if (!didDrag && (Math.abs(dx) > DRAG_THRESH || Math.abs(dy) > DRAG_THRESH)) didDrag = true;
-      if (!didDrag) return;
-      dragEl.style.left = Math.max(0, dragOrigX + dx) + 'px';
-      dragEl.style.top = Math.max(0, dragOrigY + dy) + 'px';
+    // 点击页面其他地方关闭面板
+    document.addEventListener('click', function (e) {
+      if (!panelOpen || !detailPanel) return;
+      if (detailPanel.contains(e.target)) return;
+      if (gearBtn.contains(e.target)) return;
+      closeDetailPanel();
     });
 
-    document.addEventListener('touchmove', function (e) {
-      if (!dragEl) return;
-      var dx = e.touches[0].clientX - dragStartX, dy = e.touches[0].clientY - dragStartY;
-      if (!didDrag && (Math.abs(dx) > DRAG_THRESH || Math.abs(dy) > DRAG_THRESH)) didDrag = true;
-      if (!didDrag) return;
-      dragEl.style.left = Math.max(0, dragOrigX + dx) + 'px';
-      dragEl.style.top = Math.max(0, dragOrigY + dy) + 'px';
-    }, { passive: false });
+    // 拖拽支持
+    makeDraggable(runBtn, 'sg_fab_run_pos');
+    makeDraggable(gearBtn, 'sg_fab_gear_pos');
 
-    function endDrag() {
-      if (!dragEl) return;
-      dragEl.style.transition = '';
-      if (didDrag) savePanelPos();
-      dragEl = null;
-      // 下一帧再清 didDrag，避免紧随其后的 click 误触展开
-      setTimeout(function () { didDrag = false; }, 0);
-    }
-
-    document.addEventListener('mouseup', endDrag);
-    document.addEventListener('touchend', endDrag);
-
+    // 事件监听
     window.addEventListener('sg-coordinator-tick', onTick);
     window.addEventListener('sg-scheduler-tick', onTick);
     try {
-      window.addEventListener('sg-telemetry', function () { refreshTelemetryRecent(); });
+      window.addEventListener('sg-telemetry', function () {
+        if (panelOpen) refreshTelemetryRecent();
+      });
     } catch (eTel) {}
     try {
-      window.addEventListener('sg-test-monitor-update', function () { updateTestMonitorUi(); });
-    } catch (eTm) {}
-
-    setTimeout(function () {
-      chrome.runtime.sendMessage({ action: 'sg_scheduler_status' }, function (r) {
-        if (r && !chrome.runtime.lastError) {
-          onTick({ detail: r });
-        }
+      window.addEventListener('sg-test-monitor-update', function () {
+        if (panelOpen) updateTestMonitorUi();
       });
-    }, 800);
+    } catch (eTm) {}
+    try {
+      window.addEventListener('sg-config-synced', function () {
+        if (panelOpen) refreshRepostTargetsRow();
+      });
+    } catch (eL) {}
+
+    // 立即请求一次状态
+    setTimeout(function () {
+      try {
+        chrome.runtime.sendMessage({ action: 'sg_scheduler_status' }, function (r) {
+          if (r && !chrome.runtime.lastError) {
+            onTick({ detail: r });
+          }
+        });
+      } catch (e) {}
+    }, 300);
   }
 
+  // ==================== 渲染 ====================
   function render() {
     var d = data;
     if (!d) return;
 
-    updateStatusClass();
+    // 更新启动按钮状态
+    updateRunBtnStatus();
 
-    var engEl = document.getElementById('v-engine');
-    var engText = '空闲';
-    var engCls = 'b';
-    var rm = d.runningModule || '';
-    // 优先真实在跑模块（coor tick 的 engine 恒为 'coor'）
-    if (rm === 'follow' || (!rm && d.followRunning && d.engine !== 'chat')) {
-      if (d.followPhase === 'warmup') { engText = '养号中'; engCls = 'b'; }
-      else { engText = '关注轮' + (d.followRound || 1); engCls = 'y'; }
-    } else if (rm === 'chat' || d.engine === 'chat' || d.chatRunning) {
-      engText = '私信中'; engCls = 'g';
-    } else if (rm === 'nurture' || d.engine === 'nurture' || d.nurtureRunning) {
-      engText = d.nurtureOnly || d.engine === 'nurture_only' ? '纯养号' : '养号中';
-      engCls = 'b';
-    } else if (rm === 'repost' || d.repostRunning) {
-      engText = '转帖中'; engCls = 'y';
-    } else if (rm === 'profile_clone' || (d.profileClone && d.profileClone.running)) {
-      engText = '资料克隆'; engCls = 'b';
-    } else if (d.engine === 'follow') {
-      if (d.followPhase === 'warmup') { engText = '养号中'; engCls = 'b'; }
-      else { engText = '关注轮' + (d.followRound || 1); engCls = 'y'; }
-    } else if (d.engine === 'nurture_only') {
-      engText = '纯养号'; engCls = 'b';
-    } else if (d.engine === 'coor' || d.autoMode) {
-      var stageMap = { S0: '静默', S1: '关注+养号', S2: '关注+养号', S3: '全开', S4: '全开' };
-      engText = (stageMap[d.stage] || '自动') + '·空闲';
-      engCls = 'coor';
-    } else if (d.engine === 'manual') {
-      engText = d.followRunning ? '关注(手动)' : (d.chatRunning ? '私信(手动)' : '手动');
-      engCls = d.followRunning ? 'y' : 'g';
-    } else {
-      engText = '空闲'; engCls = 'r';
+    // 设置按钮状态色
+    if (gearBtn) {
+      var statusCls = getStatusClass();
+      gearBtn.classList.remove('sg-status-run', 'sg-status-idle', 'sg-status-warn', 'sg-status-err');
+      gearBtn.classList.add(statusCls);
     }
-    if (engEl) { engEl.textContent = engText; engEl.className = 'val ' + engCls; }
 
-    var whyRow = document.getElementById('row-why');
-    var whyEl = document.getElementById('v-why');
-    if (whyRow && whyEl) {
-      var why = d.whyIdle || '';
-      var diagOn = !!(d.diagFreeze && d.diagFreeze.on);
-      var showWhy = diagOn || !!(d.autoMode && why && !d.runningModule && (d.engine === 'idle' || d.engine === 'coor' || !d.followRunning && !d.chatRunning && !d.nurtureRunning && !d.repostRunning));
-      if (showWhy) {
-        whyRow.style.display = '';
-        whyEl.textContent = why;
-        whyEl.title = why;
-        whyEl.style.color = diagOn ? '#f85149' : '';
-      } else {
-        whyRow.style.display = 'none';
-        whyEl.style.color = '';
-      }
+    // 如果面板打开，更新内容
+    if (panelOpen && detailPanel) {
+      renderDetailQuota(d);
+      renderDetailLogs(d);
     }
-    var freezeBar = document.getElementById('sg-diag-freeze-bar');
-    var unfreezeBtn = document.getElementById('btn-diag-unfreeze');
-    if (freezeBar || unfreezeBtn) {
-      var df = d.diagFreeze;
-      if (df && df.on) {
-        if (freezeBar) {
-          freezeBar.style.display = '';
-          freezeBar.textContent = '❄ 诊断冻结 · ' + (df.module || '') + '/' + (df.stage || '') + ' · '
-            + (df.hint || df.reason || df.code || '')
-            + ' · 取证后点「解除冻结」';
-        }
-        if (unfreezeBtn) unfreezeBtn.style.display = '';
+  }
+
+  function renderDetailQuota(d) {
+    // 关注
+    var qf = document.getElementById('v-quota-follow');
+    if (qf) qf.textContent = (d.followedToday || 0) + ' / ' + (d.followLimit || 200);
+    var qfBar = document.getElementById('v-quota-follow-bar');
+    if (qfBar) {
+      var pct = d.followLimit > 0 ? Math.min(100, ((d.followedToday || 0) / d.followLimit) * 100) : 0;
+      qfBar.style.width = pct + '%';
+    }
+    var qr = document.getElementById('v-quota-round');
+    if (qr) {
+      if (d.warmupEndAt && d.warmupEndAt > 0 && (d.engine === 'nurture' || d.followPhase === 'warmup')) {
+        var left = Math.max(0, Math.ceil((d.warmupEndAt - Date.now()) / 60000));
+        qr.textContent = '养号 ' + left + '分后';
       } else {
-        if (freezeBar) freezeBar.style.display = 'none';
-        if (unfreezeBtn) unfreezeBtn.style.display = 'none';
+        qr.textContent = (d.followRound > 0) ? '第' + d.followRound + '轮' : '--';
       }
     }
 
-    var softRow = document.getElementById('row-soft');
-    var softEl = document.getElementById('v-soft');
-    if (softRow && softEl) {
-      var soft = d.softRisk || null;
-      if (soft && soft.active) {
-        var softTxt = soft.remainSec + 's | ' + (soft.mode || '?');
-        if (soft.mode === 'chat') softTxt += soft.chatDone ? '→养号' : '轮次中';
-        softRow.style.display = '';
-        softEl.textContent = softTxt;
-        softEl.title = softTxt;
-      } else {
-        softRow.style.display = 'none';
-      }
-    }
-
-    var chRow = document.getElementById('row-challenge');
-    var chEl = document.getElementById('v-challenge');
-    if (chRow && chEl) {
-      var ch = d.challenge || null;
-      if (ch && ch.active) {
-        chRow.style.display = '';
-        chEl.textContent = ch.msg || (ch.onChallenge ? '人机验证' : '熔断冷却');
-        chEl.title = ch.msg || '';
-        chEl.className = 'val r';
-      } else {
-        chRow.style.display = 'none';
-      }
-    }
-
-    var freezeRow = document.getElementById('row-freeze');
-    var freezeEl = document.getElementById('v-freeze');
-    if (freezeRow && freezeEl) {
-      var fz = d.chatFreeze || null;
-      if (fz && fz.frozen) {
-        var fzTxt = fz.pending + '/' + fz.total;
-        if (fz.rushing) fzTxt += ' | 赶工';
-        else if (fz.rushWindow && fz.pending === 0) fzTxt += ' | 已清';
-        else if (!fz.rushWindow) fzTxt += ' | 待明日';
-        freezeRow.style.display = '';
-        freezeEl.textContent = fzTxt;
-        freezeEl.title = fzTxt;
-      } else {
-        freezeRow.style.display = 'none';
-      }
-    }
-
-    var chatMinRow = document.getElementById('row-chat-min');
-    var chatMinEl = document.getElementById('v-chat-min');
+    // 私信
+    var qc = document.getElementById('v-quota-chat');
+    if (qc) qc.textContent = d.chatRunning ? '进行中' : '待机';
     var cd = d.chatDiag || null;
+    var chatMinRow = document.getElementById('row-chat-min-detail');
+    var chatMinEl = document.getElementById('v-chat-min-detail');
     if (chatMinRow && chatMinEl && cd) {
       chatMinRow.style.display = '';
       chatMinEl.textContent = '出' + (cd.chatOutboundTodayMin || 0) + ' / 箱' + (cd.chatInboxTodayMin || 0) + ' / 总' + (cd.chatTotalTodayMin || 0) + '分';
-      chatMinEl.title = 'outbound / inbox / total 分钟';
     } else if (chatMinRow) {
       chatMinRow.style.display = 'none';
     }
-
-    var scriptPoolEl = document.getElementById('v-script-pool');
-    if (scriptPoolEl) {
+    var chatDebtRow = document.getElementById('row-chat-debt-detail');
+    var chatDebtEl = document.getElementById('v-chat-debt-detail');
+    if (chatDebtRow && chatDebtEl && cd) {
+      chatDebtRow.style.display = '';
+      var debtTxt = 'AD' + (cd.adDebt || 0) + ' K' + (cd.kickDebt || 0) + ' 冰' + (cd.icePending || 0);
+      if (cd.replyPending) debtTxt += ' 待回' + cd.replyPending;
+      if (cd.chatCooldownLeftMin) debtTxt += ' 冷却' + cd.chatCooldownLeftMin + '分';
+      if (cd.slaOverdueCount) debtTxt += ' SLA!' + cd.slaOverdueCount;
+      chatDebtEl.textContent = debtTxt;
+    } else if (chatDebtRow) {
+      chatDebtRow.style.display = 'none';
+    }
+    var spEl = document.getElementById('v-script-pool-detail');
+    if (spEl) {
       var poolMode = 'dating';
       try {
         if (window.RemoteSettings && typeof window.RemoteSettings.chatScriptPool === 'function') {
@@ -1107,138 +1310,38 @@
           var thrPool = JSON.parse(localStorage.getItem('sg_config_thresholds') || '{}') || {};
           poolMode = String(thrPool.chat_script_pool || 'dating').toLowerCase() === 'job' ? 'job' : 'dating';
         }
-      } catch (ePool) {
-        try { poolMode = sessionStorage.getItem('dan_script_pool_mode') || 'dating'; } catch (e2) {}
-      }
-      scriptPoolEl.textContent = poolMode === 'job' ? '兼职粉·10–19点' : '交友';
-      scriptPoolEl.title = poolMode === 'job'
-        ? 'chat_script_pool=job；私信北京时间 10:00–19:00'
-        : 'chat_script_pool=dating（OPS 全局切换）';
-      scriptPoolEl.style.color = poolMode === 'job' ? '#d2a8ff' : '';
+      } catch (ePool) {}
+      spEl.textContent = poolMode === 'job' ? '兼职粉·北京10–19点' : '交友';
+      spEl.style.color = poolMode === 'job' ? '#d2a8ff' : '';
     }
 
-    var chatDebtRow = document.getElementById('row-chat-debt');
-    var chatDebtEl = document.getElementById('v-chat-debt');
-    if (chatDebtRow && chatDebtEl && cd) {
-      chatDebtRow.style.display = '';
-      var debtTxt = 'AD' + (cd.adDebt || 0) + ' K' + (cd.kickDebt || 0) + ' 冰' + (cd.icePending || 0);
-      if (cd.replyPending) debtTxt += ' 待回' + cd.replyPending;
-      if (cd.chatCooldownLeftMin) debtTxt += ' 冷却' + cd.chatCooldownLeftMin + '分';
-      if (cd.slaOverdueCount) debtTxt += ' SLA!' + cd.slaOverdueCount;
-      chatDebtEl.textContent = debtTxt;
-      chatDebtEl.title = debtTxt;
-    } else if (chatDebtRow) {
-      chatDebtRow.style.display = 'none';
-    }
-
-    var replyRow = document.getElementById('row-reply-state');
-    var replyEl = document.getElementById('v-reply-state');
-    if (replyRow && replyEl) {
-      var rs = null;
-      try { rs = JSON.parse(sessionStorage.getItem('dan_reply_state') || 'null'); } catch (eRS) { rs = null; }
-      if (!rs) { try { rs = JSON.parse(localStorage.getItem('dan_reply_state') || 'null'); } catch (eRS2) { rs = null; } }
-      if (rs) {
-        replyRow.style.display = '';
-        var rsTxt = rs.decision || 'unknown';
-        if (rs.source) rsTxt += ' · ' + rs.source;
-        if (rs.unreadSeen) rsTxt += ' · 未读';
-        if (rs.hasReply) rsTxt += ' · 有回复';
-        if (rs.composerReady === false) rsTxt += ' · 输入框未就绪';
-        if (rs.latest) rsTxt += ' · ' + String(rs.latest).slice(0, 18);
-        if (rs.at) {
-          var rsAgeMin = Math.round((Date.now() - rs.at) / 60000);
-          rsTxt += rsAgeMin > 60 ? ' (' + Math.floor(rsAgeMin / 60) + 'h前)' : (rsAgeMin > 1 ? ' (' + rsAgeMin + '分前)' : '');
-        }
-        replyEl.textContent = rsTxt;
-        replyEl.title = JSON.stringify(rs);
+    // 养号
+    var qn = document.getElementById('v-quota-nurture');
+    if (qn) {
+      if (d.nurtureDaily) {
+        qn.textContent = (d.nurtureDaily.likes || 0) + ' / ' + (d.nurtureDaily.likeBudget || '-');
       } else {
-        replyRow.style.display = 'none';
+        qn.textContent = '--';
       }
     }
 
-    var driftRow = document.getElementById('row-drift-state');
-    var driftEl = document.getElementById('v-drift-state');
-    if (driftRow && driftEl) {
-      var drift = null;
-      try { drift = JSON.parse(sessionStorage.getItem('sg_follow_drift') || 'null'); } catch (eD) { drift = null; }
-      var driftLog = [];
-      try { driftLog = JSON.parse(localStorage.getItem('sg_follow_drift_log') || '[]'); } catch (eDL) { driftLog = []; }
-      if (drift) {
-        driftRow.style.display = '';
-        var driftTxt = 'cnt ' + (drift.count || 0) + ' · ' + String(drift.page || '--') + ' → ' + String(drift.expected || '--');
-        if (drift.at) {
-          var ageMin = Math.round((Date.now() - drift.at) / 60000);
-          driftTxt += ageMin > 60 ? ' (' + Math.floor(ageMin / 60) + 'h前)' : (ageMin > 1 ? ' (' + ageMin + '分前)' : '');
-        }
-        driftEl.textContent = driftTxt;
-        driftEl.title = JSON.stringify({ drift: drift, recent: driftLog.slice(-5) });
+    // 转帖
+    var qrp = document.getElementById('v-quota-repost');
+    if (qrp) {
+      if (d.repostDaily != null) {
+        qrp.textContent = (d.repostDaily.used || 0) + ' / ' + (d.repostDaily.cap || '-');
       } else {
-        driftRow.style.display = 'none';
+        qrp.textContent = '--';
       }
     }
 
-    updateDebtOnlyBtn();
-    updateDryRunBtn();
-    updateTest24hBtn();
-    refreshTelemetryRecent();
+    // 账号信息
+    var qday = document.getElementById('v-quota-day');
+    if (qday) qday.textContent = 'Day ' + (d.dayCount || 1);
 
-    var roundEl = document.getElementById('v-round');
-    if (roundEl) {
-      roundEl.textContent = (d.followRound > 0) ? '第' + d.followRound + '轮' : '--';
-    }
-
-    var dayEl = document.getElementById('v-day');
-    if (dayEl) dayEl.textContent = 'Day ' + (d.dayCount || 1);
-
-    var fwEl = document.getElementById('v-follow');
-    if (fwEl) fwEl.textContent = (d.followedToday || 0) + '/' + (d.followLimit || 200);
-
-    var progEl = document.getElementById('v-progress');
-    if (progEl) {
-      var pct = d.followLimit > 0 ? Math.min(100, ((d.followedToday || 0) / d.followLimit) * 100) : 0;
-      progEl.style.width = pct + '%';
-    }
-
-    var creatorEl = document.getElementById('v-creator');
-    if (creatorEl) {
-      var cr = d.currentCreator || d.suspended || '';
-      creatorEl.textContent = cr ? '@' + cr : '--';
-    }
-
-    var roundEl2 = document.getElementById('v-round');
-    if (d.warmupEndAt && d.warmupEndAt > 0 && (d.engine === 'nurture' || d.followPhase === 'warmup')) {
-      var left = Math.max(0, Math.ceil((d.warmupEndAt - Date.now()) / 60000));
-      if (roundEl2) roundEl2.textContent = '养号 ' + left + '分后';
-    }
-
-    var nuEl = document.getElementById('v-nurture');
-    if (nuEl) {
-      if (d.nurtureOnly) { nuEl.textContent = '独立模式'; nuEl.style.color = '#bc8cff'; }
-      else if (d.nurtureRunning) {
-        var ns = d.nurtureDaily || {};
-        nuEl.textContent = '赞' + (ns.likes || 0) + '/' + (ns.likeBudget || '-');
-        nuEl.style.color = '#58a6ff';
-      }
-      else { nuEl.textContent = '待机'; nuEl.style.color = '#8b949e'; }
-    }
-
-    var rpEl = document.getElementById('v-repost');
-    if (rpEl) {
-      if (d.repostRunning || d.runningModule === 'repost') {
-        rpEl.textContent = (d.repostCurrent ? '@' + d.repostCurrent : '运行中');
-        rpEl.style.color = '#d29922';
-      } else if (d.repostDaily != null) {
-        rpEl.textContent = (d.repostDaily.used || 0) + '/' + (d.repostDaily.cap || '-');
-        rpEl.style.color = '#8b949e';
-      } else {
-        rpEl.textContent = '待机';
-        rpEl.style.color = '#8b949e';
-      }
-    }
-    try { refreshRepostTargetsRow(); } catch (eRpTg) {}
-
-    var pcRow = document.getElementById('row-pc');
-    var pcEl = document.getElementById('v-pc');
+    // 资料克隆
+    var pcRow = document.getElementById('row-pc-detail');
+    var pcEl = document.getElementById('v-pc-detail');
     if (pcRow && pcEl) {
       var pc = d.profileClone || null;
       var pcLabel = '';
@@ -1260,50 +1363,51 @@
       }
     }
 
-    var badgeEl = document.getElementById('sg-mode-badge');
-    if (badgeEl) {
-      if (d.autoMode) { badgeEl.textContent = '●自动'; badgeEl.style.color = '#3fb950'; }
-      else { badgeEl.textContent = '●手动'; badgeEl.style.color = '#8b949e'; }
+    // 引擎状态
+    var engEl = document.getElementById('v-quota-engine');
+    if (engEl) {
+      var engText = '空闲';
+      var rm = d.runningModule || '';
+      if (rm === 'follow' || (!rm && d.followRunning && d.engine !== 'chat')) {
+        engText = d.followPhase === 'warmup' ? '养号中' : ('关注轮' + (d.followRound || 1));
+      } else if (rm === 'chat' || d.engine === 'chat' || d.chatRunning) {
+        engText = '私信中';
+      } else if (rm === 'nurture' || d.engine === 'nurture' || d.nurtureRunning) {
+        engText = d.nurtureOnly ? '纯养号' : '养号中';
+      } else if (rm === 'repost' || d.repostRunning) {
+        engText = '转帖中';
+      } else if (d.engine === 'coor' || d.autoMode) {
+        engText = '自动调度';
+      } else if (d.engine === 'manual') {
+        engText = '手动模式';
+      }
+      engEl.textContent = engText;
     }
 
-    try { updateToggleBtns(getSwitches()); updateDebtOnlyBtn(); updateDryRunBtn(); updateTest24hBtn(); updateTestMonitorUi(); } catch (e) {}
+    updateNewAcctReadyUi();
+    try { refreshRepostTargetsRow(); } catch (e) {}
+  }
 
-    var warnEl = document.getElementById('v-warn');
-    if (warnEl) {
-      warnEl.className = 'sg-warn';
-      warnEl.style.display = 'none';
-      if (d.isWorkTime === false) {
-        warnEl.className = 'sg-warn show err';
-        warnEl.textContent = '非工作时间 (21:00-7:00)';
-      } else if (d.isWorkTime === true || d.isWorkTime == null) {
-        var morningRamp = false;
-        try {
-          if (typeof TimeUtil !== 'undefined' && TimeUtil.shanghaiParts) {
-            var sp = TimeUtil.shanghaiParts();
-            if (sp && sp.h >= 7 && sp.h < 8) morningRamp = true;
-          }
-        } catch (eH) {}
-        if (morningRamp) {
-          warnEl.className = 'sg-warn show info';
-          warnEl.textContent = '早间渐进只养号';
-        } else if (d.isChatTime === false && d.dayCount >= 3) {
-          warnEl.className = 'sg-warn show info';
-          warnEl.textContent = '18:00后不私信';
-        } else if (d.dayCount < 3 && d.autoMode) {
-          warnEl.className = 'sg-warn show info';
-          warnEl.textContent = 'Day' + d.dayCount + '不私信（Day3起）';
+  function renderDetailLogs(d) {
+    // 冻结状态
+    var freezeBar = document.getElementById('sg-diag-freeze-bar');
+    var unfreezeBtn = document.getElementById('btn-diag-unfreeze');
+    if (freezeBar || unfreezeBtn) {
+      var df = d.diagFreeze;
+      if (df && df.on) {
+        if (freezeBar) {
+          freezeBar.style.display = '';
+          freezeBar.textContent = '❄ 诊断冻结 · ' + (df.module || '') + '/' + (df.stage || '') + ' · '
+            + (df.hint || df.reason || df.code || '');
         }
+        if (unfreezeBtn) unfreezeBtn.style.display = '';
+      } else {
+        if (freezeBar) freezeBar.style.display = 'none';
+        if (unfreezeBtn) unfreezeBtn.style.display = 'none';
       }
     }
-    try {
-      var chatDayOk = (d.dayCount || 1) >= 3;
-      ['btn-ch', 'btn-ch-test'].forEach(function (id) {
-        var b = document.getElementById(id);
-        if (!b) return;
-        b.disabled = !chatDayOk;
-        b.style.opacity = chatDayOk ? '' : '0.45';
-        b.title = chatDayOk ? (b.getAttribute('data-title-ok') || '') : ('Day' + (d.dayCount || 1) + ' 不私信（Day3起）');
-      });
-    } catch (eBtn) {}
+
+    try { updateTestMonitorUi(); } catch (e) {}
+    try { refreshTelemetryRecent(); } catch (e) {}
   }
 })();
