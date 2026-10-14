@@ -1,10 +1,10 @@
 ﻿{
   "manifest_version": 3,
   "name": "智能调度中心",
-  "version": "4.6.136",
-  "description": "4.6.136：job话术回归核心文案（アルバイト募集中+1日3万〜10万円+22歳以上），扣粉规则只留年龄门槛在话术里，异国/重粉/色粉靠加LINE后人工审核；话术版本1.8→1.9",
+  "version": "4.6.137",
+  "description": "4.6.137：新增H11原创内容池——repost_content_pool=1的账号从内容池claim已审核日文原创帖+配图直发，posted/retry/failed回报OPS；config-sync透传contentPoolMode",
   "action": {
-    "default_title": "智能调度中心 4.6.136"
+    "default_title": "智能调度中心 4.6.137"
   },
   "permissions": [
     "storage",
