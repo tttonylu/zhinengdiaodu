@@ -56,9 +56,9 @@
     stage_stall_cooldown_sec: '180',
     stage_tick_interval_ms: '10000',
     stage_watchdog_ms: '30000',
-    nav_min_interval_ms: '13000',
+    nav_min_interval_ms: '45000',
     media_load_mode: 'off',
-    follow_only_japanese: 'true',
+    follow_only_japanese: 'false',
     follow_antiban_enabled: 'false'
   };
   var DEFAULT_MODULES = { nurture: true, follow: true, chat: true, scheduler: true, repost: true };
@@ -108,6 +108,38 @@
   }
 
   /**
+   * 4.6.88：本地关注配额跨日清零（ConfigSync/页面唤醒也能触发，不等 coTick）。
+   * 场景：后台标签页冻结时 setInterval 暂停，零点过后 date 仍停昨天。
+   */
+  function ensureLocalFollowQuotaRollover(handleHint) {
+    var h = normalizeHandleKey(handleHint || getBotId());
+    if (!h || h === 'unknown') return false;
+    try {
+      var key = 'matrix_stats_' + h;
+      var stats = {};
+      try { stats = JSON.parse(localStorage.getItem(key) || '{}') || {}; } catch (eSt) { stats = {}; }
+      var today = shanghaiDayKey();
+      var lastDate = toShanghaiDayKey(stats.date);
+      if (!lastDate || lastDate === today) return false;
+      stats.follows_today = 0;
+      delete stats.daily_limit;
+      try { delete stats.follows_reset_day; } catch (eRd) {}
+      stats.date = today;
+      localStorage.setItem(key, JSON.stringify(stats));
+      try {
+        var ms = JSON.parse(sessionStorage.getItem('sg_module_follow') || '{}') || {};
+        if (ms.phase === 'quota_exhausted' || ms.phase === 'quota') {
+          ms.phase = 'idle';
+          ms.running = false;
+          sessionStorage.setItem('sg_module_follow', JSON.stringify(ms));
+        }
+      } catch (eMs) {}
+      console.log('[ConfigSync] 跨日清零关注配额: ' + lastDate + ' → ' + today + ' @' + h);
+      return true;
+    } catch (e) { return false; }
+  }
+
+  /**
    * OPS day_count → 本地 matrix_stats。
    * 跨日必须清零 follows_today（旧逻辑只改 date 不清配额，会残留昨天的 20/50）。
    * followsToday 若传入（OPS 今日真实关注数），以服务端为准纠正本地。
@@ -140,9 +172,8 @@
       // 同日刚远程重锁清零：禁止 OPS today_follow_count 把本地又抬满
       var resetDay = toShanghaiDayKey(stats.follows_reset_day);
       var skipOpsBoost = !!(resetDay && resetDay === today && !rolled);
-      // 跨日：用 OPS 对齐；同日只允许 OPS 抬高本地（禁止把已确认关注抹成更小）
-      if (ft != null && rolled) {
-        stats.follows_today = ft;
+      // 跨日：本地从 0 起；OPS runtime 可能仍是昨日满额，禁止灌回
+      if (rolled) {
         try { delete stats.follows_reset_day; } catch (eDelR) {}
       } else if (ft != null && ft > localFollows && !skipOpsBoost) {
         stats.follows_today = ft;
@@ -345,16 +376,19 @@
         day5Quota: pi(thresholds.repost_day5_quota, 1),
         maxMinutes: pi(thresholds.repost_max_minutes, 60),
         followWorkEnd: thresholds.repost_follow_work_end === undefined
-          ? true
-          : truthy(thresholds.repost_follow_work_end, true),
-        startHour: pi(thresholds.repost_start_hour, 6),
+          ? false
+          : truthy(thresholds.repost_follow_work_end, false),
+        startHour: pi(thresholds.repost_start_hour, 20),
         startMin: pi(thresholds.repost_start_min, 0),
+        startJitterMaxMin: Math.min(360, Math.max(0, pi(thresholds.repost_start_jitter_max_min, 240))),
         eveEndHour: pi(thresholds.repost_eve_end_hour, 23),
         eveEndMin: pi(thresholds.repost_eve_end_min, 0),
         mornStartHour: pi(thresholds.repost_morn_start_hour, 3),
         mornStartMin: pi(thresholds.repost_morn_start_min, 0),
         mornEndHour: pi(thresholds.repost_morn_end_hour, 5),
         mornEndMin: pi(thresholds.repost_morn_end_min, 0),
+        // F1：内容池模式位（repost_content_pool 账号 override），随 cfg 下发给 repost-engine 分流
+        contentPoolMode: truthy(thresholds.repost_content_pool, false),
         appendLink: String(thresholds.repost_append_link || '')
       };
 
@@ -396,7 +430,7 @@
       s.followIntervalMin = intervals.followIntervalMinSec;
       s.followIntervalMax = intervals.followIntervalMaxSec;
       if (thresholds.follow_only_japanese !== undefined) {
-        s.onlyJapanese = truthy(thresholds.follow_only_japanese, true);
+        s.onlyJapanese = truthy(thresholds.follow_only_japanese, false);
       }
       if (thresholds.follow_antiban_enabled !== undefined) {
         s.antiBanMode = truthy(thresholds.follow_antiban_enabled, false);
@@ -416,7 +450,17 @@
   }
 
   function applyPayload(res) {
+    try {
+      ensureLocalFollowQuotaRollover((res && res.account && res.account.x_handle) || getBotId());
+    } catch (eRoll) {}
     var thresholds = res.thresholds || DEFAULT_THRESHOLDS;
+    // 4.6.101：抬升残留 13s 默认（4.2.48 旧值），否则 Gate 读 localStorage 仍吃 13s 连环跳
+    try {
+      var _navN = parseInt(thresholds.nav_min_interval_ms, 10);
+      if (!isFinite(_navN) || _navN === 13000) {
+        thresholds = Object.assign({}, thresholds, { nav_min_interval_ms: '45000' });
+      }
+    } catch (eNavMig) {}
     var stagePolicy = res.stagePolicy || {};
     // 转帖过渡试验：同步时剔除白天阶段里的 repost，避免误配污染主线
     try {
@@ -476,7 +520,7 @@
         stallCooldownSec: pi(thresholds.stage_stall_cooldown_sec, 180),
         tickIntervalMs: pi(thresholds.stage_tick_interval_ms, 10000),
         watchdogMs: pi(thresholds.stage_watchdog_ms, 30000),
-        navMinIntervalMs: pi(thresholds.nav_min_interval_ms, 13000)
+        navMinIntervalMs: pi(thresholds.nav_min_interval_ms, 45000)
       }
     };
 
@@ -486,13 +530,20 @@
     // 4.4.0：重启禁图 — auto 仍按 on 兼容旧配置；新默认 off
     if (mediaMode === 'auto') mediaMode = 'on';
 
-    chrome.storage.local.set({
+    // OPS 号池地址优先：远程配置下发后覆盖面板本地设置，实现后台统一切换号池
+    var remotePoolServer = String(thresholds.pool_server || '').trim();
+    var storageSet = {
       matrix_config_overrides: cfg,
       sg_stage_policy: JSON.stringify(stagePolicy),
       sg_module_switches: JSON.stringify(modules),
       sg_nurture_remote_cfg: nurtureRemote,
       sg_media_load_mode: mediaMode
-    });
+    };
+    if (remotePoolServer) storageSet.pool_server = remotePoolServer;
+    chrome.storage.local.set(storageSet);
+    if (remotePoolServer) {
+      try { console.log('[ConfigSync] OPS 号池地址已下发: ' + remotePoolServer); } catch (e) {}
+    }
 
     try {
       localStorage.setItem('sg_stage_policy', JSON.stringify(stagePolicy));
@@ -556,7 +607,10 @@
           var prev = localStorage.getItem('sg_installation_id') || '';
           localStorage.setItem('sg_installation_id', String(r.id));
           if (!prev) {
-            try { localStorage.removeItem('sg_repost_start_jitter_min'); } catch (eJ) {}
+            try {
+              localStorage.removeItem('sg_repost_start_jitter_min');
+              localStorage.removeItem('sg_repost_start_jitter_max_used');
+            } catch (eJ) {}
           }
         } catch (eLs) {}
       });
@@ -597,6 +651,7 @@
   }
 
   function fetchRemote() {
+    if (document.hidden) return;
     var botId = getBotId();
     try {
       chrome.runtime.sendMessage({ action: 'fetch_remote_config', bot_id: botId }, function (res) {
@@ -631,6 +686,7 @@
   }
 
   function startSync() {
+    try { ensureLocalFollowQuotaRollover(getBotId()); } catch (eRoll0) {}
     fetchRemote();
     _timer = setInterval(function () {
       try { fetchRemote(); } catch (e) { clearInterval(_timer); }
@@ -648,6 +704,7 @@
   try {
     window.ConfigSync = {
       applyRemoteDayCount: applyRemoteDayCount,
+      ensureLocalFollowQuotaRollover: ensureLocalFollowQuotaRollover,
       fetchRemote: fetchRemote,
       getBotId: getBotId
     };
