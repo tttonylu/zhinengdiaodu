@@ -12,6 +12,10 @@ const FAILOVER_STICKY_MS = 120000; // 外网成功后 sticky 2 分钟，再试�
 const LAN_TRY_MS = 2500;
 const WAN_TRY_MS = 8000;
 const STICKY_STORAGE_KEY = 'sg_failover_sticky'; // SW 回收后恢复线路记忆
+const OPS_OUTBOX_KEY = 'ops_ledger_outbox';
+const OPS_OUTBOX_ALARM = 'ops_outbox_flush';
+const OPS_OUTBOX_MAX_TRIES = 8;
+const OPS_OUTBOX_MAX_LEN = 80;
 
 var cachedPoolServer = DEFAULT_POOL_SERVER;
 var cachedOpsServer = DEFAULT_OPS_SERVER;
@@ -181,6 +185,214 @@ function poolFetch(path, options) {
 
 function opsFetch(path, options) {
   return fetchJsonWithFailover('ops', path, options);
+}
+
+// E5 原创内容池取图：与 opsFetch 共用同一组 OPS base / failover 序列，
+// GET 后返回 {blob, type} 而非 JSON（SW 环境下 Response.blob 可用）
+function opsFetchRaw(path) {
+  var preferred = cachedOpsServer;
+  var list = candidatesFor('ops');
+  var idx = 0;
+
+  function attempt() {
+    if (idx >= list.length) {
+      return Promise.reject(new Error('OPS_unreachable'));
+    }
+    var base = list[idx++];
+    var timeoutMs = isLanUrl(base) ? LAN_TRY_MS : WAN_TRY_MS;
+    var opts = cloneFetchOpts(null, timeoutMs);
+    return fetch(base + path, opts)
+      .then(function (r) {
+        if (!r.ok) throw new Error('http_' + r.status);
+        return r.blob().then(function (blob) {
+          markFailoverSuccess('ops', base, preferred);
+          return { blob: blob, type: blob.type };
+        });
+      })
+      .catch(function (e) {
+        console.warn('[OPS] ' + base + path + ' -> ' + (e && e.message ? e.message : e));
+        return attempt();
+      });
+  }
+
+  return attempt();
+}
+
+// ====== 4.6.70 OPS 台账/记账出箱（失败重试，防本地推进后 OPS 永久落后） ======
+function loadOpsOutbox(cb) {
+  try {
+    chrome.storage.local.get([OPS_OUTBOX_KEY], function (r) {
+      var list = [];
+      try {
+        list = Array.isArray(r && r[OPS_OUTBOX_KEY]) ? r[OPS_OUTBOX_KEY] : [];
+      } catch (e) { list = []; }
+      cb(list);
+    });
+  } catch (e) {
+    cb([]);
+  }
+}
+
+function saveOpsOutbox(list, cb) {
+  try {
+    chrome.storage.local.set({ [OPS_OUTBOX_KEY]: list || [] }, function () {
+      if (typeof cb === 'function') cb();
+    });
+  } catch (e) {
+    if (typeof cb === 'function') cb();
+  }
+}
+
+function enqueueOpsOutboxEntry(entry, sendResponse) {
+  if (!entry || !entry.type) {
+    if (sendResponse) sendResponse({ ok: false, msg: 'bad_entry' });
+    return;
+  }
+  loadOpsOutbox(function (list) {
+    var botHandle = String(entry.botHandle || '').replace(/^@/, '').toLowerCase();
+    var payload = entry.payload || {};
+    var type = String(entry.type);
+    // 4.6.71：同键去重 — record 按 bot+target+round；roster 同 bot 只留最新全量
+    if (type === 'dm_record') {
+      var th = String(payload.target_handle || '').replace(/^@/, '').toLowerCase();
+      var rn = Number(payload.round_number) || 0;
+      list = list.filter(function (it) {
+        if (!it || it.type !== 'dm_record') return true;
+        var ib = String(it.botHandle || '').replace(/^@/, '').toLowerCase();
+        var ith = String((it.payload && it.payload.target_handle) || '').replace(/^@/, '').toLowerCase();
+        var irn = Number(it.payload && it.payload.round_number) || 0;
+        return !(ib === botHandle && ith === th && irn === rn);
+      });
+    } else if (type === 'dm_roster') {
+      list = list.filter(function (it) {
+        if (!it || it.type !== 'dm_roster') return true;
+        var ib = String(it.botHandle || '').replace(/^@/, '').toLowerCase();
+        return ib !== botHandle;
+      });
+    }
+    var item = {
+      id: 'ob_' + Date.now().toString(36) + '_' + Math.floor(Math.random() * 1e5),
+      type: type,
+      payload: payload,
+      botHandle: botHandle,
+      tries: 0,
+      nextAt: Date.now(),
+      enqueuedAt: entry.enqueuedAt || Date.now()
+    };
+    list.push(item);
+    if (list.length > OPS_OUTBOX_MAX_LEN) list = list.slice(list.length - OPS_OUTBOX_MAX_LEN);
+    saveOpsOutbox(list, function () {
+      console.warn('[调度-SW] outbox enqueue type=' + item.type + ' len=' + list.length);
+      try {
+        if (chrome.alarms) chrome.alarms.create(OPS_OUTBOX_ALARM, { when: Date.now() + 5000 });
+      } catch (eA) {}
+      if (sendResponse) sendResponse({ ok: true, id: item.id, len: list.length });
+    });
+  });
+}
+
+function flushOpsOutbox(done) {
+  var finish = typeof done === 'function' ? done : function () {};
+  loadOpsOutbox(function (list) {
+    if (!list.length) {
+      finish({ ok: true, flushed: 0 });
+      return;
+    }
+    var now = Date.now();
+    var keep = [];
+    var chain = Promise.resolve();
+    var flushed = 0;
+    var deferred = 0;
+
+    function backoffMs(tries) {
+      var t = Math.max(0, Number(tries) || 0);
+      if (t <= 1) return 15000;
+      if (t === 2) return 60000;
+      if (t === 3) return 180000;
+      return 300000;
+    }
+
+    list.forEach(function (item) {
+      chain = chain.then(function () {
+        if (!item) return;
+        if ((item.nextAt || 0) > now) {
+          keep.push(item);
+          deferred++;
+          return;
+        }
+        if ((item.tries || 0) >= OPS_OUTBOX_MAX_TRIES) {
+          console.warn('[调度-SW] outbox drop max tries', item.type, item.id);
+          return;
+        }
+        var p = item.payload || {};
+        var req;
+        if (item.type === 'dm_record') {
+          req = opsFetch('/api/plugin/dm/record', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              bot_id: p.bot_id || item.botHandle || '',
+              target_handle: p.target_handle || '',
+              round_number: p.round_number || 1,
+              message_content: p.message_content || '',
+              result: p.result || 'success'
+            }),
+            timeoutMs: 12000
+          });
+        } else if (item.type === 'dm_roster') {
+          if (item.botHandle && !p.botHandle) p.botHandle = item.botHandle;
+          if (item.botHandle && !p.bot_id) p.bot_id = item.botHandle;
+          p.finalize_stale = true;
+          p.chunkIndex = 0;
+          p.chunkTotal = 1;
+          req = opsFetch('/api/plugin/dm/roster', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(p),
+            timeoutMs: 20000
+          });
+        } else {
+          return;
+        }
+        return req.then(function (d) {
+          if (d && d.ok) {
+            flushed++;
+            return;
+          }
+          // round_duplicate 视作成功
+          if (item.type === 'dm_record' && d && d.reason === 'round_duplicate') {
+            flushed++;
+            return;
+          }
+          item.tries = (item.tries || 0) + 1;
+          item.nextAt = Date.now() + backoffMs(item.tries);
+          item.lastError = (d && (d.msg || d.error || d.reason)) || 'fail';
+          keep.push(item);
+        }).catch(function (e) {
+          item.tries = (item.tries || 0) + 1;
+          item.nextAt = Date.now() + backoffMs(item.tries);
+          item.lastError = String(e && e.message || e);
+          keep.push(item);
+        });
+      });
+    });
+
+    chain.then(function () {
+      saveOpsOutbox(keep, function () {
+        console.log('[调度-SW] outbox flush flushed=' + flushed + ' remain=' + keep.length + ' deferred=' + deferred);
+        if (keep.length && chrome.alarms) {
+          var next = keep.reduce(function (m, it) {
+            var n = Number(it && it.nextAt) || (Date.now() + 60000);
+            return n < m ? n : m;
+          }, Date.now() + 300000);
+          try { chrome.alarms.create(OPS_OUTBOX_ALARM, { when: Math.max(Date.now() + 5000, next) }); } catch (eA2) {}
+        }
+        finish({ ok: true, flushed: flushed, remain: keep.length });
+      });
+    }).catch(function () {
+      finish({ ok: false });
+    });
+  });
 }
 
 function normalizeBotId(raw) {
@@ -883,6 +1095,57 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
     }).then(function (d) { sendResponse(d); }).catch(function () { sendResponse({ ok: false }); });
     return true;
   }
+  // H9：来源号被动检测上报（E1 抓取遇冻结/不存在页）
+  if (request.action === 'ops_repost_source_status') {
+    opsFetch('/api/plugin/repost-source-status', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        source: request.source || '',
+        status: request.status || '',
+        note: request.note || '',
+      }),
+    }).then(function (d) { sendResponse(d); }).catch(function () { sendResponse({ ok: false }); });
+    return true;
+  }
+  // ----- E5 原创内容池：claim / report / 取图（取图经 opsFetchRaw，禁止裸 IP） -----
+  if (request.action === 'ops_content_pool_claim') {
+    var cpQuery = '?bot_id=' + encodeURIComponent(request.bot_id || '');
+    if (request.now) cpQuery += '&now=' + encodeURIComponent(request.now);
+    opsFetch('/api/plugin/content-pool/claim' + cpQuery)
+      .then(function (d) { sendResponse(d); })
+      .catch(function () { sendResponse({ ok: false, error: 'claim_fetch_fail' }); });
+    return true;
+  }
+  if (request.action === 'ops_content_pool_report') {
+    opsFetch('/api/plugin/content-pool/report', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        bot_id: request.bot_id || '',
+        id: request.id,
+        result: request.result || 'failed',
+        external_post_id: request.external_post_id || '',
+        fail_reason: request.fail_reason || '',
+      }),
+    }).then(function (d) { sendResponse(d); }).catch(function () { sendResponse({ ok: false }); });
+    return true;
+  }
+  if (request.action === 'ops_content_pool_media') {
+    // SW 跨域取图 → dataURL 回内容脚本（内容脚本只传相对路径，基址由 SW 拼）
+    var cpPath = String(request.url || '');
+    if (cpPath.indexOf('/') !== 0) cpPath = '/' + cpPath;
+    opsFetchRaw(cpPath)
+      .then(function (res) {
+        return new Promise(function (resolve, reject) {
+          var fr = new FileReader();
+          fr.onloadend = function () { resolve({ ok: true, dataUrl: fr.result, type: res.type, size: res.blob.size }); };
+          fr.onerror = reject;
+          fr.readAsDataURL(res.blob);
+        });
+      })
+      .then(function (d) { sendResponse(d); })
+      .catch(function (e) { sendResponse({ ok: false, error: String(e && e.message || e) }); });
+    return true;
+  }
   if (request.action === 'ops_dm_record') {
     opsFetch('/api/plugin/dm/record', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -898,11 +1161,39 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
   }
   if (request.action === 'ops_dm_roster') {
     var rosterBody = request.payload || request.body || {};
-    if (request.bot_id && !rosterBody.bot_id) rosterBody.bot_id = request.bot_id;
+    // 4.6.70：一律用本号 handle 作 botKey，禁止 worker 串号
+    var rosterBot = String(
+      rosterBody.botHandle || rosterBody.bot_handle || request.bot_id || rosterBody.bot_id || ''
+    ).replace(/^@/, '').toLowerCase().trim();
+    if (rosterBot) {
+      rosterBody.bot_id = rosterBot;
+      rosterBody.botHandle = rosterBot;
+    }
     opsFetch('/api/plugin/dm/roster', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(rosterBody),
+      timeoutMs: 20000
     }).then(function (d) { sendResponse(d); }).catch(function () { sendResponse({ ok: false }); });
+    return true;
+  }
+  if (request.action === 'ops_outbox_enqueue') {
+    enqueueOpsOutboxEntry(request.entry || request, sendResponse);
+    return true;
+  }
+  if (request.action === 'ops_outbox_flush') {
+    flushOpsOutbox(function (r) { sendResponse(r || { ok: false }); });
+    return true;
+  }
+  if (request.action === 'ops_dm_roster_get') {
+    // 4.6.67：拉 OPS 台账 pending 回灌本地队列
+    var rosterHandle = String(request.handle || request.bot_id || '').replace(/^@/, '').trim();
+    if (!rosterHandle) {
+      sendResponse({ ok: false, msg: 'handle required' });
+      return false;
+    }
+    opsFetch('/api/plugin/dm/roster/' + encodeURIComponent(rosterHandle))
+      .then(function (d) { sendResponse(d); })
+      .catch(function () { sendResponse({ ok: false }); });
     return true;
   }
   if (request.action === 'ops_health_event') {
@@ -925,17 +1216,19 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
     return true;
   }
   if (request.action === 'ops_dm_check') {
-    // 4.6.30：只读校验，网络失败 2s 后退避重试 1 次（§C2-16 / H2）；后端业务性 ok:false 不重试直接透传
+    // 4.6.123：只读校验，网络失败 2s 后退避重试 1 次（§C2-18 / H2）；后端业务性 ok:false 不重试直接透传
     var dmCheckBody = JSON.stringify(request.payload || {});
     var dmCheckOpts = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: dmCheckBody };
     var dmCheckT0 = Date.now();
+    // 不可达统一标记 ops_unreachable，与前端 frontend_timeout 区分，禁一笔糊涂账
+    var dmCheckUnreachable = function () { return { ok: false, reason: 'ops_unreachable', msg: 'ops_unreachable' }; };
     opsFetch('/api/plugin/dm/check', dmCheckOpts).then(function (d) { sendResponse(d); }).catch(function () {
-      // 快失败（瞬时断网/连接拒绝）才值得重试；慢失败（failover 已耗尽内外网）重试也赶不上前端 9s 超时
-      if (Date.now() - dmCheckT0 > 5000) { sendResponse({ ok: false }); return; }
+      // 快失败（瞬时断网/连接拒绝）才值得重试；慢失败（failover 已耗尽内外网）重试也赶不上前端 12s 预算
+      if (Date.now() - dmCheckT0 > 5000) { sendResponse(dmCheckUnreachable()); return; }
       setTimeout(function () {
         opsFetch('/api/plugin/dm/check', dmCheckOpts)
           .then(function (d2) { sendResponse(d2); })
-          .catch(function () { sendResponse({ ok: false }); });
+          .catch(function () { sendResponse(dmCheckUnreachable()); });
       }, 2000);
     });
     return true;
@@ -1600,6 +1893,10 @@ if (chrome.alarms) {
   chrome.alarms.onAlarm.addListener(function (alarm) {
     if (alarm.name === 'keepalive') {
       flushTelemetryQueue();
+      try { flushOpsOutbox(function () {}); } catch (eOb) {}
+    }
+    if (alarm.name === OPS_OUTBOX_ALARM) {
+      flushOpsOutbox(function () {});
     }
     if (alarm.name === CACHE_PURGE_ALARM) {
       purgeXCache().then(function (r) {

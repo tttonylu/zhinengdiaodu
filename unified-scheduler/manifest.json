@@ -1,10 +1,10 @@
-{
+﻿{
   "manifest_version": 3,
   "name": "智能调度中心",
-  "version": "4.6.37",
-  "description": "智能调度 4.6.37：关注防老外修日文误跳——name∨bio 分提合并判定，有日文不按长度踢，补半角假名与显示原文",
+  "version": "4.6.136",
+  "description": "4.6.136：job话术回归核心文案（アルバイト募集中+1日3万〜10万円+22歳以上），扣粉规则只留年龄门槛在话术里，异国/重粉/色粉靠加LINE后人工审核；话术版本1.8→1.9",
   "action": {
-    "default_title": "智能调度中心 4.6.37"
+    "default_title": "智能调度中心 4.6.136"
   },
   "permissions": [
     "storage",
@@ -84,6 +84,7 @@
         "https://*.twitter.com/*"
       ],
       "js": [
+        "shared/cpu-profiler.js",
         "shared/config.js",
         "shared/id_extractor.js",
         "shared/logger.js",
@@ -123,6 +124,7 @@
         "nurture/nurture-comments.js",
         "nurture/nurture-engine.js",
         "repost/repost-tracker.js",
+        "repost/content-pool-client.js",
         "repost/repost-engine.js",
         "repost/profile-clone.js",
         "repost/repost-panel.js",
