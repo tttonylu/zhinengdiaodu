@@ -231,8 +231,11 @@ var EngineUtils = (function () {
       var patterns = [
         /此请求疑似为自动发送/, /疑似自动/, /自动发送/, /垃圾邮件/, /可疑/, /账号暂时受限/,
         /操作太频繁/, /发送过于频繁/, /请稍后再试/,
+        // X 官方句式（2026-10 实机）：「该请求看上去可能是自动产生的。为了保护我们的用户免受垃圾信息…我们现在无法完成这一操作。请稍后再试。」
+        /看上去.{0,8}自动/, /可能是自动产生/, /无法完成这一操作/,
         /automated/, /suspicious activity/, /spam/, /bot detected/, /unusual activity/,
         /rate limit/, /try again later/, /could not send/,
+        /looks like it might be automated/, /protect our users/, /malicious activity/,
         /自動/, /迷惑メール/, /アカウントを一時的にロック/, /しばらく経ってから/, /不審/
       ];
       return patterns.some(function (re) { return re.test(t); });

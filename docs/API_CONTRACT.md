@@ -58,7 +58,7 @@
     "chat_rounds_per_day": 3,
     "chat_cooldown_hours": 2,
     "media_load_mode": "auto",
-    "nav_min_interval_ms": 13000
+    "nav_min_interval_ms": 45000
   },
   "stagePolicy": { "workHours": {}, "chatHours": {}, "stages": {} },
   "modules": { "nurture": true, "follow": true, "chat": true }

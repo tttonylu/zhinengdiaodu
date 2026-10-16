@@ -510,7 +510,15 @@
       readBuffer(function (buf) {
         var list = buf.slice(-n).reverse().map(function (e) {
           var m = e.meta || {};
-          var hint = m.target || m.reason || m.message || m.latency_ms || '';
+          // Logger.warn/error 写的是 mod+msg（不是 message）；丢掉则面板只剩「系统警告」
+          var hint = '';
+          if (m.mod || m.msg) {
+            hint = String(m.mod || '') + (m.mod && m.msg ? ' ' : '') + String(m.msg || '');
+            if (m.detail) hint += ' ' + String(m.detail).slice(0, 40);
+          } else {
+            hint = m.target || m.reason || m.message || m.latency_ms || '';
+          }
+          hint = String(hint || '').trim().slice(0, 80);
           return (e.time_zh || '') + ' ' + (e.label_zh || e.event_id) + (hint ? ' ' + hint : '');
         });
         resolve(list);

@@ -1,0 +1,665 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>{{ title }}</title>
+<link rel="stylesheet" href="/public/app.css">
+<style>
+.cfg-tabs{display:flex;gap:0;margin-bottom:20px;border-bottom:2px solid #30363d}
+.cfg-tab{padding:8px 18px;cursor:pointer;color:#8b949e;border:none;background:none;font-size:14px}
+.cfg-tab.active{color:#58a6ff;border-bottom:2px solid #58a6ff;margin-bottom:-2px}
+.cfg-panel{display:none}
+.cfg-panel.active{display:block}
+.cfg-sect{margin-bottom:20px}
+.cfg-sect h4{color:#58a6ff;font-size:13px;margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid #21262d}
+.cfg-row{display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid #21262d}
+.cfg-row .lbl{min-width:110px;font-size:13px;color:#c9d1d9}
+.cfg-row .sub{font-size:11px;color:#8b949e;min-width:120px}
+.cfg-row input[type=number],.cfg-row input[type=text]{width:70px;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:5px 8px;border-radius:4px;font-size:13px;text-align:center}
+.cfg-row input.wide{width:160px}
+.cfg-row input:focus{border-color:#58a6ff;outline:none}
+.cfg-row .unit{font-size:11px;color:#8b949e;min-width:36px}
+.cfg-header{display:flex;align-items:center;gap:16px;padding:10px 0;margin-bottom:12px;border-bottom:2px solid #30363d}
+.cfg-header .sw-label{font-size:16px;font-weight:600}
+.cfg-header .sw-desc{font-size:11px;color:#8b949e}
+.cfg-switch{position:relative;width:48px;height:24px;display:inline-block}
+.cfg-switch input{opacity:0;width:0;height:0}
+.cfg-slider{position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:#30363d;border-radius:24px;transition:.3s}
+.cfg-slider:before{content:'';position:absolute;height:18px;width:18px;left:3px;bottom:3px;background:#8b949e;border-radius:50%;transition:.3s}
+.cfg-switch input:checked+.cfg-slider{background:#238636}
+.cfg-switch input:checked+.cfg-slider:before{transform:translateX(24px);background:#fff}
+.cfg-stages{margin:8px 0}
+.cfg-stage{border:1px solid #21262d;border-radius:6px;padding:10px 14px;margin-bottom:8px;background:#0d1117}
+.cfg-stage .stg-name{font-weight:600;font-size:14px;margin-bottom:6px}
+.cfg-stage .stg-name span{font-size:11px;color:#8b949e;font-weight:normal;margin-left:8px}
+.cfg-stage .stg-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px}
+.cfg-stage .stg-row label{display:flex;align-items:center;gap:4px;color:#c9d1d9;cursor:pointer}
+.cfg-stage .stg-row input[type=checkbox]{accent-color:#238636}
+.cfg-stage .stg-row input[type=number]{width:50px;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:3px 6px;border-radius:4px;font-size:12px;text-align:center}
+.cfg-stage .stg-row input:focus{border-color:#58a6ff;outline:none}
+.btn-save{padding:6px 20px;background:#238636;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:13px}
+.btn-save:hover{background:#2ea043}
+.btn-reset{padding:6px 20px;background:#21262d;color:#8b949e;border:1px solid #30363d;border-radius:4px;cursor:pointer;font-size:13px;margin-left:8px}
+.save-msg{margin-left:12px;font-size:12px;color:#3fb950}
+.comment-row{display:flex;gap:6px;align-items:center;margin-bottom:4px}
+.comment-row input{flex:1;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:3px 8px;border-radius:4px;font-size:12px}
+.comment-row button{padding:3px 8px;background:#da3633;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px}
+.comment-cat{margin-bottom:14px}
+.comment-cat h5{color:#58a6ff;font-size:13px;margin-bottom:6px}
+.btn-add{padding:3px 10px;background:#1f6feb;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px}
+</style>
+</head>
+<body>
+<header class="shell-header">
+  <h1>X 运营轻总控后台</h1>
+      {% set navActive = 'config' %}
+      {% include 'partials/shell-nav.njk' %}
+</header>
+<main class="shell-main">
+<section class="panel">
+<div class="panel-heading"><h2>系统配置</h2></div>
+<div class="cfg-tabs">
+  <button class="cfg-tab active" onclick="showTab('follow')">📌 关注设置</button>
+  <button class="cfg-tab" onclick="showTab('nurture')">🧘 养号设置</button>
+  <button class="cfg-tab" onclick="showTab('chat')">💬 私信设置</button>
+  <button class="cfg-tab" onclick="showTab('repost')">🔁 转帖设置</button>
+  <button class="cfg-tab" onclick="showTab('scheduler')">⚙️ 调度设置</button>
+</div>
+
+<!-- ============ 关注 ============ -->
+<div id="panel-follow" class="cfg-panel active">
+  <div class="cfg-header">
+    <div><div class="sw-label">关注模块</div><div class="sw-desc">从号池领号 → 关注博主粉丝</div></div>
+    <label class="cfg-switch"><input type="checkbox" id="sw-follow" {{ 'checked' if modules.follow else '' }}><span class="cfg-slider"></span></label>
+  </div>
+  <div class="cfg-sect">
+    <h4>关注参数</h4>
+    <div class="cfg-row"><span class="lbl">封顶</span><input type="number" id="f-daily" value="{{ thresholds.follow_daily_limit or '310' }}"><span class="unit">条/天</span><span class="sub">Day5+ 上限</span></div>
+    <div class="cfg-row"><span class="lbl">Day1</span><input type="number" id="f-d1min" value="{{ thresholds.follow_day1_min or '80' }}"> ~ <input type="number" id="f-d1max" value="{{ thresholds.follow_day1_max or '90' }}"><span class="unit">条</span><span class="sub">当日随机锁定</span></div>
+    <div class="cfg-row"><span class="lbl">Day2</span><input type="number" id="f-d2min" value="{{ thresholds.follow_day2_min or '135' }}"> ~ <input type="number" id="f-d2max" value="{{ thresholds.follow_day2_max or '155' }}"><span class="unit">条</span></div>
+    <div class="cfg-row"><span class="lbl">Day3</span><input type="number" id="f-d3min" value="{{ thresholds.follow_day3_min or '190' }}"> ~ <input type="number" id="f-d3max" value="{{ thresholds.follow_day3_max or '215' }}"><span class="unit">条</span></div>
+    <div class="cfg-row"><span class="lbl">Day4</span><input type="number" id="f-d4min" value="{{ thresholds.follow_day4_min or '240' }}"> ~ <input type="number" id="f-d4max" value="{{ thresholds.follow_day4_max or '270' }}"><span class="unit">条</span></div>
+    <div class="cfg-row"><span class="lbl">Day5</span><input type="number" id="f-d5min" value="{{ thresholds.follow_day5_min or '285' }}"> ~ <input type="number" id="f-d5max" value="{{ thresholds.follow_day5_max or '300' }}"><span class="unit">条</span></div>
+    <div class="cfg-row"><span class="lbl">Day6+</span><input type="number" id="f-d6min" value="{{ thresholds.follow_day6_min or '290' }}"> ~ <input type="number" id="f-d6max" value="{{ thresholds.follow_day6_max or '310' }}"><span class="unit">条</span></div>
+    <div class="cfg-row"><span class="lbl">关注间隔</span><input type="number" id="f-intv-min" value="{{ thresholds.follow_interval_min_sec or '2' }}"> ~ <input type="number" id="f-intv-max" value="{{ thresholds.follow_interval_max_sec or '4' }}"><span class="unit">秒</span><span class="sub">随机区间（插件底限 2s）</span></div>
+    <div class="cfg-row"><span class="lbl">风控冷却</span><input type="text" class="wide" id="f-cooldown" value="{{ thresholds.risk_cooldown_gradient or '[60,120,240,600]' }}"><span class="unit">秒</span><span class="sub">JSON 秒数组，插件内×1000ms（默认 60,120,240,600）</span></div>
+    <div class="cfg-row"><span class="lbl">重试间隔</span><input type="number" id="f-retry" value="{{ thresholds.follow_retry_delay_sec or '300' }}"><span class="unit">秒</span><span class="sub">号池空后等待（插件默认 300）</span></div>
+    <div class="cfg-row"><span class="lbl">号池来源</span>
+      <select id="f-pool-server" style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:4px 8px;border-radius:4px">
+        <option value="">插件本地默认（主池 78）</option>
+        <option value="http://192.168.0.100:15678" {{ 'selected' if thresholds.pool_server == 'http://192.168.0.100:15678' else '' }}>主池 78（15678）</option>
+        <option value="http://192.168.0.100:15679" {{ 'selected' if thresholds.pool_server == 'http://192.168.0.100:15679' else '' }}>兼职池 79（15679）</option>
+      </select>
+      <span class="sub">关注模块领号目标，约1分钟下发生效；79池仅内网可达，插件不会回退到78池外网兜底。单号差异化请到账号详情页配置</span>
+    </div>
+  </div>
+  <div class="cfg-sect">
+    <h4>筛选策略</h4>
+    <div class="cfg-row">
+      <span class="lbl">只关注日文</span>
+      <label class="cfg-switch"><input type="checkbox" id="f-only-jp" {{ 'checked' if (thresholds.follow_only_japanese != false and thresholds.follow_only_japanese != 'false' and thresholds.follow_only_japanese != 0) else '' }}><span class="cfg-slider"></span></label>
+      <span class="sub">过滤非日文简介粉丝</span>
+    </div>
+    <!-- 已弱化：日限已统一为 Day1–6 随机区间，防封模式开关不再影响每日关注量（如需恢复取消注释） -->
+    <!-- <div class="cfg-row">
+      <span class="lbl">防封模式</span>
+      <label class="cfg-switch"><input type="checkbox" id="f-antiban" {{ 'checked' if (thresholds.follow_antiban_enabled == true or thresholds.follow_antiban_enabled == 'true' or thresholds.follow_antiban_enabled == 1) else '' }}><span class="cfg-slider"></span></label>
+      <span class="sub">保留开关；日限已统一为 Day1–6 随机区间</span>
+    </div> -->
+  </div>
+  <button class="btn-save" onclick="saveFollow()">保存关注设置</button><span id="follow-msg" class="save-msg"></span>
+</div>
+
+<!-- ============ 养号 ============ -->
+<div id="panel-nurture" class="cfg-panel">
+  <div class="cfg-header">
+    <div><div class="sw-label">养号模块</div><div class="sw-desc">点赞 / 评论 / 转发 / 看趋势 / 进主页</div></div>
+    <label class="cfg-switch"><input type="checkbox" id="sw-nurture" {{ 'checked' if modules.nurture else '' }}><span class="cfg-slider"></span></label>
+  </div>
+  <div class="cfg-sect">
+    <h4>养号参数</h4>
+    <div class="cfg-row"><span class="lbl">每日点赞</span><input type="number" id="nu-dlikes" value="{{ thresholds.nurture_daily_likes or '30' }}"><span class="unit">次</span><span class="sub">每天点赞上限</span></div>
+    <div class="cfg-row"><span class="lbl">每日评论</span><input type="number" id="nu-dcomms" value="{{ thresholds.nurture_daily_comments or '10' }}"><span class="unit">条</span></div>
+    <!-- 已停用：养号转帖由转帖引擎(E)接管，前端 buildNurtureRemote 硬编码 reposts=0，此输入框不生效（如需恢复取消注释） -->
+    <!-- <div class="cfg-row"><span class="lbl">每日转帖</span><input type="number" id="nu-dreposts-min" value="{{ thresholds.nurture_daily_reposts_min or '1' }}" min="0" max="50"> ~ <input type="number" id="nu-dreposts-max" value="{{ thresholds.nurture_daily_reposts_max or '2' }}" min="0" max="50"><span class="unit">次</span><span class="sub">每天随机区间（含端点；均 0=不转）</span></div> -->
+    <div class="cfg-row"><span class="lbl">每日进主页</span><input type="number" id="nu-denters" value="{{ thresholds.nurture_daily_enters or '10' }}" min="0" max="100"><span class="unit">次</span><span class="sub">与插件 enters 对齐</span></div>
+    <div class="cfg-row"><span class="lbl">每日看趋势</span><input type="number" id="nu-dtrends-min" value="{{ thresholds.nurture_daily_trends_min or '5' }}" min="0"> ~ <input type="number" id="nu-dtrends-max" value="{{ thresholds.nurture_daily_trends_max or '10' }}" min="0"><span class="unit">次</span></div>
+    <div class="cfg-row"><span class="lbl">每日看主页</span><input type="number" id="nu-dprofiles-min" value="{{ thresholds.nurture_daily_profiles_min or '2' }}" min="0"> ~ <input type="number" id="nu-dprofiles-max" value="{{ thresholds.nurture_daily_profiles_max or '5' }}" min="0"><span class="unit">次</span><span class="sub">profile 浏览</span></div>
+    <div class="cfg-row"><span class="lbl">每小时点赞</span><input type="number" id="nu-hlikes" value="{{ thresholds.nurture_hourly_likes or '5' }}"><span class="unit">次</span></div>
+    <div class="cfg-row"><span class="lbl">每小时评论</span><input type="number" id="nu-hcomms" value="{{ thresholds.nurture_hourly_comments or '2' }}"><span class="unit">条</span></div>
+    <!-- <div class="cfg-row"><span class="lbl">每小时转帖</span><input type="number" id="nu-hreposts" value="{{ thresholds.nurture_hourly_reposts or '1' }}" min="0" max="20"><span class="unit">次</span></div> -->
+    <div class="cfg-row"><span class="lbl">每小时进主页</span><input type="number" id="nu-henters" value="{{ thresholds.nurture_hourly_enters or '2' }}" min="0" max="50"><span class="unit">次</span></div>
+    <div class="cfg-row"><span class="lbl">每小时看趋势</span><input type="number" id="nu-htrends-min" value="{{ thresholds.nurture_hourly_trends_min or '1' }}" min="0"> ~ <input type="number" id="nu-htrends-max" value="{{ thresholds.nurture_hourly_trends_max or '2' }}" min="0"><span class="unit">次</span></div>
+    <div class="cfg-row"><span class="lbl">每小时看主页</span><input type="number" id="nu-hprofiles-min" value="{{ thresholds.nurture_hourly_profiles_min or '0' }}" min="0"> ~ <input type="number" id="nu-hprofiles-max" value="{{ thresholds.nurture_hourly_profiles_max or '1' }}" min="0"><span class="unit">次</span></div>
+    <div class="cfg-row"><span class="lbl">动作间隔</span><input type="number" id="nu-gap-min" value="{{ thresholds.nurture_action_gap_min_sec or '10' }}"> ~ <input type="number" id="nu-gap-max" value="{{ thresholds.nurture_action_gap_max_sec or '20' }}"><span class="unit">秒</span></div>
+    <div class="cfg-row"><span class="lbl">点赞冷却</span><input type="number" id="nu-cool" value="{{ thresholds.nurture_like_cooldown_min or '3' }}"><span class="unit">分钟</span><span class="sub">两次点赞间隔</span></div>
+  </div>
+  <div class="cfg-sect">
+    <h4>评论模板</h4>
+    <p style="font-size:11px;color:#8b949e;margin-bottom:8px;">10 类 104 条日文评论模板，可在后台增删改，保存后插件 5 分钟内同步。</p>
+    <div id="cmts-container">点击"加载评论"</div>
+    <button class="btn-add" onclick="loadComments()" style="margin-top:8px">加载评论</button>
+    <button class="btn-save" onclick="saveComments()" style="margin-left:8px">保存评论</button><span id="cmts-msg" class="save-msg"></span>
+  </div>
+  <button class="btn-save" onclick="saveNurture()">保存养号设置</button><span id="nurture-msg" class="save-msg"></span>
+</div>
+
+<!-- ============ 私信 ============ -->
+<div id="panel-chat" class="cfg-panel">
+  <div class="cfg-header">
+    <div><div class="sw-label">私信模块</div><div class="sw-desc">每粉 3 条话术：破冰 → 广告 → 盾牌（非每日次数）</div></div>
+    <label class="cfg-switch"><input type="checkbox" id="sw-chat" {{ 'checked' if modules.chat else '' }}><span class="cfg-slider"></span></label>
+  </div>
+  <div class="cfg-sect">
+    <h4>私信参数</h4>
+    <p style="font-size:12px;color:#8b949e;margin:0 0 10px;line-height:1.55;">
+      <b style="color:#c9d1d9">已取消「每日会话次数」上限</b>——不再用「每天几轮」限制开私信。<br>
+      真正控节奏的是下方<strong>会话冷却</strong>（两段私信之间隔多久）。<br>
+      每个粉固定发 <b style="color:#c9d1d9">破冰 → 广告 → 盾牌</b> 共 3 条话术（漏斗轮次，与「每天开几次私信」无关）。
+    </p>
+    <div class="cfg-row"><span class="lbl">会话冷却</span><input type="number" id="ch-cd-min" value="{{ thresholds.chat_cooldown_min_min or '25' }}" min="3" max="180"> ~ <input type="number" id="ch-cd-max" value="{{ thresholds.chat_cooldown_max_min or '35' }}" min="3" max="180"><span class="unit">分钟</span><span class="sub">无债 outbound 段间隔（随机）</span></div>
+    <div class="cfg-row"><span class="lbl">有债冷却</span><input type="number" id="ch-debt-min" value="{{ thresholds.chat_debt_cooldown_min_min or '8' }}" min="3" max="60"> ~ <input type="number" id="ch-debt-max" value="{{ thresholds.chat_debt_cooldown_max_min or '12' }}" min="3" max="60"><span class="unit">分钟</span><span class="sub">inbox 清债段间隔</span></div>
+    <div class="cfg-row"><span class="lbl">AD最短等待</span><input type="number" id="ch-ad-wait" value="{{ thresholds.chat_ad_min_wait_min or '20' }}" min="5" max="120"><span class="unit">分钟</span><span class="sub">破冰后无新回复时最短等待</span></div>
+    <!-- 已停用：守箱(收件箱扫箱)在 4.1.21/4.6.0 已终止，单次守箱时长不再生效（如需恢复取消注释） -->
+    <!-- <div class="cfg-row"><span class="lbl">单次守箱时长</span><input type="number" id="ch-vc-sec" value="{{ thresholds.chat_inbox_visit_cap_sec or '150' }}" min="30" max="600" step="10"><span class="unit">秒</span><span class="sub">每次进收件箱扫新消息的时长上限，到点交回调度短冷却后回查</span></div> -->
+    <!-- <div class="cfg-row"><span class="lbl">催加间隔</span><input type="number" id="ch-kick-hours" value="{{ thresholds.chat_kick_min_hours or '0' }}" min="0" max="168"><span class="unit">小时</span><span class="sub">已废：插件按轮次下一窗发盾牌/催加（填 0）；保留字段仅兼容旧配置</span></div> -->
+    <div class="cfg-row">
+      <span class="lbl">干跑预览</span>
+      <label><input type="checkbox" id="ch-dry-run" {{ 'checked' if thresholds.chat_dry_run_enabled == true or thresholds.chat_dry_run_enabled == 'true' else '' }}> 开启</label>
+      <span class="sub">全局默认干跑：不发信，只预览话术到 OPS/console（面板可临时覆盖）</span>
+    </div>
+    <p style="font-size:11px;color:#6e7681;margin:8px 0 0;">已废弃（仅历史库可能仍有值，插件不再读取）：<code>chat_cooldown_hours</code>、<code>chat_rounds_per_day</code></p>
+    <p style="font-size:12px;color:#8b949e;margin:8px 0 0;">插件硬规则：私信时段内 <b>17:00</b> 定格名单、<b>18:00</b> 硬停。调度页开启「全天实测」或时段配成 0–24 后，插件会跳过定格/硬停（测完请改回）。</p>
+  </div>
+  <button class="btn-save" onclick="saveChat()">保存私信设置</button><span id="chat-msg" class="save-msg"></span>
+</div>
+
+<!-- ============ 转帖 ============ -->
+<div id="panel-repost" class="cfg-panel">
+  <div class="cfg-header">
+    <div><div class="sw-label">转帖模块 <span style="color:#3fb950;font-size:12px;font-weight:500">默认开 · 仅 S0 · 固定开跑</span></div><div class="sw-desc">到固定开跑时刻后自动跑；达每日条数或超时收工；白天不进主线。无来源号则跳过。立刻验通请用插件面板「只转帖」。</div></div>
+    <label class="cfg-switch"><input type="checkbox" id="sw-repost" {{ 'checked' if modules.repost else '' }}><span class="cfg-slider"></span></label>
+  </div>
+  <div class="cfg-sect">
+    <h4>来源号</h4>
+    <p style="font-size:12px;color:#8b949e;margin:0 0 8px;line-height:1.5;">全局默认（可选），从<a href="/sources" target="_blank" style="color:#58a6ff">来源号池</a>勾选。日常请在 <a href="/accounts" style="color:#58a6ff">账号列表</a> 每行「转帖来源」按号绑定（最省事）。已封禁（红标）勾选也不会下发。</p>
+    {% if source_pool and source_pool.length %}
+    <div id="rp-src-box" style="display:flex;flex-wrap:wrap;gap:6px 14px;max-width:520px;max-height:180px;overflow-y:auto;border:1px solid #30363d;border-radius:4px;padding:8px;background:#0d1117">
+      {% for s in source_pool %}
+      <label style="display:flex;align-items:center;gap:4px;font-size:13px;cursor:pointer;{{ 'opacity:.55' if s.status == 'banned' else '' }}" title="{{ s.note or '' }}">
+        <input type="checkbox" class="rp-src-g" value="{{ s.handle }}" {{ 'checked' if s.handle in repost_selected else '' }}>
+        <span style="font-family:ui-monospace,monospace">@{{ s.handle }}</span>
+        {% if s.status == 'banned' %}<span style="color:#f85149;font-size:11px">封</span>{% endif %}
+      </label>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div style="font-size:12px;color:#e3b341">来源号池为空，请先到<a href="/sources" target="_blank" style="color:#58a6ff">来源号池</a>登记。</div>
+    {% endif %}
+  </div>
+  <div class="cfg-sect">
+    <h4>参数</h4>
+    <div class="cfg-row"><span class="lbl">Day1–4</span><input type="number" id="rp-quota-early" value="{{ thresholds.repost_day14_quota or '2' }}" min="0" max="50"><span class="unit">条/天</span><span class="sub">新号前 4 天每日转帖条数</span></div>
+    <div class="cfg-row"><span class="lbl">Day5+</span><input type="number" id="rp-quota-late" value="{{ thresholds.repost_day5_quota or '1' }}" min="0" max="50"><span class="unit">条/天</span><span class="sub">第 5 天起每日转帖条数（已发 ID 不重复）</span></div>
+    <div class="cfg-row"><span class="lbl">日上限</span><input type="number" id="rp-daily" value="{{ thresholds.repost_daily_cap or '50' }}" min="1" max="100"><span class="unit">条/天</span><span class="sub">安全帽；与每日条数取更严</span></div>
+    <div class="cfg-row"><span class="lbl">超时</span><input type="number" id="rp-maxmin" value="{{ thresholds.repost_max_minutes or '60' }}" min="10" max="180"><span class="unit">分钟</span><span class="sub">自动场硬超时</span></div>
+    <div class="cfg-row">
+      <span class="lbl">开跑时刻</span>
+      <label style="font-size:12px;color:#c9d1d9;display:flex;align-items:center;gap:6px;">
+        <input type="checkbox" id="rp-follow-end" {{ 'checked' if (thresholds.repost_follow_work_end == true or thresholds.repost_follow_work_end == 'true' or thresholds.repost_follow_work_end == '1') else '' }}>
+        跟随工作结束
+      </label>
+    </div>
+    <div class="cfg-row"><span class="lbl">自定义开跑</span><input type="number" id="rp-sh" value="{{ thresholds.repost_start_hour or '20' }}" min="0" max="23"> : <input type="number" id="rp-sm" value="{{ thresholds.repost_start_min or '0' }}" min="0" max="59"><span class="unit">上海时间</span><span class="sub">取消「跟随」时生效。兼职默认 20:00（下班后）</span></div>
+    <div class="cfg-row"><span class="lbl">开跑错峰</span><input type="number" id="rp-jitter" value="{{ thresholds.repost_start_jitter_max_min or '0' }}" min="0" max="360"><span class="unit">分钟</span><span class="sub">插件本地抖动；错峰改由后台「分配错峰」按号写开跑点，建议保持 0</span></div>
+    <div class="cfg-row"><span class="lbl">错峰窗口</span><input type="number" id="rp-stagger-win" value="{{ thresholds.repost_stagger_window_min or '240' }}" min="0" max="360"><span class="unit">分钟</span><span class="sub">后台按号哈希摊到开跑点后 0～N 分；默认 240（20:00–00:00）</span></div>
+    <div class="cfg-row">
+      <span class="lbl">后台错峰</span>
+      <button type="button" class="btn-save" id="rp-stagger-btn" style="background:#1f6feb">一键分配全号错峰</button>
+      <span class="sub" id="rp-stagger-msg">按账号覆盖写固定开跑时刻，插件约 1 分钟同步；不改插件</span>
+    </div>
+    <div class="cfg-row"><span class="lbl">每号条数</span><span class="unit" style="color:#c9d1d9">固定 1 条</span><span class="sub">每个来源号每次取 1 条；总成功数以每日条数为准</span></div>
+    <div class="cfg-row"><span class="lbl">冷却</span><input type="number" id="rp-cd-min" value="{{ thresholds.repost_cooldown_min or '40' }}" min="5" max="180"> ~ <input type="number" id="rp-cd-max" value="{{ thresholds.repost_cooldown_max or '90' }}" min="5" max="180"><span class="unit">分钟</span></div>
+    <div class="cfg-row">
+      <span class="lbl">内容类型</span>
+      <select id="rp-type" style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:5px 8px;border-radius:4px;font-size:13px;">
+        {% set rpt = thresholds.repost_post_type or 'text_or_image' %}
+        <option value="text_or_image" {{ 'selected' if rpt == 'text_or_image' else '' }}>纯文或带图（禁视频）</option>
+        <option value="text" {{ 'selected' if rpt == 'text' else '' }}>仅纯文</option>
+        <option value="image" {{ 'selected' if rpt == 'image' else '' }}>仅带图</option>
+      </select>
+    </div>
+    <div class="cfg-row"><span class="lbl">文末追加</span><input type="text" class="wide" id="rp-append" value="{{ thresholds.repost_append_link or '' }}" placeholder="可选链接/文案"><span class="sub">发帖正文末尾追加（勿自动加@来源）</span></div>
+  </div>
+  <button class="btn-save" onclick="saveRepost()">保存转帖设置</button><span id="repost-msg" class="save-msg"></span>
+</div>
+
+<!-- ============ 调度 ============ -->
+<div id="panel-scheduler" class="cfg-panel">
+  <div class="cfg-header">
+    <div><div class="sw-label">调度核心</div><div class="sw-desc">阶段判定 | 时间片轮转 | 模块协调（常开）</div></div>
+    <!-- 已停用：调度核心为常开模块，无关闭场景（如需恢复取消注释） -->
+    <!-- <label class="cfg-switch"><input type="checkbox" id="sw-scheduler" checked><span class="cfg-slider"></span></label> -->
+  </div>
+
+  <div class="cfg-sect">
+    <h4>工作时间</h4>
+    <div class="cfg-row">
+      <span class="lbl">全天实测</span>
+      <label class="cfg-switch"><input type="checkbox" id="s-test24h"><span class="cfg-slider"></span></label>
+      <span class="sub">开启后工作+私信都变 0:00–24:00，并下发 test24h（不定格/不 18:00 硬停）。测完务必关闭</span>
+    </div>
+    <div class="cfg-row">
+      <span class="lbl">工作时段</span>
+      <input type="number" id="s-wh" value="10" min="0" max="23"> :
+      <input type="number" id="s-wm" value="0" min="0" max="59"> ~
+      <input type="number" id="s-weh" value="19" min="0" max="23"> :
+      <input type="number" id="s-wem" value="0" min="0" max="59">
+      <span class="unit">北京时间</span>
+      <span class="sub">兼职默认 <b>10:00–19:00</b>（管关注/养号工作窗）；转帖另按固定开跑+错峰。勿填 24（全天）</span>
+    </div>
+    <input type="hidden" id="s-work24h" value="0">
+    <div class="cfg-row"><span class="lbl">早间只养号至</span><input type="number" id="s-mnh" value="10" min="0" max="23"> : <input type="number" id="s-mnm" value="0" min="0" max="59"><span class="unit">北京时间</span><span class="sub">工作开始～此时点只养号；与上班点相同=一上班就可关注；全天实测时用 0:00</span></div>
+    <div class="cfg-row"><span class="lbl">私信时段</span><input type="number" id="s-ch" value="8" min="0" max="23"> : <input type="number" id="s-cm" value="0" min="0" max="59"> ~ <input type="number" id="s-ceh" value="18" min="0" max="23"> : <input type="number" id="s-cem" value="0" min="0" max="59"><span class="unit">北京时间</span><span class="sub">默认 08:00–18:00；过点不开私信/不加债</span></div>
+  </div>
+
+  <div class="cfg-sect">
+    <h4>阶段策略</h4>
+    <p style="font-size:12px;color:#8b949e;margin:0 0 10px;">同一「私信起始 Day」：时段内走 S3 全开，时段外走 S2 关注+养号。S4 私信独占已停用。</p>
+    <div class="cfg-stages" id="stages-container">
+      <div class="cfg-stage">
+        <div class="stg-name">S0 静默 <span>非工作时段 · 主线全停；转帖可按固定开跑时刻启动</span></div>
+      </div>
+      <div class="cfg-stage">
+        <div class="stg-name">S1 关注+养号 <span>新号期 Day1 少量 / Day2 正常 · 额度见关注阈值</span></div>
+        <div class="stg-row">
+          <span style="color:#8b949e">Day ≤</span> <input type="number" id="s1-daymax" value="2" min="1" max="30">
+          <span style="color:#8b949e">模块:</span>
+          <label><input type="checkbox" id="s1-nu" checked> 养号</label>
+          <label><input type="checkbox" id="s1-fw" checked> 关注</label>
+        </div>
+      </div>
+      <div class="cfg-stage">
+        <div class="stg-name">S2 关注+养号 <span>Day ≥ N · 非私信时段（含早间工作到私信开始前）</span></div>
+        <div class="stg-row">
+          <span style="color:#8b949e">与 S3 共用起始天</span>
+          <span style="color:#8b949e">模块:</span>
+          <label><input type="checkbox" id="s2-nu" checked> 养号</label>
+          <label><input type="checkbox" id="s2-fw" checked> 关注</label>
+        </div>
+      </div>
+      <div class="cfg-stage">
+        <div class="stg-name">S3 全开 <span>Day ≥ N · 私信时段内</span></div>
+        <div class="stg-row">
+          <span style="color:#8b949e">私信起始 Day ≥</span> <input type="number" id="s3-daymin" value="3" min="1" max="30">
+          <span style="color:#8b949e">模块:</span>
+          <label><input type="checkbox" id="s3-nu" checked> 养号</label>
+          <label><input type="checkbox" id="s3-fw" checked> 关注</label>
+          <label><input type="checkbox" id="s3-ch" checked> 私信</label>
+        </div>
+      </div>
+      <div class="cfg-stage" style="opacity:0.55">
+        <div class="stg-name">S4 私信独占 <span>已停用 · 私信时长由调度 30min 上限约束</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="cfg-sect">
+    <h4>调度参数</h4>
+    <div class="cfg-row"><span class="lbl">调度间隔</span><input type="number" id="s-tick" value="{{ thresholds.stage_tick_interval_ms or '10000' }}"><span class="unit">ms</span><span class="sub">插件默认 10000</span></div>
+    <div class="cfg-row"><span class="lbl">跳页最小间隔</span><input type="number" id="s-navmin" value="{{ thresholds.nav_min_interval_ms or '10000' }}"><span class="unit">ms</span><span class="sub">自动模式整页跳节流；慢网多号建议 10000–15000</span></div>
+    <div class="cfg-row">
+      <span class="lbl">媒体加载</span>
+      <select id="s-media-mode" style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:5px 8px;border-radius:4px;font-size:13px">
+        <option value="on" {{ 'selected' if (thresholds.media_load_mode == 'on' or thresholds.media_load_mode == 'auto') else '' }}>on（允许加载全部媒体）</option>
+        <option value="off" {{ 'selected' if (not thresholds.media_load_mode or thresholds.media_load_mode == 'off') else '' }}>off（禁重媒体省资源，推荐）</option>
+      </select>
+      <span class="sub">默认不拦 abs 静态（护 DM）；克隆/转帖仍可开闸拉大图；约 1 分钟同步后硬刷 x.com</span>
+    </div>
+    <div class="cfg-row">
+      <span class="lbl">话术池</span>
+      <select id="s-script-pool" style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:5px 8px;border-radius:4px;font-size:13px">
+        <option value="dating" {{ 'selected' if (not thresholds.chat_script_pool or thresholds.chat_script_pool == 'dating') else '' }}>dating（交友）</option>
+        <option value="job" {{ 'selected' if thresholds.chat_script_pool == 'job' else '' }}>job（兼职粉）</option>
+      </select>
+      <span class="sub">全局切换；job 时私信不早于北京 10:00；约 1 分钟同步到插件</span>
+    </div>
+    <div class="cfg-row"><span class="lbl">看门狗</span><input type="number" id="s-wdog" value="{{ thresholds.stage_watchdog_ms or '30000' }}"><span class="unit">ms</span><span class="sub">插件默认 30000</span></div>
+    <div class="cfg-row"><span class="lbl">卡死冷却</span><input type="number" id="s-stall" value="{{ thresholds.stage_stall_cooldown_sec or '180' }}"><span class="unit">秒</span><span class="sub">连续跳页冷却，插件默认 180</span></div>
+  </div>
+  <div class="cfg-sect">
+    <h4>运行观测 / 告警</h4>
+    <div class="cfg-row">
+      <span class="lbl">上传最低级别</span>
+      <select id="tel-min-level" style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:5px 8px;border-radius:4px;font-size:13px">
+        <option value="debug" {{ 'selected' if thresholds.telemetry_upload_min_level == 'debug' else '' }}>debug（全量）</option>
+        <option value="info" {{ 'selected' if (not thresholds.telemetry_upload_min_level or thresholds.telemetry_upload_min_level == 'info') else '' }}>info（默认）</option>
+        <option value="warn" {{ 'selected' if thresholds.telemetry_upload_min_level == 'warn' else '' }}>warn（仅警告+）</option>
+        <option value="error" {{ 'selected' if thresholds.telemetry_upload_min_level == 'error' else '' }}>error（仅错误）</option>
+      </select>
+      <span class="sub">插件约 1 分钟同步；低于此级别的本地事件不上报 OPS</span>
+    </div>
+    <div class="cfg-row">
+      <span class="lbl">微信告警总开关</span>
+      <label><input type="checkbox" id="tel-push" {{ 'checked' if (not thresholds.push_alerts_enabled or thresholds.push_alerts_enabled == 'true' or thresholds.push_alerts_enabled == '1') else '' }}> 开启</label>
+      <span class="sub">SCRM 挡私信、连续发送失败、守箱 DOM miss 等</span>
+    </div>
+    <div class="cfg-row">
+      <span class="lbl">推送通道</span>
+      <select id="push-provider" style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:5px 8px;border-radius:4px;font-size:13px">
+        <option value="pushplus" {{ 'selected' if (not thresholds.push_provider or thresholds.push_provider == 'pushplus') else '' }}>PushPlus</option>
+        <option value="wxpusher" {{ 'selected' if thresholds.push_provider == 'wxpusher' else '' }}>WxPusher</option>
+      </select>
+      <span class="sub">选哪个通道就填哪组配置，另一组留空即可</span>
+    </div>
+    <div class="cfg-row">
+      <span class="lbl">PushPlus Token</span>
+      <input type="text" id="pushplus-token" class="wide" style="width:280px;text-align:left;font-family:ui-monospace,monospace" placeholder="pushplus 的 token"
+        value="{{ thresholds.pushplus_token or '' }}">
+      <span class="sub">pushplus.plus 后台获取</span>
+    </div>
+    <div class="cfg-row">
+      <span class="lbl">WxPusher AppToken</span>
+      <input type="text" id="wxpusher-apptoken" class="wide" style="width:280px;text-align:left;font-family:ui-monospace,monospace" placeholder="WxPusher 的 appToken（AT_开头）"
+        value="{{ thresholds.wxpusher_app_token or '' }}">
+      <span class="sub">wxpusher.zjiecode.com 后台创建应用获取</span>
+    </div>
+    <div class="cfg-row">
+      <span class="lbl">WxPusher UID</span>
+      <input type="text" id="wxpusher-uids" class="wide" style="width:280px;text-align:left;font-family:ui-monospace,monospace" placeholder="UID_开头，多个用逗号分隔"
+        value="{{ thresholds.wxpusher_uids or '' }}">
+      <span class="sub">扫码关注 WxPusher 后获取你的 UID</span>
+    </div>
+    <div class="cfg-row">
+      <span class="lbl">告警去重</span>
+      <input type="number" id="tel-dedupe-h" value="{{ thresholds.telemetry_push_dedupe_hours or '2' }}"><span class="unit">小时</span>
+      <span class="sub">同账号同事件在此时间内不重复推送</span>
+    </div>
+    <div class="cfg-row" style="align-items:flex-start">
+      <span class="lbl">禁用事件</span>
+      <input type="text" id="tel-disabled" class="wide" style="width:280px;text-align:left" placeholder="逗号分隔 event_id，如 chat.dom_miss"
+        value="{{ thresholds.telemetry_disabled_events or '' }}">
+      <span class="sub">留空=全部允许；<a href="/runtime-logs" style="color:#58a6ff">运行日志</a> 可查看 event_id</span>
+    </div>
+  </div>
+  <button class="btn-save" onclick="saveScheduler()">保存调度设置</button><span id="sched-msg" class="save-msg"></span>
+</div>
+
+</section>
+</main>
+
+<script>
+var remoteComments = null;
+
+function showTab(name) {
+  document.querySelectorAll('.cfg-tab').forEach(function(t){t.classList.remove('active')});
+  document.querySelectorAll('.cfg-panel').forEach(function(p){p.classList.remove('active')});
+  var idx = {follow:0, nurture:1, chat:2, repost:3, scheduler:4};
+  document.querySelectorAll('.cfg-tab')[idx[name]].classList.add('active');
+  document.getElementById('panel-'+name).classList.add('active');
+}
+
+function flash(id,text){var e=document.getElementById(id);e.textContent=text;setTimeout(function(){e.textContent=''},2500)}
+
+// ========== 关注 ==========
+function saveFollow(){
+  fetch('/api/config/thresholds',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+    follow_daily_limit:val('f-daily'),
+    follow_day1_min:val('f-d1min'),follow_day1_max:val('f-d1max'),
+    follow_day2_min:val('f-d2min'),follow_day2_max:val('f-d2max'),
+    follow_day3_min:val('f-d3min'),follow_day3_max:val('f-d3max'),
+    follow_day4_min:val('f-d4min'),follow_day4_max:val('f-d4max'),
+    follow_day5_min:val('f-d5min'),follow_day5_max:val('f-d5max'),
+    follow_day6_min:val('f-d6min'),follow_day6_max:val('f-d6max'),
+    follow_interval_min_sec:val('f-intv-min'),follow_interval_max_sec:val('f-intv-max'),
+    follow_retry_delay_sec:val('f-retry'),
+    pool_server: (document.getElementById('f-pool-server') || {}).value || '',
+    risk_cooldown_gradient:document.getElementById('f-cooldown').value,
+    follow_only_japanese: document.getElementById('f-only-jp').checked ? 'true' : 'false'
+  })}).then(function(r){return r.json()}).then(function(d){flash('follow-msg',d.ok?'已保存（今日关注计数不重置，按北京日期跨日归零）':d.msg)});
+  saveSwitch('follow',document.getElementById('sw-follow').checked);
+}
+
+// ========== 养号 ==========
+function saveNurture(){
+  fetch('/api/config/thresholds',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+    nurture_daily_likes:val('nu-dlikes'),nurture_daily_comments:val('nu-dcomms'),
+    nurture_daily_enters:val('nu-denters'),
+    nurture_daily_trends_min:val('nu-dtrends-min'),nurture_daily_trends_max:val('nu-dtrends-max'),
+    nurture_daily_profiles_min:val('nu-dprofiles-min'),nurture_daily_profiles_max:val('nu-dprofiles-max'),
+    nurture_hourly_likes:val('nu-hlikes'),nurture_hourly_comments:val('nu-hcomms'),
+    nurture_hourly_enters:val('nu-henters'),
+    nurture_hourly_trends_min:val('nu-htrends-min'),nurture_hourly_trends_max:val('nu-htrends-max'),
+    nurture_hourly_profiles_min:val('nu-hprofiles-min'),nurture_hourly_profiles_max:val('nu-hprofiles-max'),
+    nurture_action_gap_min_sec:val('nu-gap-min'),nurture_action_gap_max_sec:val('nu-gap-max'),
+    nurture_like_cooldown_min:val('nu-cool')
+  })}).then(function(r){return r.json()}).then(function(d){flash('nurture-msg',d.ok?'已保存':d.msg)});
+  saveSwitch('nurture',document.getElementById('sw-nurture').checked);
+}
+
+// ========== 私信 ==========
+function saveChat(){
+  fetch('/api/config/thresholds',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+    chat_cooldown_min_min:val('ch-cd-min')||25,
+    chat_cooldown_max_min:val('ch-cd-max')||35,
+    chat_debt_cooldown_min_min:val('ch-debt-min')||8,
+    chat_debt_cooldown_max_min:val('ch-debt-max')||12,
+    chat_ad_min_wait_min:val('ch-ad-wait')||20,
+    chat_dry_run_enabled: document.getElementById('ch-dry-run') && document.getElementById('ch-dry-run').checked ? 'true' : 'false'
+  })}).then(function(r){return r.json()}).then(function(d){flash('chat-msg',d.ok?'已保存':d.msg)});
+  saveSwitch('chat',document.getElementById('sw-chat').checked);
+}
+
+// ========== 转帖 ==========
+function saveRepost(){
+  // H9：从来源号池勾选收集
+  var lines = Array.prototype.map.call(
+    document.querySelectorAll('.rp-src-g:checked'),
+    function(el){return String(el.value||'').replace(/^@/,'').trim()}
+  ).filter(Boolean);
+  var typeEl = document.getElementById('rp-type');
+  var appendEl = document.getElementById('rp-append');
+  fetch('/api/config/thresholds',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+    repost_targets: JSON.stringify(lines),
+    repost_day14_quota: String(val('rp-quota-early')||2),
+    repost_day5_quota: String(val('rp-quota-late')||1),
+    repost_daily_cap: String(val('rp-daily')||50),
+    repost_max_minutes: String(val('rp-maxmin')||60),
+    repost_follow_work_end: document.getElementById('rp-follow-end') && document.getElementById('rp-follow-end').checked ? 'true' : 'false',
+    repost_start_hour: String(val('rp-sh')||20),
+    repost_start_min: String(val('rp-sm')||0),
+    repost_start_jitter_max_min: String(val('rp-jitter')||0),
+    repost_stagger_window_min: String(val('rp-stagger-win')||240),
+    repost_posts_per_handle: '1',
+    repost_cooldown_min: String(val('rp-cd-min')||40),
+    repost_cooldown_max: String(val('rp-cd-max')||90),
+    repost_post_type: typeEl ? typeEl.value : 'text_or_image',
+    repost_append_link: appendEl ? (appendEl.value || '') : ''
+  })}).then(function(r){return r.json()}).then(function(d){flash('repost-msg',d.ok?'已保存':d.msg)});
+  saveSwitch('repost',document.getElementById('sw-repost').checked);
+}
+
+// ========== 调度 ==========
+function saveScheduler(){
+  // 阈值
+  fetch('/api/config/thresholds',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+    stage_tick_interval_ms:val('s-tick'),stage_watchdog_ms:val('s-wdog'),stage_stall_cooldown_sec:val('s-stall'),
+    nav_min_interval_ms:val('s-navmin') || 10000,
+    media_load_mode: (document.getElementById('s-media-mode')||{}).value || 'off',
+    chat_script_pool: (document.getElementById('s-script-pool')||{}).value || 'dating',
+    telemetry_upload_min_level: (document.getElementById('tel-min-level')||{}).value || 'info',
+    push_alerts_enabled: document.getElementById('tel-push') && document.getElementById('tel-push').checked ? '1' : '0',
+    push_provider: (document.getElementById('push-provider')||{}).value || 'pushplus',
+    pushplus_token: (document.getElementById('pushplus-token')||{}).value || '',
+    wxpusher_app_token: (document.getElementById('wxpusher-apptoken')||{}).value || '',
+    wxpusher_uids: (document.getElementById('wxpusher-uids')||{}).value || '',
+    telemetry_push_enabled: document.getElementById('tel-push') && document.getElementById('tel-push').checked ? 'true' : 'false',
+    telemetry_push_dedupe_hours: val('tel-dedupe-h') || 2,
+    telemetry_disabled_events: (document.getElementById('tel-disabled')||{}).value || ''
+  })});
+  // 阶段策略 → 表单序列化为 JSON
+  var dayChat = val('s3-daymin') || 3;
+  var test24 = !!(document.getElementById('s-test24h') && document.getElementById('s-test24h').checked);
+  var policy = {
+    test24h: test24,
+    workHours:{start:[val('s-wh'),val('s-wm')],end:[val('s-weh'),val('s-wem')]},
+    chatHours:{start:[val('s-ch'),val('s-cm')],end:[val('s-ceh'),val('s-cem')]},
+    morningNurtureUntil:[val('s-mnh'),val('s-mnm')],
+    stages:{
+      S0:{priority:[]},
+      S1:{dayMax:val('s1-daymax'),priority:chkModsIds(['s1-fw','s1-nu'],['follow','nurture'])},
+      S2:{dayMin:dayChat,priority:chkModsIds(['s2-fw','s2-nu'],['follow','nurture'])},
+      S3:{dayMin:dayChat,priority:chkModsIds(['s3-ch','s3-fw','s3-nu'],['chat','follow','nurture'])},
+      S4:{maxOccupyMin:30,priority:['chat'],disabled:true}
+    },
+    cooldown:{stallCooldownSec:val('s-stall'),tickIntervalMs:val('s-tick'),watchdogMs:val('s-wdog')}
+  };
+  if (test24) {
+    policy.workHours = { start: [0, 0], end: [24, 0] };
+    policy.chatHours = { start: [0, 0], end: [24, 0] };
+    policy.morningNurtureUntil = [0, 0];
+  } else {
+    // 生产默认钳制：结束不得 ≥24（否则永不进 S0）；允许跨夜（如 06:00–02:00）
+    if (policy.workHours.end[0] >= 24) {
+      policy.workHours.end = [2, 0];
+    }
+    if (policy.chatHours.end[0] >= 24) {
+      policy.chatHours.end = [18, 0];
+    }
+    var ws = policy.workHours.start[0] * 60 + policy.workHours.start[1];
+    var we = policy.workHours.end[0] * 60 + policy.workHours.end[1];
+    // 仅零宽窗回默认；we < ws = 跨夜合法（关注拉长）
+    if (we === ws) {
+      policy.workHours = { start: [10, 0], end: [19, 0] };
+    }
+    var cs = policy.chatHours.start[0] * 60 + policy.chatHours.start[1];
+    var ce = policy.chatHours.end[0] * 60 + policy.chatHours.end[1];
+    if (ce === cs) {
+      policy.chatHours = { start: [8, 0], end: [18, 0] };
+    }
+  }
+  fetch('/api/config/stage-policy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(policy)})
+    .then(function(r){return r.json()}).then(function(d){flash('sched-msg',d.ok?'已保存 (v'+d.version+')':d.msg)});
+}
+
+// ========== 工具 ==========
+function val(id){var e=document.getElementById(id);return e?parseInt(e.value)||0:0}
+function chkMods(){
+  // 兼容旧调用：nu,fw,ch → follow,chat,nurture（历史顺序）
+  return chkModsOrdered(arguments[1], arguments[2], arguments[0], ['follow','chat','nurture']);
+}
+function chkModsOrdered(a,b,c, names){
+  return chkModsIds([a,b,c], names);
+}
+function chkModsIds(ids, names){
+  var p=[];
+  for(var i=0;i<ids.length;i++){
+    if(!ids[i]) continue;
+    var el=document.getElementById(ids[i]);
+    if(el && el.checked) p.push(names[i]);
+  }
+  return p;
+}
+function saveSwitch(mod,on){
+  var d={};d[mod]=on;
+  fetch('/api/config/modules',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});
+}
+
+// ========== 评论模板 ==========
+function loadComments(){
+  fetch('/api/nurture/comments').then(function(r){return r.json()}).then(function(d){
+    if(!d.ok)return;remoteComments=d.categories;
+    var h='';d.categories.forEach(function(cat,i){
+      h+='<div class="comment-cat"><h5>'+cat.name+' ('+cat.id+')</h5>';
+      cat.templates.forEach(function(t,j){
+        h+='<div class="comment-row"><input value="'+t.replace(/"/g,'&quot;')+'" data-ci="'+i+'" data-ti="'+j+'"><button onclick="delCmt('+i+','+j+')">删</button></div>';
+      });
+      h+='<button class="btn-add" onclick="addCmt('+i+')">+ 添加</button></div>';
+    });
+    document.getElementById('cmts-container').innerHTML=h||'无数据';
+  });
+}
+function delCmt(ci,ti){remoteComments[ci].templates.splice(ti,1);loadCommentsRaw()}
+function addCmt(ci){remoteComments[ci].templates.push('');loadCommentsRaw()}
+function loadCommentsRaw(){
+  var h='';remoteComments.forEach(function(cat,i){
+    h+='<div class="comment-cat"><h5>'+cat.name+' ('+cat.id+')</h5>';
+    cat.templates.forEach(function(t,j){
+      h+='<div class="comment-row"><input value="'+t.replace(/"/g,'&quot;')+'" data-ci="'+i+'" data-ti="'+j+'"><button onclick="delCmt('+i+','+j+')">删</button></div>';
+    });
+    h+='<button class="btn-add" onclick="addCmt('+i+')">+ 添加</button></div>';
+  });
+  document.getElementById('cmts-container').innerHTML=h;
+}
+function saveComments(){
+  document.querySelectorAll('.comment-row input').forEach(function(el){
+    remoteComments[parseInt(el.dataset.ci)].templates[parseInt(el.dataset.ti)]=el.value;
+  });
+  fetch('/api/nurture/comments',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({categories:remoteComments})})
+    .then(function(r){return r.json()}).then(function(d){flash('cmts-msg',d.ok?'已保存':d.msg)});
+}
+
+// 初始化阶段表单（从后端读到的 JSON 反填）
+(function initStageForm(){
+  try {
+    var sp = {{ stagePolicyJSON | safe }} || {};
+    if(!sp.stages)return;
+    if(sp.test24h===true||sp.test24h===1||sp.test24h==='true'){var t24=document.getElementById('s-test24h');if(t24)t24.checked=true;}
+    if(sp.workHours){
+      var weh=parseInt(sp.workHours.end[0],10); if(!isFinite(weh)||weh>=24) weh=23;
+      var wem=parseInt(sp.workHours.end[1],10)||0;
+      var wsh=parseInt(sp.workHours.start[0],10); if(!isFinite(wsh)) wsh=7;
+      var wsm=parseInt(sp.workHours.start[1],10)||0;
+      document.getElementById('s-wh').value=wsh;
+      document.getElementById('s-wm').value=wsm;
+      document.getElementById('s-weh').value=weh;
+      document.getElementById('s-wem').value=wem;
+    }
+    if(sp.morningNurtureUntil){document.getElementById('s-mnh').value=sp.morningNurtureUntil[0];document.getElementById('s-mnm').value=sp.morningNurtureUntil[1];}
+    if(sp.chatHours){document.getElementById('s-ch').value=sp.chatHours.start[0];document.getElementById('s-cm').value=sp.chatHours.start[1];document.getElementById('s-ceh').value=sp.chatHours.end[0];document.getElementById('s-cem').value=sp.chatHours.end[1];}
+    var stages=sp.stages;
+    if(stages.S1){document.getElementById('s1-daymax').value=stages.S1.dayMax||2;setModChk('s1',stages.S1.priority)}
+    if(stages.S2){setModChk('s2',stages.S2.priority)}
+    if(stages.S3){document.getElementById('s3-daymin').value=stages.S3.dayMin||3;setModChk('s3',stages.S3.priority)}
+  } catch(e){}
+  function setModChk(pref,pri){
+    pri = pri || [];
+    var nu=document.getElementById(pref+'-nu');
+    var fw=document.getElementById(pref+'-fw');
+    var ch=document.getElementById(pref+'-ch');
+    if(nu) nu.checked=pri.indexOf('nurture')>=0;
+    if(fw) fw.checked=pri.indexOf('follow')>=0;
+    if(ch) ch.checked=pri.indexOf('chat')>=0;
+  }
+})();
+
+(function(){
+  var btn=document.getElementById('rp-stagger-btn');
+  if(!btn) return;
+  btn.addEventListener('click', function(){
+    if(!confirm('按账号哈希把转帖开跑时刻摊到「自定义开跑 + 错峰窗口」内？\n会写入各号 override，并关掉插件本地抖动。可强制覆盖已有开跑点。')) return;
+    var force=confirm('是否强制覆盖已有开跑覆盖？\n确定=强制重算；取消=只给没有开跑点的号分配');
+    var msg=document.getElementById('rp-stagger-msg');
+    if(msg) msg.textContent='分配中…';
+    fetch('/api/config/repost-stagger-assign',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        baseHour: val('rp-sh')||20,
+        baseMin: val('rp-sm')||0,
+        windowMin: val('rp-stagger-win')||240,
+        force: !!force
+      })
+    }).then(function(r){return r.json()}).then(function(d){
+      if(!msg) return;
+      if(!d.ok){ msg.textContent=d.msg||'失败'; return; }
+      var samp=(d.samples||[]).map(function(s){return '@'+s.handle+' '+s.start;}).join('；');
+      msg.textContent='已分配 '+d.assigned+' / 跳过 '+d.skipped+' / 共 '+d.total+(samp?'｜样例 '+samp:'');
+      var jit=document.getElementById('rp-jitter');
+      if(jit) jit.value='0';
+    }).catch(function(e){ if(msg) msg.textContent='请求失败'; });
+  });
+})();
+</script>
+</body>
+</html>

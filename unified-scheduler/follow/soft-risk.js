@@ -1,6 +1,6 @@
 // =============================================================================
 // B4 · Soft Risk Diversion（关注填窗）
-// 唯一入口：平台下方风控条（soft_*，约点满十余粉后出现）→ 休息 15–17 分
+// 唯一入口：平台下方风控条（soft_*，约点满十余粉后出现）→ 休息 30–35 分
 // 禁止：超时/死号/列表卡死/配额满 冒充软风控（那些只交回调度）
 // 宿主：rand / updateStats / stopBot / isRunning 经 SgSoftRisk.bind 注入
 // =============================================================================
@@ -97,7 +97,7 @@
     } catch (eGuard) {}
 
     var randFn = typeof hooks.rand === 'function' ? hooks.rand : defaultRand;
-    var dur = randFn(15, 17);
+    var dur = randFn(30, 35);
     var until = Date.now() + dur * 60000;
     var day = currentDayCount();
     var fill = { mode: 'nurture_only', allowChat: false, reason: 'fallback', day: day };
@@ -124,16 +124,44 @@
       }
     } catch (eFill) {}
     var allowChat = !!fill.allowChat;
+    var markLastEntry = false;
+    // 4.6.82/84：下班前 30 分后只许最后一次新开私信（白天主轴与 soft 共用 softRiskLastEntryDate）；until 封顶延伸硬停
+    try {
+      if (typeof TimeUtil !== 'undefined') {
+        if (allowChat && TimeUtil.isPastSoftChatExtendEnd && TimeUtil.isPastSoftChatExtendEnd()) {
+          allowChat = false;
+          fill = { mode: 'nurture_only', allowChat: false, reason: 'past_soft_extend_end', day: day };
+        } else if (allowChat && TimeUtil.isPastSoftLastEntryStart && TimeUtil.isPastSoftLastEntryStart()) {
+          var todaySe = '';
+          try { todaySe = TimeUtil.shanghaiDate ? TimeUtil.shanghaiDate() : ''; } catch (eD) { todaySe = ''; }
+          var prevLast = '';
+          try {
+            var sgPeek = JSON.parse(localStorage.getItem('sg_state') || '{}');
+            prevLast = String(sgPeek.softRiskLastEntryDate || '');
+          } catch (eP) { prevLast = ''; }
+          if (todaySe && prevLast === todaySe) {
+            allowChat = false;
+            fill = { mode: 'nurture_only', allowChat: false, reason: 'soft_last_entry_used', day: day };
+          } else {
+            markLastEntry = true;
+          }
+        }
+        if (TimeUtil.softChatExtendEndMs) {
+          var capUntil = TimeUtil.softChatExtendEndMs();
+          if (capUntil > Date.now() && until > capUntil) until = capUntil;
+        }
+      }
+    } catch (eLast) {}
     var mode = allowChat ? 'chat_nurture_chat' : 'nurture';
     var phase = allowChat ? 'chat1' : 'nurture';
     var tip = allowChat
-      ? ('平台风控 → 休息 ' + dur + 'm（私信→养号→私信）')
+      ? ('平台风控 → 私信一轮 ' + dur + 'm（台账全员处置完再交回）' + (markLastEntry ? ' · 今日末次私信' : ''))
       : ('平台风控 → 休息只养号 ' + dur + 'm（' + (fill.reason || ('Day' + day)) + '）');
     callHook('updateStats', tip);
     try {
       if (typeof Logger !== 'undefined' && Logger.info) {
         Logger.info('调度', allowChat
-          ? ('平台软风控休息 ' + dur + 'm → chat1→养号→chat2 SoftFill=' + fill.mode + ' reason=' + (reason || 'soft'))
+          ? ('平台软风控休息 ' + dur + 'm → 单段私信一轮 SoftFill=' + fill.mode + (markLastEntry ? ' lastEntry=1' : '') + ' reason=' + (reason || 'soft'))
           : ('平台软风控休息只养号 SoftFill=' + fill.mode + '/' + (fill.reason || '') + ' ' + dur + 'm reason=' + (reason || 'soft')));
       }
     } catch (eL) {}
@@ -149,6 +177,17 @@
       sgSt.softRiskOvertimeMs = 0;
       sgSt.softRiskPhase = phase;
       sgSt.softRiskChatPass = allowChat ? 0 : 2;
+      sgSt.softRiskChatSuspended = false;
+      sgSt.softRiskSuspendReason = '';
+      if (markLastEntry) {
+        try {
+          sgSt.softRiskLastEntryDate = (typeof TimeUtil !== 'undefined' && TimeUtil.shanghaiDate)
+            ? TimeUtil.shanghaiDate()
+            : String(sgSt.softRiskLastEntryDate || '');
+        } catch (eMark) {}
+      }
+      // 4.6.83：soft 进窗 → 清 yield，可再开私信一轮
+      if (allowChat) sgSt.chatYieldToFollow = false;
       sgSt.softFillMode = fill.mode || '';
       sgSt.followRoundEndedAt = Date.now();
       sgSt.followNextDelayUntil = until;
@@ -205,7 +244,7 @@
       document.dispatchEvent(new CustomEvent('matrix-diagnostic', {
         detail: {
           text: allowChat
-            ? ('平台风控休息 | 私信→养号→私信 | 约 ' + dur + 'm')
+            ? ('平台风控休息 | 私信一轮 | 约 ' + dur + 'm')
             : ('平台风控休息 | 只养号 ' + (fill.mode || '') + ' | 约 ' + dur + 'm')
         }
       }));

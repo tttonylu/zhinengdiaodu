@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <title>私信台账 - {{ handle }}</title>
+    <link rel="stylesheet" href="/public/app.css">
+    <style>
+      .roster-meta{display:flex;flex-wrap:wrap;gap:12px;margin:12px 0;font-size:13px}
+      .roster-meta .chip{background:#21262d;border:1px solid #30363d;border-radius:6px;padding:6px 10px}
+      .roster-meta .bad{border-color:#f85149;color:#f85149}
+      .roster-meta .warn{border-color:#d29922;color:#e3b341}
+      .roster-meta .info{border-color:#1f6feb;color:#58a6ff}
+      .snap-bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0;font-size:12px;color:#8b949e}
+      .snap-bar select{background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:4px 6px;border-radius:4px;font-size:12px;max-width:100%}
+      table.data-table td,table.data-table th{font-size:12px;padding:6px 8px}
+      .reason{max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      .filter-bar{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
+      .filter-bar a{padding:4px 10px;border-radius:4px;background:#21262d;color:#c9d1d9;text-decoration:none;font-size:12px}
+      .filter-bar a.on{background:#1f6feb;color:#fff}
+      .empty-hint{color:#8b949e;padding:24px 0}
+    </style>
+  </head>
+  <body>
+    <header class="shell-header">
+      <h1>私信台账 · @{{ handle }}</h1>
+      {% set navActive = 'accounts' %}
+      {% include 'partials/shell-nav.njk' %}
+    </header>
+    <main class="shell-main">
+      <section class="panel">
+        <div class="panel-heading">
+          <h2>早对账（主页关注者对齐）</h2>
+          <a href="/accounts" class="btn btn-pause" style="text-decoration:none">← 账号列表</a>
+          {% if accountId %}<a href="/accounts/{{ accountId }}" class="btn btn-pause" style="text-decoration:none;margin-left:8px">账号详情</a>{% endif %}
+        </div>
+        {% if dailySnapshots and dailySnapshots.length %}
+        <div class="snap-bar">
+          <span>历史快照（每天取最新一封，保留最近 30 天）：</span>
+          <select id="snapSelect">
+            <option value="" {% if not historyMode %}selected{% endif %}>当前（库内实时）</option>
+            {% for s in dailySnapshots %}
+            <option value="{{ s.id }}" {% if historyMode and viewingSnapId == s.id %}selected{% endif %}>{{ s.created_at }} · F={{ s.profile_followers }} · queue={{ s.queue_total }} · pending={{ s.pending }}</option>
+            {% endfor %}
+          </select>
+          {% if historyMode %}<a href="/dm-roster/{{ handle }}" style="color:#58a6ff">回到当前台账 →</a>{% endif %}
+        </div>
+        {% endif %}
+        <div class="roster-meta">
+          <span class="chip">主页关注者 F = <b>{{ snap.profile_followers if snap else 0 }}</b></span>
+          <span class="chip">cellsSeen = <b>{{ snap.cells_seen if snap else 0 }}</b></span>
+          <span class="chip">本快照 queue = <b>{{ snap.queue_total if snap else 0 }}</b></span>
+          <span class="chip">pending = <b>{{ snap.pending if snap else '-' }}</b></span>
+          <span class="chip">skipped = <b>{{ snap.skipped if snap else '-' }}</b></span>
+          <span class="chip">已核验 = <b>{{ verifiedCount }}</b></span>
+          <span class="chip">库内累计行 = <b>{{ items.length }}</b></span>
+          <span class="chip">库内 pending = <b>{{ pendingInDb }}</b></span>
+          {% if reconcileStatus == 'ok' %}
+          <span class="chip ok">{{ reconcileLabel }}</span>
+          {% elif reconcileStatus == 'history' %}
+          <span class="chip info">{{ reconcileLabel }}</span>
+          {% elif reconcileStatus == 'no_f' or reconcileStatus == 'none' %}
+          <span class="chip warn">{{ reconcileLabel }}</span>
+          {% else %}
+          <span class="chip bad">{{ reconcileLabel }}</span>
+          {% endif %}
+          {% if snapRejectedEmpty %}
+          <span class="chip bad">空封口已拒收 items（F&gt;0 cells=0）</span>
+          {% endif %}
+          {% if snap and snap.created_at %}
+          <span class="chip muted">快照 {{ snap.created_at }}</span>
+          {% endif %}
+        </div>
+        {% if reconcileStatus == 'stale' %}
+        <p class="empty-hint" style="color:#f85149;font-weight:600">⚠ 快照与库内脱节：最新封口队列为空/未扫到粉丝格，但库内仍挂着旧 pending。以 OPS 台账为准——请重载 4.6.67+ 插件回灌最新快照，完成后再跑软窗。</p>
+        {% endif %}
+        <div class="filter-bar">
+          <a href="?status={% if historyMode %}&snap={{ viewingSnapId }}{% endif %}" class="{% if not statusFilter %}on{% endif %}">{% if historyMode %}快照内全部{% else %}库内全部{% endif %} {{ items.length }}</a>
+          <a href="?status=pending{% if historyMode %}&snap={{ viewingSnapId }}{% endif %}" class="{% if statusFilter == 'pending' %}on{% endif %}">pending</a>
+          <a href="?status=skipped{% if historyMode %}&snap={{ viewingSnapId }}{% endif %}" class="{% if statusFilter == 'skipped' %}on{% endif %}">skipped</a>
+          <a href="?status=deferred{% if historyMode %}&snap={{ viewingSnapId }}{% endif %}" class="{% if statusFilter == 'deferred' %}on{% endif %}">deferred</a>
+          <a href="?status=doing{% if historyMode %}&snap={{ viewingSnapId }}{% endif %}" class="{% if statusFilter == 'doing' %}on{% endif %}">doing</a>
+        </div>
+        {% if not items.length %}
+        <p class="empty-hint">{% if historyPayloadEmpty %}该历史快照仅保留趋势数据（F/cells/queue），粉丝明细已按保留策略清理（近 7 天内的快照含完整明细）。{% elif historyMode %}该快照无明细。{% else %}尚无台账。等插件早间全量扫封口后 POST /api/plugin/dm/roster。{% endif %}</p>
+        {% else %}
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>handle</th>
+              <th>名字</th>
+              <th>round</th>
+              <th>状态</th>
+              <th>kind</th>
+              <th>原因</th>
+              <th>破冰</th>
+              <th>核验</th>
+              <th>拉黑</th>
+              <th>陈旧</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for it in filtered %}
+            <tr>
+              <td>@{{ it.handle }}</td>
+              <td>{{ it.display_name or '-' }}</td>
+              <td>{{ it.round or 0 }}</td>
+              <td>{{ it.queue_status or '-' }}</td>
+              <td>{{ it.queue_kind or '-' }}</td>
+              <td class="reason" title="{{ it.queue_reason or '' }}">{{ it.queue_reason or '-' }}</td>
+              <td>{% if it.ice_sent_at %}有{% else %}<span style="color:#f85149">未破冰</span>{% endif %}</td>
+              <td>{% if it.dm_verified_at %}✓{% else %}待{% endif %}</td>
+              <td>{% if it.blocked %}{{ it.block_reason or 'blocked' }}{% else %}-{% endif %}</td>
+              <td>{% if it.stale %}<span style="color:#d29922">stale</span>{% else %}-{% endif %}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% endif %}
+      </section>
+    </main>
+    <script>
+    (function () {
+      var sel = document.getElementById('snapSelect');
+      if (!sel) return;
+      sel.addEventListener('change', function () {
+        var base = '/dm-roster/{{ handle }}';
+        var status = '{{ statusFilter }}';
+        var qs = [];
+        if (sel.value) qs.push('snap=' + encodeURIComponent(sel.value));
+        if (status) qs.push('status=' + encodeURIComponent(status));
+        location.href = qs.length ? (base + '?' + qs.join('&')) : base;
+      });
+    })();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>{{ title }} - X 运营轻总控后台</title>
+<link rel="stylesheet" href="/public/app.css">
+<style>
+.flex{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.mb12{margin-bottom:12px}
+.filter-row select,.filter-row input{padding:6px 8px;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;font-size:13px}
+.hint{font-size:12px;color:#8b949e;margin-bottom:12px}
+.board-chip{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;font-weight:700;border:1px solid #30363d;color:#c9d1d9;background:#161b22}
+.board-chip.b-error{color:#f85149;border-color:#f85149}
+.stack-cell{font-size:11px;color:#8b949e;max-width:460px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+.err-msg{color:#f85149;font-size:12px}
+.sev-error{color:#f85149;font-weight:700}
+.sev-warn{color:#e3b341;font-weight:700}
+.board-stats{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 14px}
+.board-stat{flex:1 1 96px;border:1px solid #30363d;border-radius:8px;padding:8px 10px;background:#161b22;text-decoration:none;color:#c9d1d9}
+.board-stat .n{font-size:18px;font-weight:700;display:block}
+.board-stat .l{font-size:11px;color:#8b949e}
+.board-stat.hot{border-color:#f85149}
+.board-stat .n.hot-n{color:#f85149}
+</style>
+</head>
+<body>
+<header class="shell-header">
+  <h1>X 运营轻总控后台</h1>
+  {% set navActive = 'errors' %}
+  {% include 'partials/shell-nav.njk' %}
+</header>
+<main class="shell-main">
+<section class="panel">
+  <div class="panel-heading"><h2>错误中心</h2></div>
+  <p class="hint">按板块追踪运行/系统错误。错误来自插件全局捕获，meta 含完整堆栈、板块、URL、扩展版本与账号现场，便于定位责任板块。</p>
+
+  <div class="board-stats">
+    {% for b in boards %}
+    <a class="board-stat {% if b.c > 0 %}hot{% endif %}" href="/errors?hours={{ hours }}&board={{ b.board }}&severity={{ severity }}&handle={{ handle }}">
+      <span class="n {% if b.c > 0 %}hot-n{% endif %}">{{ b.c }}</span>
+      <span class="l">{{ b.board }} · {{ b.name }}</span>
+    </a>
+    {% endfor %}
+  </div>
+
+  <form class="filter-row flex mb12" method="get" action="/errors">
+    <select name="board">
+      <option value="">全部板块</option>
+      {% for row in boardOptions %}
+      <option value="{{ row[0] }}" {{ 'selected' if board == row[0] else '' }}>{{ row[0] }} · {{ row[1] }}</option>
+      {% endfor %}
+    </select>
+    <select name="severity">
+      <option value="">全部级别</option>
+      <option value="error" {{ 'selected' if severity=='error' else '' }}>error</option>
+      <option value="warn" {{ 'selected' if severity=='warn' else '' }}>warn</option>
+    </select>
+    <select name="hours">
+      <option value="1" {{ 'selected' if hours==1 else '' }}>近 1h</option>
+      <option value="6" {{ 'selected' if hours==6 else '' }}>近 6h</option>
+      <option value="24" {{ 'selected' if hours==24 else '' }}>近 24h</option>
+      <option value="72" {{ 'selected' if hours==72 else '' }}>近 3 天</option>
+      <option value="168" {{ 'selected' if hours==168 else '' }}>近 7 天</option>
+    </select>
+    <input type="text" name="handle" placeholder="账号 handle" value="{{ handle or '' }}">
+    <input type="text" name="keyword" placeholder="关键字（消息/堆栈/事件）" value="{{ keyword or '' }}">
+    <button type="submit" class="btn btn-primary btn-sm">筛选</button>
+    <a href="/errors" class="btn btn-outline btn-sm" style="text-decoration:none">重置</a>
+  </form>
+
+  <div class="mb12 hint">共 {{ totalErrors }} 条匹配（近 {{ hours }}h{% if board %} · 板块 {{ board }}{% endif %}{% if severity %} · {{ severity }}{% endif %}）</div>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>时间</th>
+          <th>账号</th>
+          <th>板块</th>
+          <th>级别</th>
+          <th>事件/错误消息</th>
+          <th>堆栈 / 现场</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for l in events %}
+        {% set meta = l.meta or {} %}
+        <tr>
+          <td style="white-space:nowrap;font-size:11px;">{{ l.created_at }}</td>
+          <td>@{{ l.account_handle or '--' }}</td>
+          <td>
+            {% set bd = meta.board or l.category %}
+            {% set bdName = meta.board_name or '' %}
+            <span class="board-chip {% if l.severity=='error' %}b-error{% endif %}" title="{{ bdName }}">{{ bd }}{% if bdName %} {{ bdName }}{% endif %}</span>
+          </td>
+          <td class="{% if l.severity=='error' %}sev-error{% elif l.severity=='warn' %}sev-warn{% endif %}">{{ l.severity }}</td>
+          <td>
+            <div class="err-msg">{{ meta.msg or meta.message or l.label_zh or l.event_id }}</div>
+            {% if meta.src %}<div style="font-size:10px;color:#484f58">{{ meta.src }}{% if meta.line %}:{{ meta.line }}{% endif %}</div>{% endif %}
+          </td>
+          <td class="stack-cell" title="{{ meta.stack or meta.url or '' }}">
+            {% if meta.url %}<div title="{{ meta.url }}">⚓ {{ meta.url }}</div>{% endif %}
+            {% if meta.stack %}{{ meta.stack }}{% elif meta.reason %}reason: {{ meta.reason }}{% else %}-{% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" style="text-align:center;color:#484f58;">暂无匹配错误。插件错误经「错误上报」通道落库后即可在此按板块查询。</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+</main>
+</body>
+</html>

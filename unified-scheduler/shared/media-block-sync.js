@@ -111,5 +111,6 @@
     });
   } catch (eMsg) {}
 
-  setInterval(syncFromStorage, 15000);
+  // 兜底轮询：实时更新已由 chrome.storage.onChanged 覆盖，60s 仅防极端漏推；隐藏标签跳过
+  setInterval(function () { if (!document.hidden) syncFromStorage(); }, 60000);
 })();

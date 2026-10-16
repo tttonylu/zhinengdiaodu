@@ -242,6 +242,17 @@
         }
       } catch (e0) {}
     }
+    // 4.6.102：硬跳也走 Gate 排队，禁止裸 href 连环握手
+    try {
+      if (typeof SchedulerGate !== 'undefined' && SchedulerGate.goRaw) {
+        return !!SchedulerGate.goRaw(url, { force: true });
+      }
+    } catch (eGate) {}
+    try {
+      if (typeof SchedulerGate !== 'undefined' && SchedulerGate.prepareLeave) {
+        SchedulerGate.prepareLeave();
+      }
+    } catch (ePrep) {}
     try {
       window.location.href = url;
       return true;

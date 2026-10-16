@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "SCRM Cookie Sync",
+  "version": "1.1.0",
+  "description": "把 admin.scrmceo.com 登录 Cookie 一键同步到 NAS SCRM 爬虫",
+  "permissions": ["cookies", "storage", "activeTab", "tabs"],
+  "host_permissions": [
+    "http://192.168.0.100:3211/*",
+    "http://127.0.0.1:3211/*",
+    "http://localhost:3211/*",
+    "https://kongzhi1.kooldns.cn/*"
+  ],
+  "optional_host_permissions": [
+    "https://admin.scrmceo.com/*",
+    "https://*.scrmceo.com/*",
+    "https://scrmceo.com/*",
+    "*://*/*"
+  ],
+  "action": {
+    "default_title": "SCRM Cookie 同步",
+    "default_popup": "popup.html"
+  }
+}

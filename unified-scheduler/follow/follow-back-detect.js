@@ -14,7 +14,7 @@
   var CFG_ENABLE_KEY = 'sg_fb_active_scan';
   var CFG_INTERVAL_KEY = 'sg_fb_active_scan_min';
 
-  var DEFAULT_INTERVAL_MIN = 35;
+  var DEFAULT_INTERVAL_MIN = 240;
   var _notifObserver = null;
   var _scanTimer = null;
   var _lastPath = '';
@@ -255,7 +255,8 @@
     var min = DEFAULT_INTERVAL_MIN;
     try {
       var v = parseInt(localStorage.getItem(CFG_INTERVAL_KEY) || '', 10);
-      if (!isNaN(v) && v >= 10) min = Math.min(180, v);
+      // 允许 10–480 分；默认 240（一天约几次通知扫）
+      if (!isNaN(v) && v >= 10) min = Math.min(480, v);
     } catch (e) {}
     return min * 60 * 1000;
   }
@@ -320,8 +321,14 @@
       }
     } catch (e2) {}
     setTimeout(function () {
-      try { window.location.href = ret; } catch (e3) {}
-    }, 400);
+      try {
+        if (typeof SchedulerGate !== 'undefined' && SchedulerGate.go) {
+          SchedulerGate.go('follow', ret);
+        } else {
+          window.location.href = ret;
+        }
+      } catch (e3) {}
+    }, 2500);
   }
 
   function maybeFinishActiveTrip() {
@@ -371,8 +378,8 @@
     var onNotif = /\/notifications/i.test(location.pathname || '');
     if (onNotif && trip) return false; // 正常扫，交给 maybeFinish
     var age = trip && trip.startedAt ? (Date.now() - trip.startedAt) : 0;
-    // 给跳转留 8s；超时仍非通知页 → 残留
-    if (trip && age > 0 && age < 8000) return false;
+    // 给跳转留足加载（对齐 nav_min_interval）；超时仍非通知页 → 残留
+    if (trip && age > 0 && age < 45000) return false;
     console.warn('[回关检测] 行程残留清理', reason || 'orphan', 'age=' + Math.round(age / 1000) + 's path=' + (location.pathname || ''));
     setHold(false);
     clearTrip();
@@ -394,8 +401,28 @@
     setHold(true);
     console.log('[回关检测] 主动扫通知页…');
     try {
-      if (typeof SchedulerGate !== 'undefined' && SchedulerGate.prepareLeave) {
-        SchedulerGate.prepareLeave();
+      if (typeof SchedulerGate !== 'undefined' && SchedulerGate.go) {
+        var ok = SchedulerGate.go('follow', 'https://x.com/notifications');
+        if (ok) return true;
+        // 节流未放行：延后到间隔后再跳，禁止裸 href 绕过
+        var gap = 45000;
+        try { gap = SchedulerGate.navMinIntervalMs() || 45000; } catch (eG) {}
+        var last = 0;
+        try { last = SchedulerGate.lastNavAt() || 0; } catch (eL) {}
+        var wait = Math.max(2000, gap - (Date.now() - last));
+        setTimeout(function () {
+          try {
+            if (typeof SchedulerGate !== 'undefined' && SchedulerGate.go) {
+              SchedulerGate.go('follow', 'https://x.com/notifications', { force: true });
+            } else {
+              window.location.href = 'https://x.com/notifications';
+            }
+          } catch (e4) {
+            setHold(false);
+            clearTrip();
+          }
+        }, wait);
+        return true;
       }
     } catch (e2) {}
     try {
@@ -455,7 +482,7 @@
   _lastPath = location.pathname || '';
   // 立刻清一次残留 hold（常见：跳通知失败/被拽回 home，养号锁死）
   cleanupOrphanTrip('boot');
-  setInterval(function () { cleanupOrphanTrip('watch'); }, 5000);
+  setInterval(function () { if (document.hidden) return; cleanupOrphanTrip('watch'); }, 5000);
   if (/\/notifications/i.test(_lastPath)) {
     setTimeout(function () {
       startNotifObserver();

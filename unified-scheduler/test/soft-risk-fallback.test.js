@@ -42,18 +42,11 @@ describe('softRiskChatBlockedDecision', () => {
     assert.equal(softRiskChatBlockedDecision({ softRiskActive: false, phase: 'chat1' }), null);
   });
 
-  it('chat1 → nurture', () => {
+  it('chat 相位挂起 → nurture', () => {
     assert.equal(softRiskChatBlockedDecision({ softRiskActive: true, phase: 'chat1' }), 'nurture');
   });
 
-  it('chat2 → follow', () => {
-    assert.equal(softRiskChatBlockedDecision({ softRiskActive: true, phase: 'chat2' }), 'follow');
-  });
-
-  it('chat1 afterPhase chat2 → follow', () => {
-    assert.equal(
-      softRiskChatBlockedDecision({ softRiskActive: true, phase: 'chat1', afterPhase: 'chat2' }),
-      'follow'
-    );
+  it('任意相位挂起 → nurture（4.6.78 单段一轮）', () => {
+    assert.equal(softRiskChatBlockedDecision({ softRiskActive: true, phase: 'chat2' }), 'nurture');
   });
 });

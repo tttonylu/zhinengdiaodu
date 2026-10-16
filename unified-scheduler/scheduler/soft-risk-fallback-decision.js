@@ -1,15 +1,13 @@
 /**
  * 软风控 chat 被闸门挡时的相位决策（纯函数，可供 node:test）。
+ * 4.6.78：单段私信一轮 — chat 相位被挡 → 临时 nurture（挂起）；勿当清窗。
  * @param {{ softRiskActive: boolean, phase?: string, afterPhase?: string }} input
  * @returns {'nurture'|'follow'|null}
  */
 function softRiskChatBlockedDecision(input) {
   input = input || {};
   if (!input.softRiskActive) return null;
-  var phase = input.phase || 'chat1';
-  if (phase === 'chat2') return 'follow';
-  // chat1：调用方若已推进到 chat2（近窗尾 skip），同闸则清窗
-  if ((input.afterPhase || '') === 'chat2') return 'follow';
+  // 单段一轮：闸门挂起一律先 nurture；清窗由调用方按 reason 另判
   return 'nurture';
 }
 

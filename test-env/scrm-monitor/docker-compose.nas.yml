@@ -1,0 +1,14 @@
+services:
+  scrm-nas:
+    build: .
+    container_name: scrm-nas
+    restart: unless-stopped
+    ports:
+      - "3211:3211"
+    volumes:
+      - ./data:/data
+    environment:
+      - TZ=Asia/Shanghai
+      - CONFIG_FILE=/data/config.json
+      - FLASK_HOST=0.0.0.0
+      - FLASK_PORT=3211

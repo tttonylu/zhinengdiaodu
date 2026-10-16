@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>{{ title }}</title>
+<link rel="stylesheet" href="/public/app.css">
+<style>
+.filter-row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;align-items:center}
+.filter-row select,.filter-row input{padding:6px 8px;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;font-size:13px}
+.hint{font-size:12px;color:#8b949e;margin-bottom:12px}
+.meta-cell{font-size:10px;color:#8b949e;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+</style>
+</head>
+<body>
+<header class="shell-header">
+  <h1>X 运营轻总控后台</h1>
+  {% set navActive = 'runtime-logs' %}
+  {% include 'partials/shell-nav.njk' %}
+</header>
+<main class="shell-main">
+<section class="panel">
+  <div class="panel-heading"><h2>运行日志</h2></div>
+  <p class="hint">插件观测总线上报（中文说明）。用于排障：守箱、私信挡板、发送失败等。可导出 JSON 发给技术支持。</p>
+
+  <form class="filter-row" method="get" action="/runtime-logs">
+    <select name="category">
+      <option value="">全部分类</option>
+      <option value="chat" {{ 'selected' if category=='chat' else '' }}>私信</option>
+      <option value="scheduler" {{ 'selected' if category=='scheduler' else '' }}>调度</option>
+      <option value="system" {{ 'selected' if category=='system' else '' }}>系统</option>
+    </select>
+    <select name="severity">
+      <option value="">全部级别</option>
+      <option value="info" {{ 'selected' if severity=='info' else '' }}>info</option>
+      <option value="warn" {{ 'selected' if severity=='warn' else '' }}>warn</option>
+      <option value="error" {{ 'selected' if severity=='error' else '' }}>error</option>
+    </select>
+    <input type="text" name="handle" placeholder="账号 handle" value="{{ handle or '' }}">
+    <input type="text" name="event_id" placeholder="事件ID" value="{{ event_id or '' }}">
+    <button type="submit" class="btn btn-primary btn-sm">筛选</button>
+    <a href="/runtime-logs/export?handle={{ handle }}" class="btn btn-outline btn-sm" style="text-decoration:none">导出 JSON</a>
+  </form>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>时间</th>
+          <th>账号</th>
+          <th>说明</th>
+          <th>分类</th>
+          <th>级别</th>
+          <th>摘要</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for l in logs %}
+        <tr>
+          <td style="white-space:nowrap;font-size:11px;">{{ l.created_at }}</td>
+          <td>@{{ l.account_handle or '--' }}</td>
+          <td>{{ l.label_zh or l.event_id }}</td>
+          <td>{{ l.category }}</td>
+          <td>{{ l.severity }}</td>
+          <td class="meta-cell" title="{{ l.meta_json }}">
+            {% if l.meta.target %}@{{ l.meta.target }}{% endif %}
+            {% if l.meta.reason %} {{ l.meta.reason }}{% endif %}
+            {% if l.meta.latency_ms %} {{ l.meta.latency_ms }}ms{% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" style="text-align:center;color:#484f58;">暂无运行日志。插件需产生 console/观测事件后 batch 上报；点「上报诊断」可在<a href="/accounts" style="color:#58a6ff">账号详情</a>查看诊断包。</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div style="margin-top:12px;display:flex;gap:8px;">
+    {% if offset > 0 %}
+    <a href="/runtime-logs?offset={{ offset - limit }}&limit={{ limit }}&category={{ category }}&severity={{ severity }}&handle={{ handle }}&event_id={{ event_id }}" class="btn btn-outline btn-sm" style="text-decoration:none">上一页</a>
+    {% endif %}
+    {% if logs.length >= limit %}
+    <a href="/runtime-logs?offset={{ offset + limit }}&limit={{ limit }}&category={{ category }}&severity={{ severity }}&handle={{ handle }}&event_id={{ event_id }}" class="btn btn-outline btn-sm" style="text-decoration:none">下一页</a>
+    {% endif %}
+  </div>
+</section>
+</main>
+</body>
+</html>

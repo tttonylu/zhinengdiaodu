@@ -16,8 +16,31 @@
         localStorageKey: 'matrix_target_handles',
         completedKey: 'matrix_completed_handles',
         autoJumpEnabled: true,
-        jumpDelayMin: 2000,
-        jumpDelayMax: 4000,
+        // 4.6.101：换博主再放慢，等上号主页加载完再检隐私
+        jumpDelayMin: 8000,
+        jumpDelayMax: 15000,
+    };
+
+    /**
+     * 4.6.101 稳节奏：比特/慢网空态晚挂，进页多等、少硬跳。
+     * 领号必须先 PROFILE 再进粉；禁止直跳 /followers 导致私密未检就连环踢回。
+     */
+    var FOLLOW_PACE = {
+        profileSettleMs: 12000,
+        profileSettleJitter: 4000,
+        afterTabClickMs: 10000,
+        scanWaitMs: 10000,
+        scanArriveSettleMs: 8000,
+        afterKickSleepMs: 10000,
+        followersLinkWaitMs: 30000,
+        stepTimeoutMs: 120000,
+        softFailGapMs: 8000,
+        deadSkipGapMs: 6000,
+        profileBrowseScrollMin: 6000,
+        profileBrowseScrollMax: 9000,
+        // 4.6.115：渲染守卫 10×2s=20s；aria-busy 加载中宽限封顶 15×2s=30s
+        scanLoadingGuardTicks: 10,
+        scanLoadingBusyMaxTicks: 15
     };
 
     function isAntiBanEnabled() {
@@ -36,49 +59,46 @@
         return false;
     }
 
+    /** 4.6.40：产品关闭「只点日文/日中」——恒 false，忽略远程与本地残留 true */
     function isOnlyJapaneseEnabled() {
-        try {
-            if (typeof RemoteSettings !== 'undefined' && RemoteSettings.onlyJapanese) {
-                var rj = RemoteSettings.onlyJapanese();
-                if (rj !== null) return !!rj;
-            }
-        } catch (e0) {}
-        try {
-            const settings = JSON.parse(localStorage.getItem('matrix_console_settings') || '{}');
-            return settings.onlyJapanese !== false;
-        } catch (e) { return true; }
+        return false;
     }
 
-    /** 关注防老外：假名/汉字/半角假名/扩展汉字（对齐 profile-clone；不要求假名——日名常纯汉字） */
+    /** 关注防老外：日文（假名/半角假名）或中日汉字即过；不要求假名 */
     function hasJapaneseText(s) {
         return /[\u3040-\u30ff\u3400-\u9fff\uff66-\uff9f]/.test(String(s || ''));
     }
+    /** 别名：日文∨中文（CJK），语义同 hasJapaneseText */
+    function hasJaOrZhText(s) {
+        return hasJapaneseText(s);
+    }
 
     /**
-     * 关注对象日文门（纯函数，可单测）。
-     * name∨bio 有日文即过；有日文不按长度踢；onlyJapanese 关时仅踢空壳。
-     * @returns {{ pass: boolean, reason: string, isJp: boolean, isPureEng: boolean }}
+     * 关注对象门（纯函数，可单测）。
+     * onlyJapanese=true：name∨bio∨extra 任一带日文或中文即过。
+     * onlyJapanese=false（4.6.40 产品默认/强制）：一律放行，不做语言剔除。
      */
-    function decideFollowTargetJa(name, bio, onlyJapanese) {
+    function decideFollowTargetJa(name, bio, onlyJapanese, extra) {
         var n = String(name || '').trim();
         var b = String(bio || '').trim();
-        var content = [n, b].filter(Boolean).join(' | ');
-        var isJp = hasJapaneseText(n) || hasJapaneseText(b);
+        var x = String(extra || '').trim();
+        var content = [n, b, x].filter(Boolean).join(' | ');
+        var isJp = hasJaOrZhText(n) || hasJaOrZhText(b) || hasJaOrZhText(x);
         var isPureEng = /[a-zA-Z]/.test(content) && !isJp;
         var isEmpty = !content;
-        if (onlyJapanese) {
-            if (isJp) return { pass: true, reason: 'ja', isJp: true, isPureEng: false };
-            if (isEmpty) return { pass: false, reason: 'empty', isJp: false, isPureEng: false };
-            if (isPureEng) return { pass: false, reason: 'pure_eng', isJp: false, isPureEng: true };
-            return { pass: false, reason: 'no_ja', isJp: false, isPureEng: false };
+        if (!onlyJapanese) {
+            return { pass: true, reason: 'lang_gate_off', isJp: isJp, isPureEng: isPureEng };
         }
-        if (isEmpty) return { pass: false, reason: 'empty', isJp: isJp, isPureEng: isPureEng };
-        return { pass: true, reason: 'all_mode', isJp: isJp, isPureEng: isPureEng };
+        if (isJp) return { pass: true, reason: 'ja_zh', isJp: true, isPureEng: false };
+        if (isEmpty) return { pass: false, reason: 'empty', isJp: false, isPureEng: false };
+        if (isPureEng) return { pass: false, reason: 'pure_eng', isJp: false, isPureEng: true };
+        return { pass: false, reason: 'no_ja_zh', isJp: false, isPureEng: false };
     }
 
     try {
         window.SgFollowJaGate = {
             hasJapaneseText: hasJapaneseText,
+            hasJaOrZhText: hasJaOrZhText,
             decideFollowTargetJa: decideFollowTargetJa
         };
     } catch (eGate) {}
@@ -124,6 +144,7 @@
         });
     } catch(e) {}
 
+    // 兜底轮询：实时更新已由上方 chrome.storage.onChanged 覆盖，60s 仅防极端漏推
     var _followSyncTimer = setInterval(function() {
         try {
             chrome.storage.local.get(['matrix_console_settings'], function(r) {
@@ -133,7 +154,7 @@
                 if (cur !== nxt) syncSettingsFromStorage(r.matrix_console_settings);
             });
         } catch(e) { clearInterval(_followSyncTimer); }
-    }, 10000);
+    }, 60000);
 
     try {
         chrome.runtime.onMessage.addListener(function(msg, sender, sendResponse) {
@@ -476,7 +497,9 @@
         var nodes = document.querySelectorAll(selector);
         var chunks = [];
         for (var i = 0; i < nodes.length; i++) {
-            var raw = (nodes[i].innerText || nodes[i].textContent || '').trim();
+            // 4.6.120 CPU：innerText 每次读取在 DOM 脏时强制整页排版；toast/dialog 等风控容器
+            // 的可见文案 ⊂ textContent，检测句均为平台精确句，隐藏文本混入误判概率可忽略
+            var raw = (nodes[i].textContent || '').trim();
             if (raw) chunks.push(raw);
         }
         return chunks;
@@ -499,7 +522,9 @@
             'main [data-testid="error-detail"]',
             '[data-testid="emptyState"]'
         ].join(', '));
-        var bodyRaw = document.body ? (document.body.innerText || document.body.textContent || '') : '';
+        // 4.6.120 CPU：整页 innerText 强制同步排版（X 大 DOM 单次 50–300ms），
+        // 每次点关注×3 + 调度冻结心跳 10–30s 一次都吃它；textContent 不触排版，精确句兜底语义不变
+        var bodyRaw = document.body ? (document.body.textContent || '') : '';
         for (var i = 0; i < frozenChunks.length; i++) {
             if (isFrozenText(frozenChunks[i])) return 'FROZEN';
         }
@@ -580,6 +605,7 @@
             sg.followPhase = 'idle';
             sg.accountFrozen = true;
             sg.accountFrozenAt = Date.now();
+            if (handle) sg.accountFrozenHandle = String(handle).replace(/^@/, '').replace(/#guard$/gi, '').toLowerCase();
             localStorage.setItem('sg_state', JSON.stringify(sg));
         } catch (e3) {}
         try { sessionStorage.setItem('dan_auto_run', 'false'); } catch (e4) {}
@@ -647,6 +673,10 @@
     try {
         if (typeof window !== 'undefined') {
             window.__sgCheckAccountFrozen = checkAndHandleAccountFrozen;
+            try {
+                window.__sgIsProtectedProfileText = isProtectedProfileText;
+                window.__sgPageLooksProtected = pageLooksProtected;
+            } catch (eProt) {}
             window.SgFollowRisk = {
                 checkLimits: checkLimits,
                 handleAccountFrozen: handleAccountFrozen,
@@ -754,53 +784,60 @@
         injectFollowLock();
     }
 
-    // 心跳上报（每5秒，只在引擎运行时更新 lastActive）
-    setInterval(() => {
-        let workerId = getWorkerId();
-        let stats = getAccountStats();
-        let currentStatus = isRunning ? '推土扫荡中...' : '待机就绪';
 
-        // 更新模块统一状态（引擎空闲时写 running:false，供调度幽灵旗标检测；运行中刷新 lastActive）
-        try {
-            var ms = JSON.parse(sessionStorage.getItem('sg_module_follow') || '{}');
-            ms.running = isRunning;
-            if (isRunning) ms.lastActive = Date.now();
-            ms.phase = isRunning ? 'active' : 'idle';
-            sessionStorage.setItem('sg_module_follow', JSON.stringify(ms));
-        } catch (e) {}
+    // 心跳上报（动态间隔：运行/可见 5s；后台/待机 30s）
+    function scheduleHeartbeat() {
+        const delay = (document.hidden || !isRunning) ? 30000 : 5000;
+        setTimeout(() => {
+            try {
+                if (!document.hidden) {
+                    let workerId = getWorkerId();
+                    let stats = getAccountStats();
 
-        // 发送状态到中控台
-        document.dispatchEvent(new CustomEvent('matrix-follow-status', {
-            detail: {
-                running: isRunning,
-                status: isRunning ? 'running' : 'idle',
-                count: stats.follows_today
-            }
-        }));
+                    // 更新模块统一状态（引擎空闲时写 running:false，供调度幽灵旗标检测；运行中刷新 lastActive）
+                    try {
+                        var ms = JSON.parse(sessionStorage.getItem('sg_module_follow') || '{}');
+                        ms.running = isRunning;
+                        if (isRunning) ms.lastActive = Date.now();
+                        ms.phase = isRunning ? 'active' : 'idle';
+                        sessionStorage.setItem('sg_module_follow', JSON.stringify(ms));
+                    } catch (e) {}
 
-        // 更新按钮状态
-        updateFollowButtonState();
-        
-        try {
-            chrome.runtime.sendMessage({
-                action: "send_report",
-                payload: {
-                    worker_id: workerId,
-                    engine: "follow",
-                    status: isRunning ? "running" : "idle",
-                    detail: "",
-                    stats: {
-                        added: stats.follows_today || 0
-                    }
+                    // 发送状态到中控台
+                    document.dispatchEvent(new CustomEvent('matrix-follow-status', {
+                        detail: {
+                            running: isRunning,
+                            status: isRunning ? 'running' : 'idle',
+                            count: stats.follows_today
+                        }
+                    }));
+
+                    // 更新按钮状态
+                    updateFollowButtonState();
+
+                    try {
+                        chrome.runtime.sendMessage({
+                            action: "send_report",
+                            payload: {
+                                worker_id: workerId,
+                                engine: "follow",
+                                status: isRunning ? "running" : "idle",
+                                detail: "",
+                                stats: {
+                                    added: stats.follows_today || 0
+                                }
+                            }
+                        }, (response) => {
+                            if (chrome.runtime.lastError) {
+                                console.log('[心跳] Service Worker 未就绪');
+                            }
+                        });
+                    } catch(e) {}
                 }
-            }, (response) => {
-                if (chrome.runtime.lastError) {
-                    console.log('[心跳] Service Worker 未就绪');
-                }
-            });
-        } catch(e) {}
-    }, 5000);
-
+            } catch(e) {}
+            scheduleHeartbeat();
+        }, delay);
+    }
     // 监听中控台事件
     document.addEventListener('matrix-follow-toggle', () => {
         toggleFollow();
@@ -818,6 +855,8 @@
     // 单飞锁：防止 tryAutoStart + sg-follow-command 同时拉起两个 while 循环
     let _engineLoopRunning = false;
     let _engineToken = 0;
+
+    scheduleHeartbeat();
 
     function followGo(url) {
         if (!url) return false;
@@ -868,6 +907,31 @@
         try { window.location.href = url; return true; } catch (e2) { return false; }
     }
 
+    /** 4.6.101：Force 前仍吃全局跳页间隔，避免刚落地又硬跳 */
+    async function waitNavGapThenForce(url, why) {
+        var gapMs = 45000;
+        try {
+            if (typeof SchedulerGate !== 'undefined' && SchedulerGate.navMinIntervalMs) {
+                gapMs = SchedulerGate.navMinIntervalMs() || 45000;
+            }
+        } catch (eGap) {}
+        try {
+            var last = 0;
+            if (typeof SchedulerGate !== 'undefined' && SchedulerGate.lastNavAt) {
+                last = SchedulerGate.lastNavAt() || 0;
+            } else {
+                last = parseInt(sessionStorage.getItem('sg_last_nav_at') || '0', 10) || 0;
+            }
+            var since = last > 0 ? (Date.now() - last) : gapMs;
+            if (last > 0 && since < gapMs) {
+                var wait = gapMs - since;
+                updateStats('⏳ 跳页冷却 ' + Math.ceil(wait / 1000) + 's' + (why ? '（' + why + '）' : '') + '…');
+                await sleep(wait);
+            }
+        } catch (eWait) {}
+        return followGoForce(url);
+    }
+
     /** 跳到锁定博主期望页；同 URL 白壳不 Force（改软愈）；真错页 Force 最多再补 1 次且吃导航间隔 */
     function navigateToLockedCreator(reason) {
         var cr = normalizeCr(localStorage.getItem('matrix_current_creator') || '');
@@ -890,13 +954,18 @@
         markStepChange();
         var ok = followGoForce(dest);
         document.dispatchEvent(new CustomEvent('matrix-diagnostic', {
-            detail: { text: '🔄 对齐锁定博主 @' + cr + (ok ? ' 已跳转' : ' 跳转待重试') + (reason ? ' (' + reason + ')' : '') }
+            detail: { text: '🔄 对齐锁定博主 @' + cr + (ok ? ' 已跳转/排队' : ' 跳转待重试') + (reason ? ' (' + reason + ')' : '') }
         }));
+        // 4.6.102：Force 撞间隔时 Gate 已排队并返回 true，勿再 setTimeout 二次 Force
         if (!ok) {
-            var gapMs = 13000;
+            var gapMs = 45000;
             try {
                 if (typeof SchedulerGate !== 'undefined' && SchedulerGate.navMinIntervalMs) {
-                    gapMs = SchedulerGate.navMinIntervalMs() || 13000;
+                    gapMs = SchedulerGate.navMinIntervalMs() || 45000;
+                }
+                if (typeof SchedulerGate !== 'undefined' && SchedulerGate.remainGapMs) {
+                    var rem = SchedulerGate.remainGapMs();
+                    if (rem > 0) gapMs = rem;
                 }
             } catch (eGap) {}
             setTimeout(function () {
@@ -1213,12 +1282,22 @@
         localStorage.setItem('matrix_heartbeat', '0');
     }
 
-    setInterval(() => {
-        if (isRunning) {
-            localStorage.setItem('matrix_active_tab', myTabId);
-            localStorage.setItem('matrix_heartbeat', Date.now());
-        }
-    }, 2000);
+    // 活跃标签页心跳（动态间隔：运行/可见 2s；后台/待机 10s）
+    function scheduleLockHeartbeat() {
+        const delay = (document.hidden || !isRunning) ? 10000 : 2000;
+        setTimeout(() => {
+            try {
+                if (!(document.hidden && !isRunning)) {
+                    if (isRunning) {
+                        localStorage.setItem('matrix_active_tab', myTabId);
+                        localStorage.setItem('matrix_heartbeat', Date.now());
+                    }
+                }
+            } catch(e) {}
+            scheduleLockHeartbeat();
+        }, delay);
+    }
+    scheduleLockHeartbeat();
 
     const __followSleepTimers = [];
     function cancelAllFollowSleep() { try { __followSleepTimers.forEach(t=>clearTimeout(t)); } catch(_){} __followSleepTimers.length=0; }
@@ -1435,16 +1514,43 @@
     }
     var DEAD_SKIP_FILL_THRESHOLD = 3;
 
-    /** 隐私/保护号文案（中英日韩）；短句「帖子受到保护」也要命中，否则漏判→粉丝页空跳 */
+    /** 隐私/保护号文案（中英日韩）；含 2025–2026 现网「ポストは非公開 / 所有者は制限」等 */
     function isProtectedProfileText(t) {
-        var s = String(t || '');
+        // 去零宽/软连字符，防「受\u200b到保护」类漏检（实机曾见有文案但 hasPhrase=false）
+        var s = String(t || '').replace(/[\u200b\u200c\u200d\ufeff\u00ad]/g, '');
         if (!s) return false;
-        if (/这些帖子受到保护|帖子受到保护|這些貼文受到保護|這些帖子受到保護|貼文受到保護/.test(s)) return true;
+        // 简中 / 繁中（用户实机：「这些帖子受到保护」「只有经过批准的关注者才可查看 @x 的帖子。若要申请访问，点击关注。」）
+        if (/这些帖子已?受到?保护|帖子已?受到?保护|這些貼文已?受保護|這些帖子已?受保護|貼文已?受保護|帖子受到保护|貼文受保護/.test(s)) return true;
+        if (/该账号所有者已限制|該帳號擁有者已限制|已限制可查看其帖子|已限制可查看其貼文/.test(s)) return true;
+        if (/只有经过批准的关注者|只有獲批准的跟隨者|只有已核准的跟隨者|已核准的跟隨者|若要申请访问|若要請求存取權|請求存取權|才可查看.*的帖子|才可查看.*的貼文|可以查看.*的貼文/.test(s)) return true;
+        if (/此账号的帖子受到保护|此帳號的貼文受到保護|受保护的帖子|受保護的貼文|已受保護/.test(s)) return true;
+        if (/申请访问.*点击关注|申請存取.*點擊跟隨|点击关注.*了解更多/.test(s) && /保护|保護|批准|核准/.test(s)) return true;
+        // EN（新旧）
         if (/These posts are protected|Posts are protected|Only approved followers|This account.?s posts are protected/i.test(s)) return true;
+        if (/limits who can view their (posts|Tweets)|Protect(ed)? posts|account.?s posts are protected/i.test(s)) return true;
+        // 日文（旧「このアカウントは非公開」+ 现网「ポストは非公開 / 所有者は制限」）
         if (/このアカウントは非公開|承認されたフォロワーだけ|ツイートは非公開/.test(s)) return true;
-        if (/보호된 게시물|비공개 계정|승인된 팔로워/.test(s)) return true;
-        if (/只有经过批准的关注者|只有獲批准的跟隨者|若要申请访问|才可查看.*的帖子|才可查看.*的貼文/.test(s)) return true;
+        if (/このアカウントのポストは非公開|ポストは非公開です|ポストを表示できるアカウントを制限/.test(s)) return true;
+        if (/フォローリクエスト|承認されるまで/.test(s) && /非公開|保護|制限/.test(s)) return true;
+        // 韩文
+        if (/보호된 게시물|비공개 계정|승인된 팔로워|게시물을 볼 수 있는 계정을 제한/.test(s)) return true;
         return false;
+    }
+
+    /** 当前锁号：localStorage 优先；丢失时从 URL 首段恢复（探针曾见 creator=null 仍停在保护主页） */
+    function resolveCurrentCreatorHandle() {
+        var cr = '';
+        try { cr = String(localStorage.getItem('matrix_current_creator') || '').replace(/^@/, '').trim(); } catch (e0) { cr = ''; }
+        if (cr && !RESERVED_PAGE_HANDLES[cr.toLowerCase()]) return cr;
+        try {
+            var seg = String(window.location.pathname || '').split('/').filter(Boolean)[0] || '';
+            seg = seg.replace(/^@/, '').trim();
+            if (seg && !RESERVED_PAGE_HANDLES[seg.toLowerCase()] && /^[A-Za-z0-9_]{1,15}$/.test(seg)) {
+                try { localStorage.setItem('matrix_current_creator', seg); } catch (e1) {}
+                return seg;
+            }
+        } catch (e2) {}
+        return cr || '';
     }
 
     /** 本博主可点的粉丝列表链接（勿用全局 a[href*=followers]，会误命中侧栏/他处） */
@@ -1477,10 +1583,17 @@
 
     function pageLooksProtected() {
         try {
-            // 只扫主栏/空态文案；禁止 document 级锁标（粉丝列表里别人的锁会误杀当前公开博主）
+            // 只扫主栏/空态文案；锁标禁止 document 级（粉丝列表里别人的锁会误杀）
+            // 短语命中可用 body 兜底（空态 testid 常变 / 文案挂在 primary 外）
             var t = '';
-            var empty = document.querySelector('[data-testid="emptyState"], [data-testid="error-detail"], [data-testid="emptyStateHeader"]');
-            if (empty) t += '\n' + (empty.textContent || '');
+            var emptySel = '[data-testid="emptyState"], [data-testid="error-detail"], [data-testid="emptyStateHeader"],'
+                + '[data-testid="emptyStateDescription"], [data-testid="empty_state_header_text"],'
+                + '[data-testid="empty_state_body_text"], [data-testid*="emptyState"], [data-testid*="empty_state"]';
+            var empties = document.querySelectorAll(emptySel);
+            for (var ei = 0; ei < empties.length; ei++) {
+                try { t += '\n' + (empties[ei].textContent || ''); } catch (eE) {}
+            }
+            var empty = empties.length ? empties[0] : null;
             var primary = document.querySelector('[data-testid="primaryColumn"]');
             if (primary) t += '\n' + (primary.textContent || '');
             else {
@@ -1488,45 +1601,130 @@
                 if (main) t += '\n' + (main.textContent || '');
             }
             if (isProtectedProfileText(t)) return true;
+            // body 仅短语：不扫锁标，避免侧栏误杀（4.6.120：textContent 免整页排版）
+            try {
+                var body = document.body ? (document.body.textContent || '') : '';
+                if (body && isProtectedProfileText(body)) return true;
+            } catch (eB) {}
 
             // 锁标仅认：空态内，或非粉丝列表时的主栏头像/用户名区
-            if (empty && empty.querySelector('[data-testid="icon-lock"], [aria-label*="Protected"], [aria-label*="保护"], [aria-label*="非公開"]')) {
+            if (empty && empty.querySelector(
+                '[data-testid="icon-lock"], [aria-label*="Protected"], [aria-label*="保护"],'
+                + '[aria-label*="保護"], [aria-label*="非公開"], [aria-label*="비공개"]'
+            )) {
                 return true;
+            }
+            // 任一空态带锁也算
+            for (var lj = 0; lj < empties.length; lj++) {
+                try {
+                    if (empties[lj].querySelector(
+                        '[data-testid="icon-lock"], [aria-label*="Protected"], [aria-label*="保护"],'
+                        + '[aria-label*="保護"], [aria-label*="非公開"]'
+                    )) return true;
+                } catch (eL) {}
             }
             var path = String(window.location.pathname || '').toLowerCase();
             var onFollowersList = /\/followers|\/verified_followers|\/followers_you_follow/.test(path);
             if (!onFollowersList && primary) {
                 var headerLock = primary.querySelector(
-                    '[data-testid="UserName"] [data-testid="icon-lock"],' +
-                    '[data-testid="UserName"] [aria-label*="Protected"],' +
-                    '[data-testid="UserName"] [aria-label*="保护"],' +
-                    '[data-testid="UserName"] [aria-label*="非公開"],' +
-                    '[data-testid="UserAvatar-Container"] [data-testid="icon-lock"]'
+                    '[data-testid="UserName"] [data-testid="icon-lock"],'
+                    + '[data-testid="UserName"] [aria-label*="Protected"],'
+                    + '[data-testid="UserName"] [aria-label*="保护"],'
+                    + '[data-testid="UserName"] [aria-label*="保護"],'
+                    + '[data-testid="UserName"] [aria-label*="非公開"],'
+                    + '[data-testid="UserName"] [aria-label*="Protected account"],'
+                    + '[data-testid="UserAvatar-Container"] [data-testid="icon-lock"],'
+                    + '[data-testid="UserName"] svg[aria-label*="Protected"],'
+                    + '[data-testid="UserName"] svg[aria-label*="非公開"]'
                 );
                 if (headerLock) return true;
             }
+            // 粉丝 URL 上仍是保护空态（硬跳后常见）
+            if (onFollowersList && isProtectedProfileText(t)) return true;
             return false;
         } catch (e) { return false; }
+    }
+
+    /** 同一号「粉丝页踢回主页」计数：≥2 次视为隐私号（文案未命中时兜底，防来回跳） */
+    function __followersKickKey(cr) {
+        return 'sg_follow_kick_' + String(cr || '').replace(/^@/, '').toLowerCase();
+    }
+    function __bumpFollowersKick(cr) {
+        var k = __followersKickKey(cr);
+        var n = 0;
+        try { n = parseInt(sessionStorage.getItem(k) || '0', 10) || 0; } catch (eR) { n = 0; }
+        n += 1;
+        try { sessionStorage.setItem(k, String(n)); } catch (eW) {}
+        return n;
+    }
+    function __clearFollowersKick(cr) {
+        try { sessionStorage.removeItem(__followersKickKey(cr)); } catch (eC) {}
     }
 
     /** 当前锁博主主页/粉丝页若已是保护号 → 死号上报并换号 */
     async function skipProtectedBloggerIfNeeded(reason) {
         try {
-            var cr = localStorage.getItem('matrix_current_creator') || '';
-            if (!cr) return false;
+            var cr = resolveCurrentCreatorHandle();
             if (!pageLooksProtected()) return false;
+            if (!cr) {
+                // 文案已确认保护，但锁号丢了：仍须跳出，禁止当白壳空转
+                updateStats('🔒 保护号不可进粉（' + (reason || 'protected') + '，无锁号），跳过');
+                await sleep(FOLLOW_PACE.deadSkipGapMs);
+                await jumpToNextBloggerAfterDeadSkip();
+                return true;
+            }
             updateStats('🔒 @' + cr + ' 保护号不可进粉（' + (reason || 'protected') + '），上报死号');
             try {
                 document.dispatchEvent(new CustomEvent('matrix-diagnostic', {
                     detail: { text: '🔒 保护号→dead @' + cr + ' via=' + (reason || '') }
                 }));
             } catch (eD) {}
+            __clearFollowersKick(cr);
             markHandleCompleted(cr);
             await markPoolTaskDead();
-            await sleep(1200);
+            await sleep(FOLLOW_PACE.deadSkipGapMs);
             await jumpToNextBloggerAfterDeadSkip();
             return true;
         } catch (e) { return false; }
+    }
+
+    /** 主页 settle：中途+结束各检一次保护号（给空态文案挂上的时间） */
+    async function settleProfileForDetect(cr, why) {
+        var total = FOLLOW_PACE.profileSettleMs + randomInt(0, FOLLOW_PACE.profileSettleJitter);
+        var half = Math.floor(total / 2);
+        updateStats('📖 阅读 @' + (cr || '') + ' 主页中…（稳节奏 ' + Math.round(total / 1000) + 's）');
+        await sleep(half);
+        if (await skipProtectedBloggerIfNeeded((why || 'profile') + '_mid')) return true;
+        await sleep(Math.max(500, total - half));
+        if (await skipProtectedBloggerIfNeeded((why || 'profile') + '_end')) return true;
+        return false;
+    }
+
+    /** 踢回主页过多次 / 明确保护 → 死号；返回 true 表示已换号 */
+    async function skipProtectedOrKickLoop(reason) {
+        var cr = resolveCurrentCreatorHandle();
+        if (pageLooksProtected()) {
+            return await skipProtectedBloggerIfNeeded(reason || 'protected');
+        }
+        if (!cr) return false;
+        var kicks = __bumpFollowersKick(cr);
+        if (kicks >= 2) {
+            updateStats('🔒 @' + cr + ' 进粉被踢回' + kicks + '次，按隐私号跳过（' + (reason || 'kick_loop') + '）');
+            try {
+                document.dispatchEvent(new CustomEvent('matrix-diagnostic', {
+                    detail: { text: '🔒 进粉踢回循环→dead @' + cr + ' kicks=' + kicks + ' via=' + (reason || '') }
+                }));
+            } catch (eD2) {}
+            __clearFollowersKick(cr);
+            markHandleCompleted(cr);
+            await markPoolTaskDead();
+            await sleep(FOLLOW_PACE.deadSkipGapMs);
+            await jumpToNextBloggerAfterDeadSkip();
+            return true;
+        }
+        updateStats('⏳ @' + cr + ' 进粉被踢回主页（' + kicks + '/2），稍候再判…');
+        await sleep(FOLLOW_PACE.afterKickSleepMs);
+        return false;
     }
 
     /** X 粉丝列表加载失败页：「出错了。请尝试重新加载。」— 多为限流/慢网，勿立刻 dead */
@@ -1547,16 +1745,21 @@
         } catch (e) { return false; }
     }
 
-    /** 慢网等待本博粉丝入口；明确保护号提前返回 */
+    /** 慢网等待本博粉丝入口；明确保护号提前返回（有链接也先过保护检测） */
     async function waitForBloggerFollowersLink(handle, maxMs) {
-        var budget = (typeof maxMs === 'number' && maxMs > 0) ? maxMs : 12000;
+        var budget = (typeof maxMs === 'number' && maxMs > 0) ? maxMs : FOLLOW_PACE.followersLinkWaitMs;
         var deadline = Date.now() + budget;
         while (Date.now() < deadline) {
             if (pageLooksProtected()) return { link: null, protected: true };
             var hit = findBloggerFollowersLink(handle);
-            if (hit) return { link: hit, protected: false };
-            await sleep(2000);
+            // 隐私号常仍有粉丝数字链接：有链接也必须再验保护文案/锁标
+            if (hit) {
+                if (pageLooksProtected()) return { link: null, protected: true };
+                return { link: hit, protected: false };
+            }
+            await sleep(2500);
         }
+        if (pageLooksProtected()) return { link: null, protected: true };
         return {
             link: findBloggerFollowersLink(handle),
             protected: pageLooksProtected()
@@ -1566,10 +1769,25 @@
     /** 进粉失败但非真保护：释放任务，勿 pool_dead（慢网/半加载误杀） */
     async function skipBloggerSoftFail(reason) {
         var cr = localStorage.getItem('matrix_current_creator') || '';
-        updateStats('⏳ @' + cr + ' 进粉未就绪，释放换号（不标死号） ' + (reason || ''));
+        // 同一号软失败两次 → 按隐私/不可进粉处理，避免极速连环换号空转
+        var softKey = 'sg_follow_softfail_' + String(cr || '').replace(/^@/, '').toLowerCase();
+        var softN = 0;
+        try { softN = parseInt(sessionStorage.getItem(softKey) || '0', 10) || 0; } catch (eS) { softN = 0; }
+        softN += 1;
+        try { sessionStorage.setItem(softKey, String(softN)); } catch (eW) {}
+        if (cr && softN >= 2) {
+            updateStats('🔒 @' + cr + ' 进粉软失败' + softN + '次，按隐私号跳过');
+            try { sessionStorage.removeItem(softKey); } catch (eR) {}
+            markHandleCompleted(cr);
+            await markPoolTaskDead();
+            await sleep(FOLLOW_PACE.deadSkipGapMs);
+            await jumpToNextBloggerAfterDeadSkip();
+            return;
+        }
+        updateStats('⏳ @' + cr + ' 进粉未就绪，释放换号（不标死号） ' + (reason || '') + ' [' + softN + '/2]');
         try {
             document.dispatchEvent(new CustomEvent('matrix-diagnostic', {
-                detail: { text: '⏳ 进粉软失败→fail @' + cr + ' via=' + (reason || '') }
+                detail: { text: '⏳ 进粉软失败→fail @' + cr + ' via=' + (reason || '') + ' n=' + softN }
             }));
         } catch (eD) {}
         try { await releasePoolTask(reason || 'followers_entry_soft'); } catch (eRel) {}
@@ -1578,7 +1796,7 @@
         if (cr) {
             try { clearBloggerFollowCount(cr); } catch (eClr) {}
         }
-        await sleep(1500);
+        await sleep(FOLLOW_PACE.softFailGapMs);
         await jumpToNextBlogger();
     }
 
@@ -1614,10 +1832,23 @@
         try {
             var path = String(window.location.pathname || '').toLowerCase();
             if (!/\/followers|\/verified_followers|\/followers_you_follow/.test(path)) return false;
+            // 保护号空态 ≠ 白壳：禁止软愈空转（探针：hasPhrase 漏检时 last=粉丝页未灌水）
+            if (pageLooksProtected()) return false;
             if (pageLooksFollowersBroken()) return false;
             if (pageLooksFollowersHydrated()) return false;
             return true;
         } catch (eS) { return false; }
+    }
+
+    /** 4.6.115：粉丝列表仍在加载（aria-busy/progressbar）——渲染守卫宽限依据，加载中不计数防误判白壳 */
+    function pageLooksFollowersLoading() {
+        try {
+            var col = document.querySelector('[data-testid="primaryColumn"]');
+            if (!col) return false;
+            if (col.querySelector('[aria-busy="true"]')) return true;
+            if (col.querySelector('[role="progressbar"]')) return true;
+            return false;
+        } catch (eL) { return false; }
     }
 
     function isInSoftRiskFillWindow() {
@@ -1674,15 +1905,24 @@
         return true;
     }
 
+    /** 4.6.115：派发愈后清 settle 标记，重载页重新吃 8s settle（对齐 SCAN 键派生 resolveCurrentCreatorHandle→lower） */
+    function __clearScanSettledOnHeal() {
+        try {
+            var _cr = String(resolveCurrentCreatorHandle() || '').toLowerCase();
+            if (_cr) sessionStorage.removeItem('sg_follow_scan_settled_' + _cr);
+        } catch (eCS) {}
+    }
+
     /** 白壳处理：软窗只愈；窗外累计后 pool_fail 短歇，禁止假 done */
+    /** 4.6.115：窗外首愈只等不刷（防硬刷抹掉在途渲染），shell#2 起才软愈重载 */
     async function handleFollowersShellStall(via) {
-        requestSharedSoftHeal(via || 'followers_shell');
-        updateStats('粉丝页未灌水，等愈/重试（不换号）');
         if (isInSoftRiskFillWindow()) {
+            if (requestSharedSoftHeal(via || 'followers_shell')) __clearScanSettledOnHeal();
+            updateStats('粉丝页未灌水，等愈/重试（不换号）');
             document.dispatchEvent(new CustomEvent('matrix-diagnostic', {
                 detail: { text: '❄ 软窗内 shell·只愈不释放 via=' + (via || '') }
             }));
-            await sleep(4000);
+            await sleep(FOLLOW_PACE.afterKickSleepMs);
             return { stalled: true, released: false };
         }
         var shellN = 0;
@@ -1690,9 +1930,6 @@
             shellN = (parseInt(sessionStorage.getItem('sg_follow_shell_wait_n') || '0', 10) || 0) + 1;
             sessionStorage.setItem('sg_follow_shell_wait_n', String(shellN));
         } catch (eN) { shellN = 1; }
-        document.dispatchEvent(new CustomEvent('matrix-diagnostic', {
-            detail: { text: '⏳ shell 等待×' + shellN + ' via=' + (via || '') + '（禁假触底换号）' }
-        }));
         if (shellN >= 6) {
             try { sessionStorage.removeItem('sg_follow_shell_wait_n'); } catch (eClr) {}
             updateStats('粉丝页白壳超时，释放任务短歇（不标完成）');
@@ -1700,7 +1937,20 @@
             handOffFollowRoundNoSoft('followers_shell_timeout');
             return { stalled: true, released: true };
         }
-        await sleep(5000);
+        if (shellN === 1) {
+            updateStats('粉丝页未灌水，先等一拍（不刷页）');
+            document.dispatchEvent(new CustomEvent('matrix-diagnostic', {
+                detail: { text: '⏳ shell 首愈只等不刷 ×1 via=' + (via || '') + '（防抹掉在途渲染）' }
+            }));
+        } else {
+            var _healSent = requestSharedSoftHeal(via || 'followers_shell');
+            if (_healSent) __clearScanSettledOnHeal();
+            updateStats('粉丝页未灌水，等愈/重试（不换号）');
+            document.dispatchEvent(new CustomEvent('matrix-diagnostic', {
+                detail: { text: '⏳ shell 等待×' + shellN + ' via=' + (via || '') + ' heal=' + (_healSent ? '派发' : '冷却中') + '（禁假触底换号）' }
+            }));
+        }
+        await sleep(FOLLOW_PACE.scanWaitMs);
         return { stalled: true, released: false };
     }
 
@@ -1723,7 +1973,7 @@
             handOffFollowRoundNoSoft('followers_broken_timeout');
             return { stalled: true, released: true };
         }
-        await sleep(6000);
+        await sleep(FOLLOW_PACE.scanWaitMs);
         return { stalled: true, released: false };
     }
 
@@ -1950,13 +2200,16 @@
         localStorage.setItem('matrix_current_task_id', String(result.id));
         localStorage.setItem('matrix_current_task_assigned_at', String(Date.now()));
         try { clearBloggerFollowCount(handle); } catch (eClr) {}
-        localStorage.setItem('matrix_step', 'SCAN');
+        // 4.6.101：先 PROFILE 主页 settle+隐私检，禁止直跳 /followers 连环踢回
+        localStorage.setItem('matrix_step', 'PROFILE');
         localStorage.setItem('matrix_follow_running', 'true');
         markStepChange();
-        updateStats('领取到 @' + handle + ' ，进入粉丝列表...');
-        document.dispatchEvent(new CustomEvent('matrix-diagnostic', { detail: { text: '领取到 @' + handle + ' (id:' + result.id + ')' } }));
-        // 强制跳：否则节流失败会留下「锁=新博主、页=旧列表」
-        if (!followGoForce('https://x.com/' + handle + '/followers')) {
+        try { sessionStorage.removeItem('sg_follow_scan_settled_' + String(handle).toLowerCase()); } catch (eSk) {}
+        updateStats('领取到 @' + handle + ' ，先读主页再进粉…');
+        document.dispatchEvent(new CustomEvent('matrix-diagnostic', { detail: { text: '领取到 @' + handle + ' →PROFILE (id:' + result.id + ')' } }));
+        await sleep(randomInt(CONFIG.jumpDelayMin, CONFIG.jumpDelayMax));
+        var navOk = await waitNavGapThenForce('https://x.com/' + handle, 'pool_pop_profile');
+        if (!navOk) {
             navigateToLockedCreator('pool_pop_nav');
         }
     }
@@ -2310,7 +2563,14 @@
                 localStorage.setItem('matrix_follow_running', 'true');
                 updateStats('配额已满，转入纯养号模式');
                 updateFollowButtonState();
-                setTimeout(function() { if (isRunning) followGoWhenAllowed('https://x.com/home'); }, 1000);
+                setTimeout(function() {
+                    if (!isRunning) return;
+                    if (typeof SchedulerGate !== 'undefined' && SchedulerGate.go) {
+                        SchedulerGate.go('follow', 'https://x.com/home', { force: true });
+                    } else {
+                        followGoWhenAllowed('https://x.com/home');
+                    }
+                }, 8000);
                 return;
             }
             // 🔒 锁检查：有未完成的任务则恢复，不领新号
@@ -2382,6 +2642,10 @@
     function startPanelRefresh() {
         if (_panelRefreshInterval) return;
         _panelRefreshInterval = setInterval(() => {
+            // 后台标签无需刷新倒计时；切回可见后下一 tick 自动更新
+            if (document.hidden) return;
+            // 4.6.113：关注模块未运行时无需每秒刷面板（CPU 优化）
+            if (!isRunning) return;
             // 只更新风控状态区域，不重渲染整个面板（避免闪烁）
             const riskEl = document.getElementById('matrix-risk-status');
             if (!riskEl) return;
@@ -2422,7 +2686,7 @@
                 riskClass = cooldownRemaining > 2 * 3600000 ? 'status-hard' : 'status-cooling';
             }
             riskEl.className = 'risk-status ' + riskClass;
-        }, 1000);
+        }, 2000);
     }
 
     function stopPanelRefresh() {
@@ -2596,46 +2860,130 @@
     function updateStats(msg) {
         lastMsg = msg;
         console.log('[Follow状态]', msg);
+        try {
+            localStorage.setItem('sg_follow_last_msg', String(msg || '').slice(0, 240));
+            localStorage.setItem('sg_follow_last_msg_at', String(Date.now()));
+        } catch (eLs) {}
         updateFollowButtonState();
-        
-        // 向中控台发送状态更新（含风控信息）
-        if (isRunning) {
+
+        // 关注球面板已停用：隐私号/死号等关键态必须浮条可见，否则像「功能没了」
+        try {
+            var tip = String(msg || '');
+            if (/隐私|保护号|死号|封禁|不存在|敏感资料|🔒|⛔|💀/.test(tip)) {
+                showFollowToastOnly(tip, 3800);
+            }
+        } catch (eTip) {}
+
+        try {
             const cooldownUntil = getMatrixCooldownUntil();
             const now = Date.now();
             const isCooling = now < cooldownUntil;
             document.dispatchEvent(new CustomEvent('matrix-follow-status', {
-                detail: { 
-                    running: true, 
-                    status: isCooling ? 'cooling' : 'running', 
+                detail: {
+                    running: !!isRunning,
+                    status: !isRunning ? 'stopped' : (isCooling ? 'cooling' : 'running'),
                     message: msg,
                     count: getAccountStats().follows_today,
                     limit: getDailyLimit(getAccountStats().day_count),
-                    cooldownRemaining: isCooling ? cooldownUntil - now : 0
+                    cooldownRemaining: isCooling ? cooldownUntil - now : 0,
+                    blogger: localStorage.getItem('matrix_current_creator') || '',
+                    step: localStorage.getItem('matrix_step') || 'IDLE'
                 }
             }));
+        } catch (eEv) {}
+    }
+
+    /** 仅浮条，不回写 updateStats（防递归） */
+    function showFollowToastOnly(msg, ms) {
+        ms = ms || 3200;
+        var text = String(msg || '');
+        try {
+            document.dispatchEvent(new CustomEvent('matrix-diagnostic', { detail: { text: text } }));
+        } catch (eD) {}
+        try {
+            var el = document.getElementById('sg-follow-toast');
+            if (!el) {
+                el = document.createElement('div');
+                el.id = 'sg-follow-toast';
+                el.setAttribute('role', 'status');
+                el.style.cssText = [
+                    'position:fixed', 'top:64px', 'left:50%', 'transform:translateX(-50%)',
+                    'z-index:2147483646', 'background:#0f1419', 'color:#fff',
+                    'padding:10px 16px', 'border-radius:10px', 'font:600 13px/1.35 system-ui,sans-serif',
+                    'box-shadow:0 8px 28px rgba(0,0,0,.4)', 'max-width:92vw', 'pointer-events:none',
+                    'border:1px solid #38444d', 'display:none'
+                ].join(';');
+                (document.body || document.documentElement).appendChild(el);
+            }
+            el.textContent = text;
+            el.style.display = 'block';
+            clearTimeout(el._hideTimer);
+            el._hideTimer = setTimeout(function () {
+                try { el.style.display = 'none'; } catch (eH) {}
+            }, ms);
+        } catch (eT) {
+            console.log('[FollowToast]', text);
         }
     }
+
+    /** 页面可见浮条（虚拟列表会冲掉 cell 边框，必须用 toast 才能看见跳过原因） */
+    function followToast(msg, ms) {
+        ms = ms || 3200;
+        var text = String(msg || '');
+        try { updateStats(text); } catch (eU) {}
+        // updateStats 对隐私类已 toast；其它仍强制可见
+        if (!/隐私|保护号|死号|封禁|不存在|敏感资料|🔒|⛔|💀/.test(text)) {
+            showFollowToastOnly(text, ms);
+        }
+    }
+
+    /** 经典模式：清空本地进度；同一标签页只提示一次，避免 boot+start 双注入刷屏 */
+    function purgePoisonedFollowProgress(why) {
+        try {
+            localStorage.removeItem('matrix_follow_processed_fans');
+            try { sessionStorage.removeItem('sg_follow_unconf_map'); } catch (eU) {}
+            localStorage.setItem('sg_follow_proc_cleared_46044', '1');
+            var cr = String(localStorage.getItem('matrix_current_creator') || '').replace(/^@/, '').toLowerCase();
+            if (cr) __clearProcessedFans(cr);
+            var toastKey = 'sg_follow_purge_toast_once';
+            if (sessionStorage.getItem(toastKey) !== '1') {
+                sessionStorage.setItem(toastKey, '1');
+                followToast('已清空本地关注进度 (' + String(why || 'boot') + ')', 2500);
+            }
+        } catch (eP) {}
+    }
+
+    try { purgePoisonedFollowProgress('boot'); } catch (eBoot) {}
 
     // 初始化UI
     createFollowUI();
 
     // ================= 【看门狗】 =================
-    setInterval(() => {
-        if (!isRunning) return;
-        let lastHealth = parseInt(sessionStorage.getItem('matrix_watchdog_time') || Date.now());
-        let cr = localStorage.getItem('matrix_current_creator') || "unknown";
-        let currentPath = window.location.pathname.toLowerCase();
+    // 动态间隔：运行/可见 5s；后台/待机 30s
+    function scheduleWatchdog() {
+        const delay = (document.hidden || !isRunning) ? 30000 : 5000;
+        setTimeout(() => {
+            try {
+                if (isRunning && !document.hidden) {
+                    let lastHealth = parseInt(sessionStorage.getItem('matrix_watchdog_time') || Date.now());
+                    let cr = localStorage.getItem('matrix_current_creator') || "unknown";
+                    let currentPath = window.location.pathname.toLowerCase();
 
-        if (document.querySelector('[data-testid="UserCell"]') || pageLooksFollowersHydrated()
-            || currentPath === '/' + cr || currentPath === '/home') {
-            sessionStorage.setItem('matrix_watchdog_time', Date.now());
-            try { sessionStorage.removeItem('sg_follow_shell_wait_n'); } catch (eOkW) {}
-        } else if (Date.now() - lastHealth > 35000) {
-            updateStats('【防卡死】未灌水，点重试/软愈（禁 ?_t= 硬跳）');
-            requestSharedSoftHeal('follow_watchdog');
-            sessionStorage.setItem('matrix_watchdog_time', Date.now());
-        }
-    }, 5000);
+                    if (document.querySelector('[data-testid="UserCell"]') || pageLooksFollowersHydrated()
+                        || currentPath === '/' + cr || currentPath === '/home') {
+                        sessionStorage.setItem('matrix_watchdog_time', Date.now());
+                        try { sessionStorage.removeItem('sg_follow_shell_wait_n'); } catch (eOkW) {}
+                    } else if (Date.now() - lastHealth > 35000) {
+                        updateStats('【防卡死】未灌水，点重试/软愈（禁 ?_t= 硬跳）');
+                        requestSharedSoftHeal('follow_watchdog');
+                        sessionStorage.setItem('matrix_watchdog_time', Date.now());
+                    }
+                }
+            } catch (e) {}
+            scheduleWatchdog();
+        }, delay);
+    }
+    scheduleWatchdog();
 
     // ================= 【号池任务标记】 =================
     var POOL_DONE_MIN_FOLLOWS = (window.SgPoolApi && window.SgPoolApi.POOL_DONE_MIN_FOLLOWS) || 5;
@@ -2944,7 +3292,7 @@
         '팔로우'
     ];
 
-    // 已关注 / 待确认 / 点下去会取关 — 长词优先
+    // 已关注 / 待确认 / 点下去会取关 — 长词优先（禁短词乱匹配，如单独「キャンセル」）
     var __FOLLOW_ALREADY_LABELS = [
         // EN
         'followingyou', 'following', 'unfollow', 'pending', 'requested',
@@ -2957,9 +3305,9 @@
         '正在追蹤', '已追蹤', '追蹤中', '取消追蹤', '互相追蹤',
         '正在關注', '已關注', '關注中', '取消關注', '互相關注',
         '請求已傳送', '請求已發送', '等待確認', '已請求', '取消請求',
-        // 日文
+        // 日文（勿单独放「キャンセル」——子串会误杀）
         'フォロー中', 'フォロー解除', 'フォローしています', 'フォローするのをやめる',
-        'リクエスト済み', 'リクエスト中', '承認待ち', 'キャンセル',
+        'リクエスト済み', 'リクエスト中', '承認待ち', 'リクエストをキャンセル',
         // 韩文
         '팔로잉', '언팔로우', '팔로우중', '요청됨', '요청중'
     ].slice().sort(function (a, b) { return b.length - a.length; });
@@ -2969,7 +3317,13 @@
         if (!t) return '';
         for (var i = 0; i < __FOLLOW_ALREADY_LABELS.length; i++) {
             var k = __normFollowText(__FOLLOW_ALREADY_LABELS[i]);
-            if (k && t.indexOf(k) >= 0) return __FOLLOW_ALREADY_LABELS[i];
+            if (!k) continue;
+            // 短英文词要求整词边界，避免误伤
+            if (k.length <= 8 && /^[a-z]+$/.test(k)) {
+                if (t === k || t.indexOf(k) === 0) return __FOLLOW_ALREADY_LABELS[i];
+                continue;
+            }
+            if (t.indexOf(k) >= 0) return __FOLLOW_ALREADY_LABELS[i];
         }
         return '';
     }
@@ -3002,15 +3356,20 @@
         var cls = (btn.className && btn.className.toString) ? btn.className.toString() : String(btn.className || '');
         var pressed = (btn.getAttribute('aria-pressed') || '').toLowerCase();
 
-        // 1) testid：最可靠。xxx-unfollow / xxx-follow
-        if (testId.indexOf('unfollow') >= 0) {
+        // 忽略「关注了你」徽章等非按钮（旧逻辑用 indexOf('follow') 会误打到它）
+        if (testId === 'userfollowindicator' || testId.indexOf('userfollowindicator') >= 0) {
+            return { state: 'unknown', reason: 'badge_not_btn', testId: testId, text: text, aria: aria };
+        }
+
+        // 1) testid：最可靠。必须后缀 -unfollow / -follow（X 现网为 `{userId}-follow`）
+        if (/-unfollow$/.test(testId) || testId.indexOf('unfollow') >= 0) {
             return { state: 'already', reason: 'testid=unfollow', testId: testId, text: text, aria: aria };
         }
-        if (testId.indexOf('following') >= 0) {
+        if (/-following$/.test(testId) || /(^|-)following$/.test(testId)) {
             return { state: 'already', reason: 'testid=following', testId: testId, text: text, aria: aria };
         }
-        // 明确的可关注按钮（user-xxx-follow）
-        if (/-follow$/.test(testId) || /(^|-)follow$/.test(testId)) {
+        // 明确的可关注按钮（{id}-follow）；禁止用含 follow 的任意 testid
+        if (/-follow$/.test(testId)) {
             var hitOnFollowTid = __matchAlreadyLabel(text) || __matchAlreadyLabel(aria);
             if (hitOnFollowTid) {
                 return { state: 'already', reason: 'testid=follow但文案=' + hitOnFollowTid, testId: testId, text: text, aria: aria };
@@ -3040,34 +3399,113 @@
             return { state: 'can_follow', reason: 'label=follow', testId: testId, text: text, aria: aria };
         }
 
+        // 6) 图标按钮：无可见文案，但 aria 含 Follow @xxx（排除 Following/Unfollow）
+        var blob = __normFollowText(aria + ' ' + text);
+        if (blob && blob.indexOf('unfollow') < 0 && blob.indexOf('following') < 0 && blob.indexOf('フォロー中') < 0 && blob.indexOf('followsyou') < 0) {
+            if (blob.indexOf('follow') >= 0 || blob.indexOf('フォロー') >= 0 || blob.indexOf('关注') >= 0 || blob.indexOf('關注') >= 0 || blob.indexOf('跟隨') >= 0 || blob.indexOf('팔로우') >= 0) {
+                return { state: 'can_follow', reason: 'aria-follow', testId: testId, text: text, aria: aria };
+            }
+        }
+
         return { state: 'unknown', reason: 'unrecognized', testId: testId, text: text, aria: aria };
     }
+    /**
+     * 4.6.46/47 现网锚定（用户实机 2026-10-04）：
+     * - 行：`[data-testid="UserCell"]`（自身 role=button，点行会进主页）
+     * - 可关注：`button[data-testid$="-follow"]`，例 `2895156793-follow`，aria=`关注 @handle`，文案常为空或「关注」
+     * - 已关注：`button[data-testid$="-unfollow"]`，例 `2895156793-unfollow`，aria=`正在关注 @handle`，文案=`正在关注`
+     * - 同行另有无关按钮文案 `push`（推博主），禁止当关注按钮
+     * - handle：`a[href^="/"]`
+     */
     function __findFollowButton(cell) {
-        // 优先精确 -follow（排除 unfollow）
-        var nodes = cell.querySelectorAll('[role="button"][data-testid], button[data-testid], [data-testid]');
-        var unfollowBtn = null;
-        var followBtn = null;
-        for (var i = 0; i < nodes.length; i++) {
-            var tid = (nodes[i].getAttribute('data-testid') || '').toLowerCase();
-            if (!tid) continue;
-            if (tid.indexOf('unfollow') >= 0) { unfollowBtn = nodes[i]; continue; }
-            if (tid.indexOf('follow') >= 0) { followBtn = nodes[i]; break; }
-        }
-        if (unfollowBtn && !followBtn) return { btn: unfollowBtn, hint: 'only_unfollow' };
-        if (followBtn) return { btn: followBtn, hint: 'testid_follow' };
+        if (!cell) return { btn: null, hint: 'none' };
 
-        // 文案精确匹配「关注」
-        var allBtns = cell.querySelectorAll('[role="button"], button');
+        // 优先：真正的 BUTTON + 后缀 -follow / -unfollow（现网确认）
+        var followExact = cell.querySelector('button[data-testid$="-follow"]')
+            || cell.querySelector('[role="button"][data-testid$="-follow"]')
+            || cell.querySelector('[data-testid$="-follow"]');
+        var unfollowExact = cell.querySelector('button[data-testid$="-unfollow"]')
+            || cell.querySelector('[role="button"][data-testid$="-unfollow"]')
+            || cell.querySelector('[data-testid$="-unfollow"]');
+        if (followExact) return { btn: followExact, hint: 'testid_follow' };
+        if (unfollowExact) return { btn: unfollowExact, hint: 'only_unfollow' };
+
+        // 文案/aria 兜底——只扫 button，跳过 UserCell 自身与 push 等无关钮
+        var allBtns = cell.querySelectorAll('button, [role="button"]');
         for (var j = 0; j < allBtns.length; j++) {
+            if (allBtns[j] === cell) continue;
+            var tJ = __normFollowText(allBtns[j].innerText || allBtns[j].textContent || '');
+            if (tJ === 'push' || tJ === '推送' || tJ === '推博主') continue;
             var st = __followBtnState(allBtns[j]);
             if (st.state === 'can_follow') return { btn: allBtns[j], hint: 'label_follow' };
         }
-        // 只有「已关注」类按钮
         for (var k = 0; k < allBtns.length; k++) {
+            if (allBtns[k] === cell) continue;
+            var tK = __normFollowText(allBtns[k].innerText || allBtns[k].textContent || '');
+            if (tK === 'push' || tK === '推送' || tK === '推博主') continue;
             var st2 = __followBtnState(allBtns[k]);
             if (st2.state === 'already') return { btn: allBtns[k], hint: 'label_already' };
         }
         return { btn: null, hint: 'none' };
+    }
+
+    /** 点关注：隔离 UserCell(role=button) 冒泡，避免点关注却进了主页 */
+    async function __clickFollowAnchored(cell, btn) {
+        if (!btn) return false;
+        var prevCellPe = '';
+        var prevBtnPe = '';
+        try {
+            if (cell) {
+                prevCellPe = cell.style.pointerEvents || '';
+                cell.style.pointerEvents = 'none';
+            }
+            prevBtnPe = btn.style.pointerEvents || '';
+            btn.style.pointerEvents = 'auto';
+            try {
+                var r = btn.getBoundingClientRect();
+                if (r.top < 0 || r.bottom > window.innerHeight || r.width < 2) {
+                    btn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    await sleep(280);
+                }
+            } catch (eSv) {}
+            try {
+                if (typeof EngineUtils !== 'undefined' && EngineUtils.humanClick) {
+                    await EngineUtils.humanClick(btn);
+                } else {
+                    btn.click();
+                }
+            } catch (eClick) {
+                try { btn.click(); } catch (eN) { return false; }
+            }
+            return true;
+        } finally {
+            try { if (btn) btn.style.pointerEvents = prevBtnPe; } catch (e1) {}
+            try { if (cell) cell.style.pointerEvents = prevCellPe; } catch (e2) {}
+        }
+    }
+
+    /** 扫描前 DOM 探针：一眼看清现网能不能找到 UserCell / -follow 按钮 */
+    function __probeFollowDom() {
+        var cells = document.querySelectorAll('[data-testid="UserCell"]');
+        var followN = document.querySelectorAll('button[data-testid$="-follow"], [data-testid$="-follow"]').length;
+        var unfollowN = document.querySelectorAll('button[data-testid$="-unfollow"], [data-testid$="-unfollow"]').length;
+        var sampleAria = '';
+        var sampleTid = '';
+        if (cells.length) {
+            var fb = cells[0].querySelector('button[data-testid$="-follow"], [data-testid$="-follow"]');
+            if (fb) {
+                sampleTid = fb.getAttribute('data-testid') || '';
+                sampleAria = fb.getAttribute('aria-label') || '';
+            }
+        }
+        var msg = 'DOM探针: UserCell=' + cells.length
+            + ' -follow=' + followN
+            + ' -unfollow=' + unfollowN
+            + (sampleTid ? (' | ' + sampleTid) : '')
+            + (sampleAria ? (' | ' + sampleAria) : (cells.length ? ' | 首行无-follow' : ' | 无UserCell'));
+        followToast(msg, 6000);
+        console.log('[关注DOM]', msg);
+        return { cells: cells.length, followN: followN, unfollowN: unfollowN, sampleTid: sampleTid, sampleAria: sampleAria };
     }
 
     function __followDetectReason(btnText, testId, ariaLabel, btnClass) {
@@ -3509,7 +3947,39 @@
             return false;
         }
     }
-async function handleFollowButton(cell) {
+    /**
+     * 4.6.44 经典关注模式（临时）：
+     * - 屏蔽本地进度跳过（不再因「之前处理过」整页跳过）
+     * - 屏蔽严格「按钮必须变已关注」门（点完无风控即算成功，对齐早期行为）
+     * - 单次 humanClick，禁止多层连点
+     * 验证通过后再考虑收回。
+     */
+    /**
+     * 4.6.50：按 handle 记本会话已处理（禁止靠 DOM data-matrix-processed 跨行）。
+     * X 虚拟列表会回收 UserCell 节点，属性会粘到下一个完全不同的账号上 → 「明明是关注按钮却没点就跳过」。
+     */
+    function __followDoneSet() {
+        if (!window.__sg_follow_done_handles) window.__sg_follow_done_handles = new Set();
+        return window.__sg_follow_done_handles;
+    }
+    function __followMarkDone(handle) {
+        var h = String(handle || '').replace(/^@/, '').toLowerCase();
+        if (h) __followDoneSet().add(h);
+    }
+    function __followIsDone(handle) {
+        var h = String(handle || '').replace(/^@/, '').toLowerCase();
+        return !!(h && __followDoneSet().has(h));
+    }
+    function __followStripDomProcessedFlags() {
+        try {
+            var nodes = document.querySelectorAll('[data-testid="UserCell"][data-matrix-processed]');
+            for (var i = 0; i < nodes.length; i++) nodes[i].removeAttribute('data-matrix-processed');
+        } catch (eS) {}
+    }
+
+    var __FOLLOW_CLASSIC = true;
+
+    async function handleFollowButton(cell) {
         if (!isRunning) return 'engine_stopped';
 
         // 蓝条已挂着时先拦（含上一轮未识别的冻结），再点只会继续「假跳过」
@@ -3559,18 +4029,30 @@ async function handleFollowButton(cell) {
         handle = String(handle).replace(/^@/, '').toLowerCase();
 
         const currentBlogger = (localStorage.getItem('matrix_current_creator') || '').replace(/^@/, '').toLowerCase();
-        if (currentBlogger && __getProcessedFanSet(currentBlogger).has(handle)) {
-            cell.setAttribute('data-matrix-processed', 'true');
-            document.dispatchEvent(new CustomEvent('matrix-follow-detect', {
-                detail: { handle: handle, decision: 'already_processed', reason: 'local_progress' }
-            }));
+
+        // 本会话按 handle 跳过（真点过 / 真已关注）；禁止信 DOM processed 标记
+        if (__followIsDone(handle)) {
+            followToast('⏭ 本会话已处理 @' + handle);
+            return 'already_followed';
+        }
+        // 非经典才读本地持久进度
+        if (!__FOLLOW_CLASSIC && currentBlogger && __getProcessedFanSet(currentBlogger).has(handle)) {
+            __followMarkDone(handle);
+            followToast('⏭ 本地进度跳过 @' + handle);
             return 'already_followed';
         }
 
         let found = __findFollowButton(cell);
         let followBtn = found.btn;
+        // 虚拟列表偶发行已出、按钮未灌水：短等再找一次
         if (!followBtn) {
-            console.warn('[关注] 找不到关注按钮，cell data-testid:', cell.getAttribute('data-testid'), 'cell buttons:', cell.querySelectorAll('[role="button"]').length);
+            await sleep(500);
+            found = __findFollowButton(cell);
+            followBtn = found.btn;
+        }
+        if (!followBtn) {
+            followToast('⏭ 无关注按钮 @' + handle + '（保护号/未加载）—未点击');
+            console.warn('[关注] 找不到关注按钮 @' + handle, cell.getAttribute('data-testid'));
             return 'no_follow_btn';
         }
 
@@ -3582,41 +4064,21 @@ async function handleFollowButton(cell) {
             ? followBtn.className.toString().toLowerCase()
             : String(followBtn.className || '').toLowerCase();
 
-        // 仅有 unfollow / 文案已是已关注 → 跳过，绝不点击
+        // 真·已关注才跳过
         if (found.hint === 'only_unfollow' || btnState.state === 'already') {
-            document.dispatchEvent(new CustomEvent('matrix-follow-detect', {
-                detail: {
-                    handle: handle,
-                    btnText: btnText,
-                    testId: testId,
-                    ariaLabel: ariaLabel,
-                    decision: 'already_followed',
-                    reason: btnState.reason || found.hint,
-                    hint: found.hint
-                }
-            }));
-            cell.setAttribute('data-matrix-processed', 'true');
-            __markFanProcessed(currentBlogger, handle);
+            __followMarkDone(handle);
+            if (!__FOLLOW_CLASSIC) __markFanProcessed(currentBlogger, handle);
+            followToast('⏭ 按钮已是正在关注 @' + handle + '—未点击');
             return 'already_followed';
         }
 
-        // 未识别状态：宁可跳过，避免误点取关
+        // 经典模式：未识别也尝试点
         if (btnState.state !== 'can_follow') {
-            document.dispatchEvent(new CustomEvent('matrix-follow-detect', {
-                detail: {
-                    handle: handle,
-                    btnText: btnText,
-                    testId: testId,
-                    ariaLabel: ariaLabel,
-                    decision: 'skip_unknown',
-                    reason: btnState.reason || 'unknown',
-                    hint: found.hint
-                }
-            }));
-            console.warn('[关注] 按钮状态未识别，跳过 @' + handle, btnState);
-            cell.setAttribute('data-matrix-processed', 'true');
-            __markFanProcessed(currentBlogger, handle);
-            return 'unknown_btn_state';
+            if (!__FOLLOW_CLASSIC) {
+                followToast('⏳ 按钮未识别 @' + handle + '，将重试');
+                return 'unknown_btn_state';
+            }
+            followToast('ℹ️ 按钮未识别仍尝试点 @' + handle);
         }
 
         document.dispatchEvent(new CustomEvent('matrix-follow-detect', {
@@ -3631,27 +4093,31 @@ async function handleFollowButton(cell) {
             }
         }));
 
-        // 防老外：name∨bio 分提合并判定（4.6.37）
-        // 根因修复：4.6.25 只读 bio 会丢掉昵称日文；length>8 会误踢短日文名/简介。
+        // 防老外提取（语言门已关，仅保留结构）
         let displayName = '';
         let bioText = '';
+        let cellExtra = '';
         const rawBtnText = followBtn.innerText ? followBtn.innerText.trim() : '';
         try {
-            // 1) 显示名：UserName 区内第一个非 @handle 文本
             const nameRoot = cell.querySelector('[data-testid="UserName"]');
             if (nameRoot) {
                 const nameNodes = nameRoot.querySelectorAll('span, div[dir="auto"]');
+                let bestName = '';
+                let bestNameScore = -1;
                 for (let ni = 0; ni < nameNodes.length; ni++) {
                     const t = (nameNodes[ni].innerText || nameNodes[ni].textContent || '').replace(/\s+/g, ' ').trim();
                     if (!t || t.startsWith('@')) continue;
                     if (t === rawBtnText) continue;
-                    // 跳过纯 handle 形态（无空格的短英数）
                     if (/^[A-Za-z0-9_]{1,15}$/.test(t)) continue;
-                    displayName = t;
-                    break;
+                    let score = Math.min(t.length, 40);
+                    if (hasJaOrZhText(t)) score += 1000;
+                    if (score > bestNameScore) {
+                        bestNameScore = score;
+                        bestName = t;
+                    }
                 }
+                if (bestName) displayName = bestName;
             }
-            // 兜底：cell 内短 dir=auto（优先含日文）
             if (!displayName) {
                 const shortCands = cell.querySelectorAll('div[dir="auto"]');
                 let bestShort = '';
@@ -3659,9 +4125,9 @@ async function handleFollowButton(cell) {
                 for (let si = 0; si < shortCands.length; si++) {
                     const t = (shortCands[si].innerText || '').replace(/\s+/g, ' ').trim();
                     if (!t || t.startsWith('@') || t === rawBtnText) continue;
-                    if (t.length > 40) continue; // 长文更像简介
+                    if (t.length > 40) continue;
                     let score = t.length;
-                    if (hasJapaneseText(t)) score += 1000;
+                    if (hasJaOrZhText(t)) score += 1000;
                     if (score > bestShortScore) {
                         bestShortScore = score;
                         bestShort = t;
@@ -3670,12 +4136,10 @@ async function handleFollowButton(cell) {
                 if (bestShort) displayName = bestShort;
             }
 
-            // 2) 简介：UserDescription 优先；展开「更多」；点「显示原文」
             let bioEl = null;
             const testidCandidates = cell.querySelectorAll('[data-testid="UserDescription"], [data-testid="tweetText"]');
             if (testidCandidates.length > 0) bioEl = testidCandidates[0];
             if (!bioEl) {
-                // 扫全部 dir=auto，优先含日文且非名字的长文本（避免抢英文昵称）
                 const allDivs = cell.querySelectorAll('div[dir="auto"]');
                 let bestBio = null;
                 let bestBioScore = -1;
@@ -3683,10 +4147,9 @@ async function handleFollowButton(cell) {
                     const t = (allDivs[di].innerText || '').trim();
                     if (!t || t.startsWith('@') || t === rawBtnText) continue;
                     if (displayName && t === displayName) continue;
-                    // 短非日文易是按钮/元数据；短日文简介必须保留（验收：≤8 字日文也过）
-                    if (t.length <= 10 && !hasJapaneseText(t)) continue;
+                    if (t.length <= 10 && !hasJaOrZhText(t)) continue;
                     let score = t.length;
-                    if (hasJapaneseText(t)) score += 1000;
+                    if (hasJaOrZhText(t)) score += 1000;
                     if (score > bestBioScore) {
                         bestBioScore = score;
                         bestBio = allDivs[di];
@@ -3695,187 +4158,168 @@ async function handleFollowButton(cell) {
                 bioEl = bestBio;
             }
             if (bioEl) {
-                const showMoreBtn = cell.querySelector(
-                    '[role="button"][aria-label*="更多"], [role="button"][aria-label*="more"],' +
-                    '[role="button"][aria-label*="見る"], [role="button"][aria-label*="さらに"]'
-                );
-                if (showMoreBtn && bioEl.innerText && bioEl.innerText.length < 50) {
-                    try {
-                        showMoreBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-                        await sleep(300);
-                    } catch (eSm) {}
-                }
-                // 显示原文：避免自动英译把日文简介变成 isPureEng
-                try {
-                    const revealNodes = cell.querySelectorAll('button, [role="button"], span[role="button"], a');
-                    for (let ri = 0; ri < revealNodes.length; ri++) {
-                        const lab = ((revealNodes[ri].innerText || revealNodes[ri].getAttribute('aria-label') || '') + '')
-                            .replace(/\s+/g, ' ').trim();
-                        if (!lab || lab.length > 60) continue;
-                        if (/Translate|翻译|翻訳/i.test(lab) && !/original|原文/i.test(lab)) continue;
-                        if (/Show original|See original|查看原文|顯示原文|原文を表示|원문 보기/i.test(lab)) {
-                            try { revealNodes[ri].click(); } catch (eRv) {}
-                            await sleep(350);
-                            break;
-                        }
-                    }
-                } catch (eReveal) {}
                 bioText = (bioEl.innerText || bioEl.textContent || '').trim();
             }
         } catch (eBio) {}
 
-        // 兜底：整行 innerText 拆行（旧逻辑）——仅在 name/bio 都空时
-        if (!displayName && !bioText) {
-            try {
-                let rawText = cell.innerText || '';
-                let lines = rawText.split('\n').map(l => l.trim()).filter(l => l.length > 0);
-                lines = lines.filter(l => l !== rawBtnText && !l.startsWith('@'));
-                if (lines.length > 0) displayName = lines[0];
-                if (lines.length > 1) bioText = lines.slice(1).join(' | ');
-            } catch (eFb) {}
-        }
+        try {
+            let rawText = cell.innerText || '';
+            let lines = rawText.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+            lines = lines.filter(l => l !== rawBtnText);
+            cellExtra = lines.join(' | ');
+            if (!displayName && !bioText && lines.length) {
+                const nonAt = lines.filter(l => !l.startsWith('@'));
+                if (nonAt.length > 0) displayName = nonAt[0];
+                if (nonAt.length > 1) bioText = nonAt.slice(1).join(' | ');
+            }
+        } catch (eFb) {}
 
         const onlyJapanese = isOnlyJapaneseEnabled();
-        const jaGate = decideFollowTargetJa(displayName, bioText, onlyJapanese);
+        const jaGate = decideFollowTargetJa(displayName, bioText, onlyJapanese, cellExtra);
         if (!jaGate.pass) {
-            cell.style.cssText += 'opacity: 0.15; filter: grayscale(100%); border: 1px solid red;';
-            updateStats(onlyJapanese ? '【防线】非目标号，剔除...' : '【防线】内容为空，剔除...');
-            cell.setAttribute('data-matrix-processed', 'true');
-            { const _r = cell.getBoundingClientRect(); if (_r.bottom > window.innerHeight) window.scrollBy({ top: _r.bottom - window.innerHeight + 50, behavior: 'smooth' }); }
-            await sleep(randomInt(700, 1200));
-            __markFanProcessed(currentBlogger, handle);
+            followToast('⏭ 语言门过滤 @' + handle + '—未点击');
+            if (!__FOLLOW_CLASSIC) __markFanProcessed(currentBlogger, handle);
+            __followMarkDone(handle);
             return 'filtered';
         }
 
-        // 获取用户设置的总间隔时间
         const followInterval = getFollowInterval();
         const totalInterval = randomInt(followInterval.min, followInterval.max);
-        
-        // 固定开销：滚动(0.3s) + 风控检测(2s) = 约2.3s
-        const FIXED_OVERHEAD = 2300;
-        
-        // 深度阅读时间 = 总间隔 - 固定开销（最少1秒）
-        const readIntroWait = Math.max(1000, totalInterval - FIXED_OVERHEAD - randomInt(500, 1500));
+        const readIntroWait = __FOLLOW_CLASSIC ? randomInt(300, 700) : randomInt(600, 1400);
         { const _r = cell.getBoundingClientRect(); if (_r.bottom > window.innerHeight) window.scrollBy({ top: _r.bottom - window.innerHeight + 50, behavior: 'smooth' }); }
-        await sleep(300);
-        updateStats(`📖 阅读简介 (${Math.round(readIntroWait/1000)}s)...`);
+        await sleep(150);
+        updateStats(`准备关注 @${handle}...`);
         await sleep(readIntroWait);
 
         updateStats(`正在关注 @${handle} ...`);
 
         try {
-            // 等待全局关注节奏槽位
             await humanPauseMaybe(10);
-            await waitForGlobalFollowSlot();
+            // 4.6.50 关键：点前禁止 waitForGlobalFollowSlot 久等（12–19s 会丢虚拟列表 → 该点却没点）
+            // 间隔只在成功后 setNextGlobalFollowTime；点前最多短等 200ms
+            if (!__FOLLOW_CLASSIC) {
+                await waitForGlobalFollowSlot();
+            } else {
+                await sleep(randomInt(80, 200));
+            }
+
+            function __refindCellByHandle(h) {
+                var want = String(h || '').replace(/^@/, '').toLowerCase();
+                if (!want) return null;
+                var cells = document.querySelectorAll('[data-testid="UserCell"]');
+                for (var ci = 0; ci < cells.length; ci++) {
+                    var link = cells[ci].querySelector('a[href^="/"]');
+                    if (!link) continue;
+                    var hh = String(link.getAttribute('href') || '').split('/').filter(Boolean)[0] || '';
+                    if (hh.replace(/^@/, '').toLowerCase() === want) return cells[ci];
+                }
+                return null;
+            }
+            var liveCell = __refindCellByHandle(handle);
+            if (liveCell) cell = liveCell;
+            var foundLive = __findFollowButton(cell);
+            // 重找失败：若原按钮仍在 DOM 且仍是 -follow，继续点（不许没点就跳过）
+            if (!foundLive || !foundLive.btn) {
+                var stillOk = followBtn && document.contains(followBtn)
+                    && /-follow$/i.test(followBtn.getAttribute('data-testid') || '');
+                if (stillOk) {
+                    foundLive = { btn: followBtn, hint: 'orig_btn' };
+                } else {
+                    followToast('⏭ 点前丢按钮 @' + handle + '—未点击（将重试）');
+                    return 'no_follow_btn';
+                }
+            }
+            if (foundLive.hint === 'only_unfollow' || __followBtnState(foundLive.btn).state === 'already') {
+                __followMarkDone(handle);
+                if (!__FOLLOW_CLASSIC) __markFanProcessed(currentBlogger, handle);
+                followToast('⏭ 点前已是正在关注 @' + handle + '—未点击');
+                return 'already_followed';
+            }
+            followBtn = foundLive.btn;
+            found = foundLive;
+
             {
                 const risk = typeof MatrixRisk !== "undefined" ? MatrixRisk.tryAcquire("follow", 1) : { ok: true };
                 if (!risk.ok) {
-                    const riskWait = Math.min(60000, Math.max(2000, risk.waitMs || 5000));
-                    updateStats("频率令牌不足，等待后再关注...");
-                    await sleep(riskWait);
-                    return 'token_fail';
+                    // 经典：不等令牌，直接点（避免又丢 DOM）
+                    if (!__FOLLOW_CLASSIC) {
+                        const riskWait = Math.min(60000, Math.max(2000, risk.waitMs || 5000));
+                        updateStats("频率令牌不足，等待后再关注...");
+                        await sleep(riskWait);
+                        return 'token_fail';
+                    }
                 }
             }
-            // 轻总控拦截：关注前检查是否允许
             try {
+                // 点前 OPS 许可；payload 目标必须带 @（与 report 一致），否则服务端易整批拒
+                var _opsTarget = normalizeOpsTargetHandle(handle);
+                var _opsAccount = getWorkerId();
                 const opsCheck = await new Promise((resolve) => {
                     const timer = setTimeout(() => resolve(null), 2000);
                     chrome.runtime.sendMessage({
                         action: "ops_activity_check",
-                        payload: { account_handle: getWorkerId(), target_handle: handle, action_type: "follow" }
+                        payload: {
+                            account_handle: _opsAccount,
+                            target_handle: _opsTarget || handle,
+                            action_type: "follow"
+                        }
                     }, (resp) => { clearTimeout(timer); resolve(resp); });
                 });
                 if (opsCheck && opsCheck.allowed === false) {
-                    updateStats(`⛔ 轻总控拦截 @${handle}: ${opsCheck.reason || "blocked"}`);
-                    cell.setAttribute("data-matrix-processed", "true");
-                    return "blocked";
+                    var _opsReason = String(opsCheck.reason || opsCheck.msg || 'blocked');
+                    var _opsReasonZh = ({
+                        fleet_target: '目标是号池账号',
+                        account_not_registered: '本号未在OPS注册',
+                        follow_limit_reached: 'OPS关注日限已满',
+                        follow_daily_limit: 'OPS关注日限已满',
+                        daily_limit: 'OPS日限已满',
+                        quota_full: 'OPS配额已满',
+                        already_completed: 'OPS已记过关注',
+                        already_followed: 'OPS已记过关注',
+                        duplicate: 'OPS重复动作',
+                        rate_limit: 'OPS频率限制',
+                        paused: 'OPS已暂停本号',
+                        frozen: 'OPS标记冻结',
+                        blocked: 'OPS拒绝'
+                    })[_opsReason] || _opsReason;
+
+                    // 账号级拒绝：不要把每个粉都记成 done，应停本轮
+                    var _accountLevel = /limit|quota|registered|paused|frozen|rate/i.test(_opsReason);
+                    followToast('⛔ 轻总控拦截—未点击: ' + _opsReasonZh + (_opsAccount ? '' : '（本号handle为空）'));
+
+                    if (__FOLLOW_CLASSIC) {
+                        // 经典排障：放行点击，避免 OPS 拒导致整页「该点却没点」
+                        followToast('ℹ️ 经典模式：忽略轻总控，仍点击 @' + handle);
+                    } else if (_accountLevel) {
+                        updateStats('轻总控账号级拦截: ' + _opsReasonZh);
+                        return 'blocked';
+                    } else {
+                        __followMarkDone(handle);
+                        return 'blocked';
+                    }
                 }
             } catch (e) { /* 后台不可达时放行 */ }
 
-            // 点前先记进度：若误进粉丝主页被纠回，不会对同一人死循环
-            try {
-                cell.setAttribute('data-matrix-processed', 'true');
-                __markFanProcessed(currentBlogger, handle);
-            } catch (ePreMark) {}
+            var ariaShow = (followBtn.getAttribute('aria-label') || followBtn.innerText || '').trim().slice(0, 40);
+            var tidShow = followBtn.getAttribute('data-testid') || '';
+            followToast('👆 点击 ' + tidShow + (ariaShow ? ' | ' + ariaShow : ''));
+            await __clickFollowAnchored(cell, followBtn);
 
-            // 确保按钮滚到视口内再点击（长简介 cell 高时按钮可能在视口外）
-            try {
-                var btnRect = followBtn.getBoundingClientRect();
-                if (btnRect.top < 0 || btnRect.bottom > window.innerHeight) {
-                    followBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    await sleep(400);
-                }
-            } catch (eSv) {}
-
-            // 点击关注按钮：优先用 EngineUtils.humanClick（完整鼠标事件序列，兼容比特浏览器等严格环境）
-            // 4.6.31 B3：真兜底——每层点击后读回按钮状态，确认已关注才停止，否则继续下一层（§B3）
-            var clickedOk = false;
-            try {
-                if (typeof EngineUtils !== 'undefined' && EngineUtils.humanClick) {
-                    await EngineUtils.humanClick(followBtn);
-                    await sleep(500);
-                    var postHumanState = __followBtnState(followBtn);
-                    clickedOk = postHumanState.state === 'already';
-                    console.log('[关注点击] humanClick try=1 result=' + (clickedOk ? 'already' : postHumanState.reason));
-                }
-            } catch (eHc) {
-                console.log('[关注点击] humanClick try=1 exception=' + (eHc && eHc.message));
-            }
-            if (!clickedOk) {
-                try {
-                    // PointerEvent 完整序列（现代浏览器更原生，比特浏览器可能更认可）
-                    var po = { bubbles: true, cancelable: true, pointerId: 1, pointerType: 'mouse', button: 0, buttons: 1 };
-                    followBtn.dispatchEvent(new PointerEvent('pointerover', po));
-                    followBtn.dispatchEvent(new PointerEvent('pointerenter', po));
-                    await sleep(50);
-                    followBtn.dispatchEvent(new PointerEvent('pointerdown', po));
-                    await sleep(80);
-                    try { if (followBtn.focus) followBtn.focus(); } catch (_) {}
-                    followBtn.dispatchEvent(new PointerEvent('pointerup', po));
-                    await sleep(30);
-                    followBtn.dispatchEvent(new PointerEvent('click', po));
-                    await sleep(500);
-                    var postPeState = __followBtnState(followBtn);
-                    clickedOk = postPeState.state === 'already';
-                    console.log('[关注点击] PointerEvent try=2 result=' + (clickedOk ? 'already' : postPeState.reason));
-                } catch (ePe) {
-                    console.log('[关注点击] PointerEvent try=2 exception=' + (ePe && ePe.message));
-                }
-            }
-            if (!clickedOk) {
-                try {
-                    // 最后兜底：原生 click()
-                    followBtn.click();
-                    await sleep(500);
-                    var postClkState = __followBtnState(followBtn);
-                    clickedOk = postClkState.state === 'already';
-                    console.log('[关注点击] nativeClick try=3 result=' + (clickedOk ? 'already' : postClkState.reason));
-                } catch (eClk) {
-                    console.log('[关注点击] nativeClick try=3 exception=' + (eClk && eClk.message));
-                }
-            }
-            // 截断父级 <a> 导航：点击后若已离开粉丝列表，立刻 soft back
             try {
                 if (!isOthersFollowersPage()) {
                     var pgNow = classifyPage();
                     if (pgNow.kind === 'profile' && pgNow.handle && pgNow.handle !== currentBlogger) {
-                        document.dispatchEvent(new CustomEvent('matrix-diagnostic', {
-                            detail: { text: '⚠️ 关注点击后进了 @' + pgNow.handle + ' 主页，立即 back' }
-                        }));
+                        followToast('⚠️ 点进了 @' + pgNow.handle + '，回退粉丝列表');
                         markStepChange();
                         sessionStorage.setItem('sg_follow_soft_back_at', String(Date.now()));
                         try { history.back(); } catch (eHb) {}
+                        await sleep(2000);
                     }
                 }
             } catch (eNavGuard) {}
-            if (clickedOk) {
-                document.dispatchEvent(new CustomEvent('matrix-diagnostic', { detail: { text: '✅ 已点击关注: @' + handle } }));
-            } else {
-                document.dispatchEvent(new CustomEvent('matrix-diagnostic', { detail: { text: '⚠️ 关注三层点击均未确认: @' + handle + '（走未确认流程，不计配额）' } }));
-            }
-            
-            // 点击后风控检测（蓝条可能略晚出现，未确认前再扫一次）
-            await sleep(2000);
+
+            await sleep(__FOLLOW_CLASSIC ? 1000 : 2000);
+
             let postClickLimit = checkLimits();
             if (postClickLimit === 'FROZEN') {
                 handleAccountFrozen('follow_post_click');
@@ -3891,56 +4335,30 @@ async function handleFollowButton(cell) {
                 stopBot();
                 return 'hard_risk';
             } else if (postClickLimit === 'SOFT') {
-            notifyFollowRoundEndAndFill('soft_post_click');
-            return 'soft_cooldown';
+                notifyFollowRoundEndAndFill('soft_post_click');
+                return 'soft_cooldown';
             }
 
-            // 仅确认变成「已关注」才计入日配额（跳过/过滤/未确认不计）
-            var confirmBtn = followBtn;
-            try {
+            if (!__FOLLOW_CLASSIC) {
+                var live2 = __refindCellByHandle(handle);
+                if (live2) cell = live2;
                 var foundAgain = __findFollowButton(cell);
-                if (foundAgain && foundAgain.btn) confirmBtn = foundAgain.btn;
-            } catch (eFind) {}
-            var confirmState = __followBtnState(confirmBtn);
-            if (confirmState.state !== 'already' && found.hint !== 'only_unfollow') {
-                // 冻结常见表现：点了仍是「关注」+ 底部蓝条；绝不能当普通跳过
-                await sleep(800);
-                var unconfirmedLimit = checkLimits();
-                if (unconfirmedLimit === 'FROZEN') {
-                    handleAccountFrozen('follow_unconfirmed');
-                    return 'frozen';
+                var confirmBtn = (foundAgain && foundAgain.btn) ? foundAgain.btn : followBtn;
+                var confirmState = __followBtnState(confirmBtn);
+                if (confirmState.state !== 'already' && !(foundAgain && foundAgain.hint === 'only_unfollow')) {
+                    updateStats(`⚠️ 已点击但按钮未变成已关注 @${handle}，不计配额`);
+                    return 'follow_unconfirmed';
                 }
-                if (unconfirmedLimit === 'HARD') {
-                    if (typeof MatrixRisk !== "undefined") {
-                        MatrixRisk.applyLimitBackoff("follow");
-                    }
-                    setMatrixCooldown(randomInt(3 * 3600000, 4 * 3600000));
-                    updateStats("触发最高风控！脚本已紧急熔断！");
-                    stopBot();
-                    return 'hard_risk';
-                }
-                if (unconfirmedLimit === 'SOFT') {
-                    notifyFollowRoundEndAndFill('soft_unconfirmed');
-                    return 'soft_cooldown';
-                }
-                updateStats(`⚠️ 已点击但未确认关注 @${handle}，不计配额`);
-                document.dispatchEvent(new CustomEvent('matrix-diagnostic', {
-                    detail: { text: '⚠️ follow_unconfirmed @' + handle + ' ' + (confirmState.reason || '') }
-                }));
-                return 'follow_unconfirmed';
             }
-            
+
             let count = incrementFollowCount();
             try { incBloggerFollowCount(currentBlogger); } catch (eInc) {}
-            
-            // 通过 reportToNAS 上报战报
             reportToNAS(handle, count, stats.day_count);
-            
-            // 设置下一次全局关注时间
             setNextGlobalFollowTime(totalInterval);
-
+            __followMarkDone(handle);
+            if (!__FOLLOW_CLASSIC) __markFanProcessed(currentBlogger, handle);
+            followToast('✅ 已关注 @' + handle + (__FOLLOW_CLASSIC ? '（经典）' : ''));
             updateStats(`✅ 已关注 @${handle} (${count}/${limit}) | 间隔 ${Math.round(totalInterval/1000)}s`);
-            __markFanProcessed(currentBlogger, handle);
             return 'followed';
             
         } catch (e) {
@@ -3968,26 +4386,36 @@ async function handleFollowButton(cell) {
 
         const __scanStats = { already: 0, filtered: 0, followed: 0, error: 0, retry: 0, blocked: 0, no_btn: 0, skipped: 0 };
 
-        // 取未处理的 cell
-        const cells = document.querySelectorAll('[data-testid="UserCell"]:not([data-matrix-processed="true"])');
-        const allCells = document.querySelectorAll('[data-testid="UserCell"]');
-        const processedCells = document.querySelectorAll('[data-testid="UserCell"][data-matrix-processed="true"]');
+        // 4.6.50：先清掉粘在回收 DOM 上的 processed，避免「下一行别人被当成已处理未点击」
+        try { __followStripDomProcessedFlags(); } catch (eStrip) {}
+        try { __probeFollowDom(); } catch (eProbe) {}
 
-        // 诊断：报告 cell 状态
+        // 扫全部 UserCell；是否跳过改看 handle 会话表，不看 DOM 属性
+        const cells = document.querySelectorAll('[data-testid="UserCell"]');
+        const allCells = cells;
+
         document.dispatchEvent(new CustomEvent('matrix-diagnostic', {
-            detail: { text: `scanPage: 总${allCells.length} 已处理${processedCells.length} 未处理${cells.length}` }
+            detail: { text: 'scanPage: UserCell=' + allCells.length + ' 会话已处理handle=' + __followDoneSet().size }
         }));
 
         if (cells.length > 0) {
-            // 有未处理的 cell，逐个处理
             for (const cell of cells) {
                 if (!isRunning) return;
-
-                // 跳过已处理 / 正在被占用的（防双引擎抢同一 cell）
-                if (cell.getAttribute('data-matrix-processed') === 'true') continue;
                 if (cell.getAttribute('data-matrix-busy') === 'true') continue;
 
-                // 配额检查
+                // 先读 handle，本会话已点过/真已关注则滚过（不点）
+                try {
+                    var _hl = cell.querySelector('a[href^="/"]');
+                    var _hh = _hl ? String(_hl.getAttribute('href') || '').split('/').filter(Boolean)[0] : '';
+                    _hh = String(_hh || '').replace(/^@/, '').toLowerCase();
+                    if (_hh && __followIsDone(_hh)) {
+                        __scanStats.already++;
+                        window.scrollBy({ top: randomInt(35, 75), behavior: 'smooth' });
+                        await sleep(randomInt(400, 800));
+                        continue;
+                    }
+                } catch (eHSkip) {}
+
                 const stats = getAccountStats();
                 const limit = getDailyLimit(stats.day_count);
                 if (stats.follows_today >= limit) {
@@ -3998,7 +4426,6 @@ async function handleFollowButton(cell) {
                     return;
                 }
 
-                // 认领后再 await，避免并发循环对同一行「阅读简介」后二次点击取关
                 cell.setAttribute('data-matrix-busy', 'true');
                 let result;
                 try {
@@ -4009,25 +4436,20 @@ async function handleFollowButton(cell) {
 
                 if (result === 'already_followed') {
                     __scanStats.already++;
-                    cell.style.cssText += 'opacity: 0.3 !important; filter: grayscale(100%) !important; border: 1px dashed #00ba7c;';
-                    cell.setAttribute('data-matrix-processed', 'true');
                     window.scrollBy({ top: randomInt(35, 75), behavior: 'smooth' });
                     await sleep(randomInt(700, 1200));
                     continue;
                 }
 
                 if (result === 'unknown_btn_state') {
-                    __scanStats.skipped++;
-                    cell.style.cssText += 'opacity: 0.25 !important; filter: grayscale(100%) !important; border: 1px dashed orange;';
-                    cell.setAttribute('data-matrix-processed', 'true');
-                    window.scrollBy({ top: randomInt(35, 75), behavior: 'smooth' });
-                    await sleep(randomInt(500, 900));
+                    __scanStats.retry++;
+                    followToast('⏳ 按钮未识别，下轮再试');
+                    await sleep(900);
                     continue;
                 }
 
                 if (result === 'filtered') {
                     __scanStats.filtered++;
-                    // handleFollowButton 已经标记了 processed
                     window.scrollBy({ top: randomInt(35, 75), behavior: 'smooth' });
                     await sleep(randomInt(700, 1200));
                     continue;
@@ -4040,14 +4462,11 @@ async function handleFollowButton(cell) {
                         sourceUrl: location.href,
                         blogger_handle: String(localStorage.getItem('matrix_current_creator') || '').replace(/^@/, '').toLowerCase()
                     });
-                    cell.setAttribute('data-matrix-processed', 'true');
-                    // 操作完后小幅滚动
                     window.scrollBy({ top: randomInt(50, 80), behavior: 'smooth' });
                     await sleep(randomInt(1000, 1500));
                     continue;
                 }
 
-                // 点击了但未变成已关注：再扫冻结横幅，避免当成普通跳过
                 if (result === 'follow_unconfirmed') {
                     var lateLimit = checkLimits();
                     if (lateLimit === 'FROZEN') {
@@ -4065,16 +4484,6 @@ async function handleFollowButton(cell) {
                         return;
                     }
                     __scanStats.error++;
-                    const retryKey = 'data-matrix-retry-unconfirmed';
-                    let retryCount = parseInt(cell.getAttribute(retryKey) || '0', 10) + 1;
-                    cell.setAttribute(retryKey, String(retryCount));
-                    if (retryCount >= 3) {
-                        cell.setAttribute('data-matrix-processed', 'true');
-                        cell.style.cssText += 'opacity: 0.2 !important; filter: grayscale(100%) !important; border: 1px dashed #f4212e;';
-                        document.dispatchEvent(new CustomEvent('matrix-diagnostic', {
-                            detail: { text: '⚠️ 未确认关注，跳过（不计配额）重试' + retryCount }
-                        }));
-                    }
                     window.scrollBy({ top: randomInt(35, 75), behavior: 'smooth' });
                     await sleep(randomInt(800, 1400));
                     continue;
@@ -4087,60 +4496,45 @@ async function handleFollowButton(cell) {
 
                 if (result === 'blocked') {
                     __scanStats.blocked++;
-                    cell.setAttribute('data-matrix-processed', 'true');
                     continue;
                 }
 
-                // 冻结 / 硬风控 / 停机：立刻退出扫描，禁止当「跳过」继续往下刷
                 if (result === 'frozen' || result === 'hard_risk' || result === 'engine_stopped' || result === 'quota_full') {
                     __scanStats.skipped++;
-                    cell.setAttribute('data-matrix-processed', 'true');
                     return;
                 }
 
                 if (result === 'click_error' || result === 'token_fail') {
                     __scanStats.error++;
-                    cell.setAttribute('data-matrix-processed', 'true');
                     continue;
                 }
 
-                // === 可重试的临时错误：不标记processed，下次扫描重试 ===
+                // 无按钮等：不写 DOM processed（防虚拟列表粘锅），只滚过本轮
                 if (result === 'no_follow_btn' || result === 'no_user_link' || result === 'no_href' || result === 'no_handle') {
                     if (result === 'no_follow_btn') __scanStats.no_btn++;
                     else __scanStats.retry++;
-                    const retryKey = 'data-matrix-retry';
-                    let retryCount = parseInt(cell.getAttribute(retryKey) || '0', 10) + 1;
-                    cell.setAttribute(retryKey, retryCount.toString());
-                    if (retryCount >= 3) {
-                        __scanStats.skipped++;
-                        cell.setAttribute('data-matrix-processed', 'true');
-                        cell.style.cssText += 'opacity: 0.2 !important; filter: grayscale(100%) !important;';
-                        document.dispatchEvent(new CustomEvent('matrix-diagnostic', {
-                            detail: { text: '⚠️ ' + result + ': 重试' + retryCount + '次仍失败，标记跳过' }
-                        }));
-                    } else {
-                        document.dispatchEvent(new CustomEvent('matrix-diagnostic', {
-                            detail: { text: '⏳ ' + result + ' 重试' + retryCount + '/3' }
-                        }));
-                    }
+                    window.scrollBy({ top: randomInt(35, 75), behavior: 'smooth' });
+                    await sleep(randomInt(500, 900));
                     continue;
                 }
 
-                // 未知结果（兜底）
                 __scanStats.skipped++;
-                cell.setAttribute('data-matrix-processed', 'true');
                 document.dispatchEvent(new CustomEvent('matrix-diagnostic', {
-                    detail: { text: '⚠️ 未知结果: ' + (result || 'undefined') + ', 已标记跳过' }
+                    detail: { text: '⚠️ 未知结果: ' + (result || 'undefined') }
                 }));
             }
 
-            // 本轮统计
+            var _scanSummary = '本轮: ✅点关注' + __scanStats.followed
+                + ' | ⏭未点击(已关注/已处理)' + __scanStats.already
+                + ' | 无按钮' + __scanStats.no_btn
+                + ' | 其它' + __scanStats.skipped
+                + ' | 过滤' + __scanStats.filtered;
+            followToast(_scanSummary, 5000);
             document.dispatchEvent(new CustomEvent('matrix-diagnostic', {
-                detail: { text: `scanPage统计: 已关注${__scanStats.followed} 已关${__scanStats.already} 过滤${__scanStats.filtered} 错误${__scanStats.error} 拦截${__scanStats.blocked} 无按钮${__scanStats.no_btn} 重试${__scanStats.retry} 跳过${__scanStats.skipped}` }
+                detail: { text: _scanSummary }
             }));
+            try { updateStats(_scanSummary); } catch (eSum) {}
 
-            // 本轮 0 次新关注 ≠ 博主做完：常见于回到已刷过一半的列表顶部（全是已关注）
-            // 继续向下滚动找新粉；若已近底则走触底换号（回流半成品常见 0 新关注）
             if (__scanStats.followed === 0) {
                 if (pageLooksFollowersShell()) {
                     var _zShell = await handleFollowersShellStall('zero_follow_shell');
@@ -4231,73 +4625,77 @@ async function handleFollowButton(cell) {
     let _diagInterval = null;
     function startDiagnostic() {
         if (_diagInterval) return;
-        _diagInterval = setInterval(() => {
+        function tick() {
             try {
-                const allCells = document.querySelectorAll('[data-testid="UserCell"]');
-                const processed = document.querySelectorAll('[data-testid="UserCell"][data-matrix-processed="true"]');
-                const unprocessed = allCells.length - processed.length;
-                const scrollY = window.scrollY;
-                const scrollH = document.documentElement.scrollHeight;
-                const innerH = window.innerHeight;
-                const distBottom = scrollH - scrollY - innerH;
-                const step = localStorage.getItem('matrix_step') || 'SCAN';
-                const running = typeof isRunning !== 'undefined' ? isRunning : false;
-                const blogger = localStorage.getItem('matrix_current_creator') || '无';
-                const stats = getAccountStats();
-                const limit = getDailyLimit(stats.day_count);
+                if (!document.hidden) {
+                    const allCells = document.querySelectorAll('[data-testid="UserCell"]');
+                    const processed = document.querySelectorAll('[data-testid="UserCell"][data-matrix-processed="true"]');
+                    const unprocessed = allCells.length - processed.length;
+                    const scrollY = window.scrollY;
+                    const scrollH = document.documentElement.scrollHeight;
+                    const innerH = window.innerHeight;
+                    const distBottom = scrollH - scrollY - innerH;
+                    const step = localStorage.getItem('matrix_step') || 'SCAN';
+                    const running = typeof isRunning !== 'undefined' ? isRunning : false;
+                    const blogger = localStorage.getItem('matrix_current_creator') || '无';
+                    const stats = getAccountStats();
+                    const limit = getDailyLimit(stats.day_count);
 
-                // 风控状态
-                const cooldownUntil = getMatrixCooldownUntil();
-                const now = Date.now();
-                const isCooling = now < cooldownUntil;
-                const cooldownRemaining = isCooling ? cooldownUntil - now : 0;
-                const nextFollowTime = getNextGlobalFollowTime();
-                const isWaiting = now < nextFollowTime;
-                const waitRemaining = isWaiting ? nextFollowTime - now : 0;
+                    // 风控状态
+                    const cooldownUntil = getMatrixCooldownUntil();
+                    const now = Date.now();
+                    const isCooling = now < cooldownUntil;
+                    const cooldownRemaining = isCooling ? cooldownUntil - now : 0;
+                    const nextFollowTime = getNextGlobalFollowTime();
+                    const isWaiting = now < nextFollowTime;
+                    const waitRemaining = isWaiting ? nextFollowTime - now : 0;
 
-                let riskStatus = 'NORMAL';
-                if (isCooling) {
-                    riskStatus = cooldownRemaining > 2 * 3600000 ? 'HARD' : 'SOFT';
-                }
-
-                const diag = [
-                    `🔍 诊断 | 引擎:${running ? 'ON' : 'OFF'} | 步骤:${step}`,
-                    `📊 Cell: 总${allCells.length} 已处理${processed.length} 未处理${unprocessed}`,
-                    `📜 滚动: Y=${scrollY} H=${scrollH} 距底${distBottom}px`,
-                    `👤 博主: @${blogger} | 配额: ${stats.follows_today}/${limit}`,
-                    `🛡️ 风控: ${riskStatus}${isCooling ? ' 剩余' + formatCooldownTime(cooldownRemaining) : ''}${isWaiting ? ' | 间隔等待' + Math.ceil(waitRemaining/1000) + 's' : ''}`
-                ].join(' | ');
-
-                console.log('[诊断]', diag);
-                // 通过自定义事件传递给中控台（结构化数据）
-                document.dispatchEvent(new CustomEvent('matrix-diagnostic', {
-                    detail: {
-                        text: diag,
-                        engine: running,
-                        step: step,
-                        cells: { total: allCells.length, processed: processed.length, unprocessed: unprocessed },
-                        scroll: { y: scrollY, height: scrollH, distBottom: distBottom },
-                        quota: { used: stats.follows_today, limit: limit, dayCount: stats.day_count },
-                        risk: {
-                            status: riskStatus,
-                            cooling: isCooling,
-                            cooldownRemaining: cooldownRemaining,
-                            cooldownFormatted: isCooling ? formatCooldownTime(cooldownRemaining) : null,
-                            waiting: isWaiting,
-                            waitRemaining: waitRemaining
-                        },
-                        blogger: blogger,
-                        timestamp: Date.now()
+                    let riskStatus = 'NORMAL';
+                    if (isCooling) {
+                        riskStatus = cooldownRemaining > 2 * 3600000 ? 'HARD' : 'SOFT';
                     }
-                }));
+
+                    const diag = [
+                        `🔍 诊断 | 引擎:${running ? 'ON' : 'OFF'} | 步骤:${step}`,
+                        `📊 Cell: 总${allCells.length} 已处理${processed.length} 未处理${unprocessed}`,
+                        `📜 滚动: Y=${scrollY} H=${scrollH} 距底${distBottom}px`,
+                        `👤 博主: @${blogger} | 配额: ${stats.follows_today}/${limit}`,
+                        `🛡️ 风控: ${riskStatus}${isCooling ? ' 剩余' + formatCooldownTime(cooldownRemaining) : ''}${isWaiting ? ' | 间隔等待' + Math.ceil(waitRemaining/1000) + 's' : ''}`
+                    ].join(' | ');
+
+                    console.log('[诊断]', diag);
+                    // 通过自定义事件传递给中控台（结构化数据）
+                    document.dispatchEvent(new CustomEvent('matrix-diagnostic', {
+                        detail: {
+                            text: diag,
+                            engine: running,
+                            step: step,
+                            cells: { total: allCells.length, processed: processed.length, unprocessed: unprocessed },
+                            scroll: { y: scrollY, height: scrollH, distBottom: distBottom },
+                            quota: { used: stats.follows_today, limit: limit, dayCount: stats.day_count },
+                            risk: {
+                                status: riskStatus,
+                                cooling: isCooling,
+                                cooldownRemaining: cooldownRemaining,
+                                cooldownFormatted: isCooling ? formatCooldownTime(cooldownRemaining) : null,
+                                waiting: isWaiting,
+                                waitRemaining: waitRemaining
+                            },
+                            blogger: blogger,
+                            timestamp: Date.now()
+                        }
+                    }));
+                }
             } catch(e) {
                 console.error('[诊断错误]', e);
             }
-        }, 10000); // 每10秒输出一次
+            _diagInterval = setTimeout(tick, (document.hidden || !isRunning) ? 30000 : 10000);
+        }
+        _diagInterval = setTimeout(tick, 10000);
     }
 
     function stopDiagnostic() {
-        if (_diagInterval) { clearInterval(_diagInterval); _diagInterval = null; }
+        if (_diagInterval) { clearTimeout(_diagInterval); _diagInterval = null; }
     }
 
     function isOthersFollowersPage() {
@@ -4493,17 +4891,36 @@ async function handleFollowButton(cell) {
             localStorage.setItem('matrix_follow_running', 'true');
             localStorage.setItem('matrix_step', 'SCAN');
             if (savedCreator) {
-                setTimeout(function () { if (isRunning) followGoWhenAllowed('https://x.com/' + savedCreator + '/followers'); }, 2000);
+                setTimeout(function () {
+                    if (!isRunning) return;
+                    if (typeof SchedulerGate !== 'undefined' && SchedulerGate.go) {
+                        SchedulerGate.go('follow', 'https://x.com/' + savedCreator + '/followers', { force: true });
+                    } else {
+                        followGoWhenAllowed('https://x.com/' + savedCreator + '/followers');
+                    }
+                }, 8000);
             } else if (localStorage.getItem('matrix_pure_nurture_mode') === 'true') {
                 updateStats('\u517b\u53f7\u5b8c\u6210\uff0c\u56de\u4e3b\u9875\u4f11\u606f...');
-                setTimeout(function () { if (isRunning) followGoWhenAllowed('https://x.com/home'); }, 2000);
+                setTimeout(function () {
+                    if (!isRunning) return;
+                    if (typeof SchedulerGate !== 'undefined' && SchedulerGate.go) {
+                        SchedulerGate.go('follow', 'https://x.com/home', { force: true });
+                    } else {
+                        followGoWhenAllowed('https://x.com/home');
+                    }
+                }, 8000);
             } else {
                 setTimeout(function () {
                     if (!isRunning) return;
                     const cr = localStorage.getItem('matrix_current_creator') || '';
-                    if (cr) followGoWhenAllowed('https://x.com/' + cr + '/followers');
-                    else stopBot();
-                }, 2000);
+                    if (cr) {
+                        if (typeof SchedulerGate !== 'undefined' && SchedulerGate.go) {
+                            SchedulerGate.go('follow', 'https://x.com/' + cr + '/followers', { force: true });
+                        } else {
+                            followGoWhenAllowed('https://x.com/' + cr + '/followers');
+                        }
+                    } else stopBot();
+                }, 8000);
             }
         })();
     }
@@ -4519,11 +4936,23 @@ async function runEngine() {
         _engineLoopRunning = true;
         var myToken = ++_engineToken;
         let stepStartTime = Date.now();
-        const STEP_TIMEOUT = 45000; // 45秒超时
+        const STEP_TIMEOUT = FOLLOW_PACE.stepTimeoutMs; // 4.6.101：120s，覆盖 settle+等粉+浏览
         
         try {
         while (isRunning && myToken === _engineToken) {
             try {
+                // 4.6.102：Gate 跳页落地 settle，未到点不扫不跳
+                try {
+                    if (typeof SchedulerGate !== 'undefined' && SchedulerGate.arriveSettleLeftMs) {
+                        var _arrLeft = SchedulerGate.arriveSettleLeftMs() || 0;
+                        if (_arrLeft > 0) {
+                            updateStats('⏳ 跳页加载中… ' + Math.ceil(_arrLeft / 1000) + 's');
+                            await sleep(Math.min(_arrLeft, 3000));
+                            continue;
+                        }
+                    }
+                } catch (eArr) {}
+
                 // 纯养号模式：仅定时养号，不关注
                 const isPureNurture = localStorage.getItem('matrix_pure_nurture_mode') === 'true';
                 if (isPureNurture) {
@@ -4579,7 +5008,7 @@ async function runEngine() {
                     }
                 }
 
-                // 步骤超时保护：如果同一步骤超过45秒，强制推进
+                // 步骤超时保护：同一步骤过久才强制推进（须 ≥ PROFILE settle+等粉入口）
                 let currentStep = localStorage.getItem('matrix_step') || 'SCAN';
                 if (Date.now() - stepStartTime > STEP_TIMEOUT) {
                     console.log(`[Follow] 步骤 ${currentStep} 超时 (${Math.round((Date.now() - stepStartTime)/1000)}s)，强制推进`);
@@ -4596,12 +5025,20 @@ async function runEngine() {
                                 markHandleCompleted(cr); await markPoolTaskDead(); await jumpToNextBloggerAfterDeadSkip(); return;
                             }
                             if (isProtectedProfileText(_tBody) || pageLooksProtected()) {
-                                markHandleCompleted(cr); await markPoolTaskDead(); await jumpToNextBloggerAfterDeadSkip(); return;
+                                updateStats('🔒 @' + cr + ' 超时检出隐私号，跳过');
+                                __clearFollowersKick(cr);
+                                markHandleCompleted(cr); await markPoolTaskDead();
+                                await sleep(FOLLOW_PACE.deadSkipGapMs);
+                                await jumpToNextBloggerAfterDeadSkip(); return;
                             }
                             // 超时仍无本博粉丝链接：慢网常见 → 释放不 dead
-                            var _toWait = await waitForBloggerFollowersLink(cr, 10000);
+                            var _toWait = await waitForBloggerFollowersLink(cr, FOLLOW_PACE.followersLinkWaitMs);
                             if (_toWait.protected) {
-                                markHandleCompleted(cr); await markPoolTaskDead(); await jumpToNextBloggerAfterDeadSkip(); return;
+                                updateStats('🔒 @' + cr + ' 超时确认为隐私号，跳过');
+                                __clearFollowersKick(cr);
+                                markHandleCompleted(cr); await markPoolTaskDead();
+                                await sleep(FOLLOW_PACE.deadSkipGapMs);
+                                await jumpToNextBloggerAfterDeadSkip(); return;
                             }
                             if (!_toWait.link) {
                                 updateStats('⏱️ @' + cr + ' 超时且无粉丝入口，释放换号（不标死号）');
@@ -4611,7 +5048,7 @@ async function runEngine() {
                             localStorage.setItem('matrix_step', 'SCAN');
                             localStorage.setItem('matrix_follow_running', 'true');
                             markStepChange();
-                            followGo(`https://x.com/${cr}/followers`);
+                            await waitNavGapThenForce('https://x.com/' + cr + '/followers', 'profile_timeout');
                             return;
                         }
                     }
@@ -4636,7 +5073,14 @@ async function runEngine() {
                         await releasePoolTask('quota_full_pure_nurture');
                         localStorage.setItem('matrix_pure_nurture_mode', 'true');
                         updateStats("配额达成，转入纯养号模式");
-                        setTimeout(function() { if (isRunning) followGoWhenAllowed('https://x.com/home'); }, 1000);
+                        setTimeout(function() {
+                    if (!isRunning) return;
+                    if (typeof SchedulerGate !== 'undefined' && SchedulerGate.go) {
+                        SchedulerGate.go('follow', 'https://x.com/home', { force: true });
+                    } else {
+                        followGoWhenAllowed('https://x.com/home');
+                    }
+                }, 8000);
                         return;
                     }
                     updateStats("今日总目标达成！下班");
@@ -4716,6 +5160,8 @@ async function runEngine() {
 
                 // PROFILE 步骤：伪装浏览博主主页
                 if (step === 'PROFILE') {
+                    // 4.6.100：进主页重新起算，避免 SCAN 等待吃掉稳节奏预算
+                    stepStartTime = Date.now();
                     const cr = localStorage.getItem('matrix_current_creator') || '';
 
                     // 前置拦截：本地死号名单只跳过/释放，禁止二次 pool_dead（服务端已复活时误杀）
@@ -4733,9 +5179,8 @@ async function runEngine() {
 
                     updateStats(`📖 阅读 @${cr} 主页中...`);
 
-                    // 进主页先多等一拍（比特/慢网），避免保护号空态未挂上就误判
-                    await sleep(4000);
-                    if (await skipProtectedBloggerIfNeeded('profile_early')) return;
+                    // 4.6.100：稳节奏 settle（中途+结束各检保护号），勿 4s 一眼带过
+                    if (await settleProfileForDetect(cr, 'profile_early')) return;
 
                     // ====== 敏感资料/隐私账号/不存在账号检测 ======
                     const _pageBody = document.body ? document.body.textContent : '';
@@ -4760,7 +5205,7 @@ async function runEngine() {
                         updateStats(`⛔ @${cr} ${_reason}，标记为死号`);
                         markHandleCompleted(cr);
                         await markPoolTaskDead();
-                        await sleep(2000);
+                        await sleep(FOLLOW_PACE.deadSkipGapMs);
                         await jumpToNextBloggerAfterDeadSkip();
                         return;
                     }
@@ -4776,26 +5221,28 @@ async function runEngine() {
                         });
                         if (_viewBtn) {
                             _viewBtn.click();
-                            await sleep(3000);
+                            await sleep(4000);
                         }
                         updateStats(`✅ @${cr} 敏感资料已确认`);
                     }
 
                     if (_hasProtected) {
                         updateStats(`🔒 @${cr} 是隐私账号，标记为死号`);
+                        __clearFollowersKick(cr);
                         markHandleCompleted(cr);
                         await markPoolTaskDead();
-                        await sleep(2000);
+                        await sleep(FOLLOW_PACE.deadSkipGapMs);
                         await jumpToNextBloggerAfterDeadSkip();
                         return;
                     }
 
-                    const _fWait = await waitForBloggerFollowersLink(cr, 14000);
+                    const _fWait = await waitForBloggerFollowersLink(cr, FOLLOW_PACE.followersLinkWaitMs);
                     if (_fWait.protected) {
                         updateStats(`🔒 @${cr} 是隐私账号，标记为死号`);
+                        __clearFollowersKick(cr);
                         markHandleCompleted(cr);
                         await markPoolTaskDead();
-                        await sleep(2000);
+                        await sleep(FOLLOW_PACE.deadSkipGapMs);
                         await jumpToNextBloggerAfterDeadSkip();
                         return;
                     }
@@ -4804,16 +5251,27 @@ async function runEngine() {
                         return;
                     }
 
+                    // 进粉前再验一次（文案晚渲染 / 有粉丝链接的隐私号）
+                    if (pageLooksProtected()) {
+                        updateStats(`🔒 @${cr} 是隐私账号（进粉前复核），标记为死号`);
+                        __clearFollowersKick(cr);
+                        markHandleCompleted(cr);
+                        await markPoolTaskDead();
+                        await sleep(FOLLOW_PACE.deadSkipGapMs);
+                        await jumpToNextBloggerAfterDeadSkip();
+                        return;
+                    }
+
                     
                     window.scrollBy({ top: randomInt(400, 800), behavior: 'smooth' });
-                    await sleep(randomInt(3000, 5000));
+                    await sleep(randomInt(FOLLOW_PACE.profileBrowseScrollMin, FOLLOW_PACE.profileBrowseScrollMax));
                     
                     window.scrollBy({ top: randomInt(200, 400), behavior: 'smooth' });
-                    await sleep(randomInt(2000, 3000));
+                    await sleep(randomInt(3500, 5500));
                     
                     updateStats("↩️ 滑动至顶部...");
                     window.scrollTo({ top: 0, behavior: 'smooth' });
-                    await sleep(randomInt(2000, 3000));
+                    await sleep(randomInt(3000, 4500));
                     
                     updateStats(`🔄 进入 @${cr} 粉丝列表...`);
                     localStorage.setItem('matrix_step', 'SCAN');
@@ -4827,10 +5285,17 @@ async function runEngine() {
                         document.dispatchEvent(new CustomEvent('matrix-diagnostic', {
                             detail: { text: '👆 PROFILE→粉丝 Tab click @' + cr }
                         }));
-                        await sleep(4500);
-                        if (isOthersFollowersPage()) return;
+                        await sleep(FOLLOW_PACE.afterTabClickMs);
+                        if (isOthersFollowersPage()) {
+                            if (pageLooksProtected()) {
+                                if (await skipProtectedBloggerIfNeeded('profile_tab_protected')) return;
+                            }
+                            return;
+                        }
+                        // 点了粉丝 Tab 仍停主页 = 被踢回，计入循环
+                        if (await skipProtectedOrKickLoop('profile_tab_kicked')) return;
                     }
-                    followGo(`https://x.com/${cr}/followers`);
+                    await waitNavGapThenForce('https://x.com/' + cr + '/followers', 'profile_enter_followers');
                     return;
                 }
                 
@@ -4840,28 +5305,36 @@ async function runEngine() {
                 }
                 
                 if (step === 'SCAN') {
+                    // 4.6.101：进粉页先 settle 再认保护号，避免空壳未挂文案就硬跳/空扫
+                    if (isOthersFollowersPage()) {
+                        var _scanCr = resolveCurrentCreatorHandle() || '';
+                        var _settleKey = 'sg_follow_scan_settled_' + String(_scanCr).toLowerCase();
+                        var _alreadySettled = false;
+                        try { _alreadySettled = sessionStorage.getItem(_settleKey) === '1'; } catch (eSk0) {}
+                        if (!_alreadySettled) {
+                            updateStats('⏳ 粉丝页加载中…（稳节奏 ' + Math.round(FOLLOW_PACE.scanArriveSettleMs / 1000) + 's）');
+                            await sleep(FOLLOW_PACE.scanArriveSettleMs);
+                            try { sessionStorage.setItem(_settleKey, '1'); } catch (eSk1) {}
+                        }
+                    }
+                    // 任意 SCAN 页先认保护文案（含锁号丢失时从 URL 恢复）
+                    if (await skipProtectedBloggerIfNeeded('scan_enter')) return;
                     if (!isOthersFollowersPage()) {
                         // 不在粉丝页：检查是否在博主主页，如果是则切到 PROFILE 步骤
-                        const cr = localStorage.getItem('matrix_current_creator') || '';
+                        const cr = resolveCurrentCreatorHandle();
                         const curPath = window.location.pathname.toLowerCase().replace(/\/+$/, '');
-                        if (cr && !RESERVED_PAGE_HANDLES[cr] && curPath === '/' + cr.toLowerCase()) {
-                            // 隐私号硬跳 /followers 常被打回主页 → 来回跳；此处直接死号跳过
-                            if (pageLooksProtected()) {
-                                updateStats('🔒 @' + cr + ' 粉丝页不可进（保护号），跳过');
-                                markHandleCompleted(cr);
-                                await markPoolTaskDead();
-                                await sleep(1500);
-                                await jumpToNextBloggerAfterDeadSkip();
-                                return;
-                            }
+                        if (cr && !RESERVED_PAGE_HANDLES[cr.toLowerCase()] && curPath === '/' + cr.toLowerCase()) {
+                            // 隐私号硬跳 /followers 常被打回主页 → 来回跳；保护文案或踢回≥2 次直接死号
+                            if (await skipProtectedOrKickLoop('scan_kicked_to_profile')) return;
                             // 链接偶发未挂上：慢网多等再判定，仅真保护号 dead
                             if (!findBloggerFollowersLink(cr)) {
-                                var _kickWait = await waitForBloggerFollowersLink(cr, 12000);
+                                var _kickWait = await waitForBloggerFollowersLink(cr, FOLLOW_PACE.followersLinkWaitMs);
                                 if (_kickWait.protected) {
                                     updateStats('🔒 @' + cr + ' 粉丝页不可进（保护号），跳过');
+                                    __clearFollowersKick(cr);
                                     markHandleCompleted(cr);
                                     await markPoolTaskDead();
-                                    await sleep(1500);
+                                    await sleep(FOLLOW_PACE.deadSkipGapMs);
                                     await jumpToNextBloggerAfterDeadSkip();
                                     return;
                                 }
@@ -4872,30 +5345,26 @@ async function runEngine() {
                             }
                             updateStats(`📖 检测到在 @${cr} 主页，切换到浏览模式...`);
                             localStorage.setItem('matrix_step', 'PROFILE');
+                            stepStartTime = Date.now();
                             continue;
                         }
                         // 未到目标页面时等待重试，不立即停止（X/Twitter 可能有中间加载页）
                         updateStats("等待跳转...");
-                        await sleep(5000);
+                        await sleep(FOLLOW_PACE.scanWaitMs);
                         if (!isOthersFollowersPage()) {
-                            const cr2 = localStorage.getItem('matrix_current_creator') || '';
+                            if (await skipProtectedBloggerIfNeeded('scan_wait_protected')) return;
+                            const cr2 = resolveCurrentCreatorHandle();
                             const curPath2 = window.location.pathname.toLowerCase().replace(/\/+$/, '');
-                            if (cr2 && !RESERVED_PAGE_HANDLES[cr2] && curPath2 === '/' + cr2.toLowerCase()) {
-                                if (pageLooksProtected()) {
-                                    updateStats('🔒 @' + cr2 + ' 粉丝页不可进，跳过');
-                                    markHandleCompleted(cr2);
-                                    await markPoolTaskDead();
-                                    await sleep(1500);
-                                    await jumpToNextBloggerAfterDeadSkip();
-                                    return;
-                                }
+                            if (cr2 && !RESERVED_PAGE_HANDLES[cr2.toLowerCase()] && curPath2 === '/' + cr2.toLowerCase()) {
+                                if (await skipProtectedOrKickLoop('scan_kicked2_to_profile')) return;
                                 if (!findBloggerFollowersLink(cr2)) {
-                                    var _kickWait2 = await waitForBloggerFollowersLink(cr2, 12000);
+                                    var _kickWait2 = await waitForBloggerFollowersLink(cr2, FOLLOW_PACE.followersLinkWaitMs);
                                     if (_kickWait2.protected) {
                                         updateStats('🔒 @' + cr2 + ' 粉丝页不可进，跳过');
+                                        __clearFollowersKick(cr2);
                                         markHandleCompleted(cr2);
                                         await markPoolTaskDead();
-                                        await sleep(1500);
+                                        await sleep(FOLLOW_PACE.deadSkipGapMs);
                                         await jumpToNextBloggerAfterDeadSkip();
                                         return;
                                     }
@@ -4905,6 +5374,7 @@ async function runEngine() {
                                     }
                                 }
                                 localStorage.setItem('matrix_step', 'PROFILE');
+                                stepStartTime = Date.now();
                                 continue;
                             }
                         }
@@ -4919,6 +5389,48 @@ async function runEngine() {
                     try { sessionStorage.removeItem('sg_follow_broken_wait_n'); } catch (eBrOk) {}
                     // 保护号硬跳 /followers 后常停在「帖子受到保护」空页：必须 dead，禁止空刷来回跳
                     if (await skipProtectedBloggerIfNeeded('followers_scan')) return;
+                    try {
+                        var _okCr = localStorage.getItem('matrix_current_creator') || '';
+                        if (_okCr) {
+                            __clearFollowersKick(_okCr);
+                            try { sessionStorage.removeItem('sg_follow_softfail_' + String(_okCr).replace(/^@/, '').toLowerCase()); } catch (eSf) {}
+                        }
+                    } catch (eClrK) {}
+                    // 4.6.115：粉丝列表扫描前置确认——URL 到了但 UserCell 未渲染 = 页面还在加载
+                    // 守卫 10 tick×2s=20s；aria-busy/progressbar 加载中不计数（busy 宽限封顶 15 tick 防永等）
+                    try {
+                        if (pageLooksFollowersShell()) {
+                            var _flBusy = pageLooksFollowersLoading();
+                            var _flCellN = 0;
+                            try { _flCellN = document.querySelectorAll('[data-testid="UserCell"]').length; } catch (eCN) {}
+                            var _flw = parseInt(sessionStorage.getItem('sg_followers_loading_wait') || '0', 10) || 0;
+                            var _flBusyN = parseInt(sessionStorage.getItem('sg_followers_loading_busy') || '0', 10) || 0;
+                            if (_flBusy) {
+                                _flBusyN++;
+                                sessionStorage.setItem('sg_followers_loading_busy', String(_flBusyN));
+                            } else {
+                                _flw++;
+                                sessionStorage.setItem('sg_followers_loading_wait', String(_flw));
+                            }
+                            if (_flw <= FOLLOW_PACE.scanLoadingGuardTicks && _flBusyN <= FOLLOW_PACE.scanLoadingBusyMaxTicks) {
+                                updateStats('⏳ 粉丝列表加载中…(' + _flw + '/' + FOLLOW_PACE.scanLoadingGuardTicks + (_flBusy ? ' 加载中' : '') + ')');
+                                document.dispatchEvent(new CustomEvent('matrix-diagnostic', {
+                                    detail: { text: '⏳ followers 渲染守卫 (' + _flw + '/' + FOLLOW_PACE.scanLoadingGuardTicks + ') cells=' + _flCellN + ' busy=' + (_flBusy ? 1 : 0) + ' busyN=' + _flBusyN + '/' + FOLLOW_PACE.scanLoadingBusyMaxTicks }
+                                }));
+                                try {
+                                    if (typeof SgTelemetry !== 'undefined') SgTelemetry.emit('follow.step_mismatch', { step: 'scan_followers', page: location.pathname, action: 'wait', mismatch_count: _flw, cells: _flCellN, busy: _flBusy ? 1 : 0 });
+                                } catch (eT) {}
+                                await sleep(2000);
+                                continue;
+                            }
+                            // 等够仍无 cell：清计数，交给 scanPage 的 shell 处理（handleFollowersShellStall 6-cap → release）
+                            sessionStorage.removeItem('sg_followers_loading_wait');
+                            sessionStorage.removeItem('sg_followers_loading_busy');
+                        } else {
+                            sessionStorage.removeItem('sg_followers_loading_wait');
+                            sessionStorage.removeItem('sg_followers_loading_busy');
+                        }
+                    } catch (eLoadGuard) {}
                     await scanPage();
                 } else if (step === 'WAIT') {
                     await sleep(2000);
@@ -5087,8 +5599,12 @@ async function runEngine() {
                     return;
                 }
             } catch (eNav3) {}
-            followGoWhenAllowed('https://x.com/' + savedCreator + '/followers');
-        }, 1000);
+            if (typeof SchedulerGate !== 'undefined' && SchedulerGate.go) {
+                SchedulerGate.go('follow', 'https://x.com/' + savedCreator + '/followers', { force: true });
+            } else {
+                followGoWhenAllowed('https://x.com/' + savedCreator + '/followers');
+            }
+        }, 8000);
         return true;
     }
 
@@ -5151,27 +5667,39 @@ async function runEngine() {
     // V3: 只尝试一次恢复，不再持续轮询。调度器通过 sg-follow-command 控制启停
     setTimeout(function () { tryAutoStart(); }, 2000);
 
-    // 页面漂移巡检：页≠锁时即使引擎「在跑」也纠偏（防节流后假活空扫错列表）
-    setInterval(function () {
-        try {
-            var crLock = localStorage.getItem('matrix_current_creator');
-            if (!crLock) return;
-            if (typeof SchedulerGate !== 'undefined' && SchedulerGate.isAutoMode && SchedulerGate.isAutoMode()) {
-                if (!SchedulerGate.isModuleOn('follow')) return;
-            } else {
-                if (localStorage.getItem('matrix_follow_running') !== 'true') return;
-            }
-            var pageNow = classifyPage();
-            var stepNow = localStorage.getItem('matrix_step') || 'SCAN';
-            var expNow = expectedPageFor(crLock, stepNow);
-            var mismatch = !!(expNow && (expNow.kind !== pageNow.kind || expNow.handle !== pageNow.handle));
-            if (!mismatch) {
-                if (isRunning || _engineLoopRunning) return;
-                return;
-            }
-            handlePageDrift({ allowWait: true });
-        } catch (e) {}
-    }, 8000);
+    // 页面漂移巡检：页≠锁时即使引擎「在跑」也纠偏（防节流后假活空扫错列表）；动态间隔降低 CPU
+    function scheduleDriftCheck() {
+        const delay = (document.hidden || !isRunning) ? 30000 : 8000;
+        setTimeout(() => {
+            try {
+                if (!document.hidden) {
+                    var crLock = localStorage.getItem('matrix_current_creator');
+                    if (crLock) {
+                        if (typeof SchedulerGate !== 'undefined' && SchedulerGate.isAutoMode && SchedulerGate.isAutoMode()) {
+                            if (SchedulerGate.isModuleOn('follow')) {
+                                checkPageDriftForLock(crLock);
+                            }
+                        } else if (localStorage.getItem('matrix_follow_running') === 'true') {
+                            checkPageDriftForLock(crLock);
+                        }
+                    }
+                }
+            } catch (e) {}
+            scheduleDriftCheck();
+        }, delay);
+    }
+    function checkPageDriftForLock(crLock) {
+        var pageNow = classifyPage();
+        var stepNow = localStorage.getItem('matrix_step') || 'SCAN';
+        var expNow = expectedPageFor(crLock, stepNow);
+        var mismatch = !!(expNow && (expNow.kind !== pageNow.kind || expNow.handle !== pageNow.handle));
+        if (!mismatch) {
+            if (isRunning || _engineLoopRunning) return;
+            return;
+        }
+        handlePageDrift({ allowWait: true });
+    }
+    scheduleDriftCheck();
 
     // ========== 【批量同步本地累计关注数到 NAS】 ==========
     setTimeout(() => {
@@ -5339,8 +5867,12 @@ async function runEngine() {
                     return;
                 }
             } catch (eSoftCmd) {}
+            try { purgePoisonedFollowProgress('start'); } catch (ePurge) {}
+            try { window.__sg_follow_done_handles = new Set(); } catch (eDone) {}
+            try { sessionStorage.removeItem('sg_follow_unconf_map'); } catch (eUn) {}
             localStorage.setItem('matrix_follow_running', 'true');
             sessionStorage.setItem('matrix_tab_running', 'true');
+            followToast('▶ 关注 4.6.51', 2500);
             var fDest = (d.targetUrl || '').split('?')[0];
             // 无 target 但有任务锁：补齐粉丝页，避免空 start 在错误页空转
             if (!fDest) {
@@ -5436,6 +5968,9 @@ async function runEngine() {
             }
         }
     });
+
+    // 4.6.88：脚本注入即跨日检测（不等 coTick / 进粉丝页）
+    try { getAccountStats(); } catch (eRollInit) {}
 
     setTimeout(() => {
         replayFollowBackup();

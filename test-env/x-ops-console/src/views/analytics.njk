@@ -1,0 +1,394 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>{{ title }}</title>
+<link rel="stylesheet" href="/public/app.css">
+<style>
+  .kpi-row{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+  .kpi-card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px 16px;min-width:120px}
+  .kpi-num{font-size:22px;font-weight:700;color:#c9d1d9}
+  .kpi-label{font-size:12px;color:#8b949e;margin-top:4px}
+  .day-tabs a,.sort-tabs a,.view-tabs a{margin-right:8px;color:#58a6ff;text-decoration:none;font-size:13px}
+  .day-tabs a.active,.sort-tabs a.active,.view-tabs a.active{font-weight:700;text-decoration:underline}
+  .rate-ok{color:#3fb950;font-weight:600}
+  .rate-low{color:#e3b341}
+  .rate-na{color:#8b949e}
+  .hint{font-size:12px;color:#8b949e;margin:0 0 12px}
+  .trend-wrap{margin:16px 0 24px}
+  .trend-table{width:100%;border-collapse:collapse;font-size:12px;color:#c9d1d9}
+  .trend-table th,.trend-table td{padding:6px 8px;border-bottom:1px solid #21262d;text-align:left}
+  .trend-bar{display:inline-block;height:10px;background:#238636;border-radius:2px;min-width:2px;vertical-align:middle}
+  .trend-bar.fb{background:#3fb950}
+  .view-tabs{margin:0 0 14px}
+</style>
+</head>
+<body>
+<header class="shell-header">
+  <h1>X 运营轻总控后台</h1>
+  {% set navActive = 'analytics' %}
+      {% include 'partials/shell-nav.njk' %}
+</header>
+<main class="shell-main">
+  <section class="panel">
+    <div class="panel-heading">
+      <h2>效率分析</h2>
+      <div class="day-tabs">
+        <a href="/analytics?tab={{ tab }}&days=1&sort={{ sort }}" class="{% if days==1 %}active{% endif %}">今日</a>
+        <a href="/analytics?tab={{ tab }}&days=7&sort={{ sort }}" class="{% if days==7 %}active{% endif %}">近7日</a>
+        <a href="/analytics?tab={{ tab }}&days=14&sort={{ sort }}" class="{% if days==14 %}active{% endif %}">近14日</a>
+      </div>
+    </div>
+
+    <p class="view-tabs">
+      <a href="/analytics?tab=funnel&days={{ days }}&sort={{ sort }}" class="{% if tab=='funnel' %}active{% endif %}">每日漏斗</a>
+      <a href="/analytics?tab=efficiency&days={{ days }}&sort={{ sort }}" class="{% if tab=='efficiency' %}active{% endif %}">今日效率</a>
+      <a href="/analytics?tab=accounts&days={{ days }}&sort={{ sort }}" class="{% if tab=='accounts' %}active{% endif %}">按账号回关</a>
+      <a href="/analytics?tab=bloggers&days={{ days }}&sort={{ sort }}" class="{% if tab=='bloggers' %}active{% endif %}">按博主</a>
+    </p>
+
+    {% if tab != 'funnel' %}
+    {% if funnel and funnel.steps %}
+    <div class="kpi-row" style="margin-bottom:8px">
+      {% for step in funnel.steps %}
+      <div class="kpi-card">
+        <div class="kpi-num">{{ step.count }}</div>
+        <div class="kpi-label">{{ step.label }}{% if step.conv_label %} · {{ step.conv_label }}{% endif %}</div>
+      </div>
+      {% endfor %}
+    </div>
+    <p class="hint">漏斗旁百分比为相对上一步转化率（今日事件口径）。</p>
+    {% endif %}
+
+    {% if chatMetrics %}
+    <div class="kpi-row" style="margin-top:12px">
+      <div class="kpi-card">
+        <div class="kpi-num">{% if chatMetrics.ice_to_ad_median_min != null %}{{ chatMetrics.ice_to_ad_median_min }}{% else %}-{% endif %}</div>
+        <div class="kpi-label">ice→AD 中位(分)</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-num">{% if chatMetrics.inbox_hit_rate != null %}{{ chatMetrics.inbox_hit_rate }}%{% else %}-{% endif %}</div>
+        <div class="kpi-label">守箱命中率</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-num">{{ chatMetrics.reject_sent or 0 }}</div>
+        <div class="kpi-label">婉拒 {% if chatMetrics.reject_pct != null %}({{ chatMetrics.reject_pct }}%){% endif %}</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-num">{{ chatMetrics.default_ad or 0 }}</div>
+        <div class="kpi-label">默认发AD {% if chatMetrics.default_ad_pct != null %}({{ chatMetrics.default_ad_pct }}%){% endif %}</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-num">{{ chatMetrics.inbox_watch_start or 0 }}/{{ chatMetrics.inbox_open or 0 }}</div>
+        <div class="kpi-label">watch/open</div>
+      </div>
+    </div>
+    <p class="hint">私信插件指标（activity_logs · chat_plugin · 近{{ chatMetrics.days or days }}日）。</p>
+    {% endif %}
+    {% endif %}
+
+    {% if tab == 'funnel' %}
+    {% if dailyFunnel %}
+    <div class="trend-wrap" style="margin-top:0">
+      <h3 style="font-size:14px;color:#c9d1d9;margin:0 0 8px;">插件转化漏斗 · 按天（近 {{ dailyFunnel.days }} 日）</h3>
+      <p class="hint">
+        链路：关注成功 → 回关 → 破冰 → 带链广告 → 进线（末级仅参考，不作主指标）。<br>
+        口径：按自然日聚合（Asia/Shanghai）· 事件日口径（非同期群，跨日归因会略失真）。<br>
+        数据源：关注/回关/私信轮次 = 插件 account_daily_stats 日上报；破冰/带链/进线 = SCRM 日汇总行 __summary__（跨数据源，比率仅供趋势参考）。<br>
+        今日尚未开工时该行为 0（属正常，非断采）。
+      </p>
+      <div style="overflow:auto">
+        <table class="trend-table">
+          <thead>
+            <tr>
+              <th>日期</th>
+              <th>关注</th>
+              <th>回关</th>
+              <th>回关率</th>
+              <th>破冰</th>
+              <th>破冰/关注</th>
+              <th>带链广告</th>
+              <th>广告/破冰</th>
+              <th>私信轮次</th>
+              <th>进线</th>
+              <th>量</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for d in dailyFunnel.rows %}
+            <tr>
+              <td>{% if loop.last %}<strong>{{ d.date }} · 今日</strong>{% else %}{{ d.date }}{% endif %}</td>
+              <td>{{ d.follows }}</td>
+              <td>{{ d.follow_backs }}</td>
+              <td>
+                {% if d.fb_pct != null %}
+                  <span class="{% if d.fb_pct >= 15 %}rate-ok{% else %}rate-low{% endif %}">{{ d.fb_pct }}%</span>
+                {% else %}<span class="rate-na" title="当日无关注">-</span>{% endif %}
+              </td>
+              <td>{{ d.ice }}</td>
+              <td>{% if d.ice_pct != null %}{{ d.ice_pct }}%{% else %}<span class="rate-na">-</span>{% endif %}</td>
+              <td>{{ d.ad_link }}</td>
+              <td>{% if d.ad_pct != null %}{{ d.ad_pct }}%{% else %}<span class="rate-na">-</span>{% endif %}</td>
+              <td>{{ d.chat_rounds }}</td>
+              <td style="color:#8b949e">{{ d.inbound }}</td>
+              <td>
+                <span class="trend-bar" style="width:{{ d.bar_follows }}px" title="关注"></span>
+                <span class="trend-bar fb" style="width:{{ d.bar_ice }}px;margin-left:4px" title="破冰"></span>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <p class="hint">
+        区间合计（{{ dailyFunnel.since }} ~ 今日）：关注 {{ dailyFunnel.totals.follows }} ·
+        回关 {{ dailyFunnel.totals.follow_backs }}{% if dailyFunnel.totals.fb_pct != null %}（{{ dailyFunnel.totals.fb_pct }}%）{% endif %} ·
+        破冰 {{ dailyFunnel.totals.ice }} · 带链广告 {{ dailyFunnel.totals.ad_link }} ·
+        私信轮次 {{ dailyFunnel.totals.chat_rounds }} · 进线 {{ dailyFunnel.totals.inbound }}
+      </p>
+    </div>
+    {% else %}
+    <p class="hint">每日漏斗暂不可用（数据源查询异常，请查看后台日志）。</p>
+    {% endif %}
+
+    {% elif tab == 'efficiency' %}
+    <p class="hint">今日效率来自插件 daily-stats（关注/私信/养号时长）。无上报则多为 0。</p>
+    <div style="overflow:auto">
+      <table class="trend-table">
+        <thead>
+          <tr>
+            <th>账号</th>
+            <th>关注</th>
+            <th>关注工时</th>
+            <th>关注/小时</th>
+            <th>私信轮次</th>
+            <th>私信工时</th>
+            <th>养号赞/评</th>
+            <th>养号工时</th>
+            <th>合计工时</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for e in efficiency %}
+          <tr>
+            <td>@{{ e.x_handle }}</td>
+            <td>{{ e.follow_count }}</td>
+            <td>{{ e.follow_hours }}h</td>
+            <td>{% if e.follows_per_hour != null %}{{ e.follows_per_hour }}{% else %}-{% endif %}</td>
+            <td>{{ e.chat_rounds }}</td>
+            <td>{{ e.chat_hours }}h</td>
+            <td>{{ e.nurture_likes }}/{{ e.nurture_comments }}</td>
+            <td>{{ e.nurture_hours }}h</td>
+            <td>{{ e.active_hours }}h</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="9" style="color:#8b949e">暂无 daily-stats</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+
+    <p class="hint">
+      回关口径：分母=关注成功日志；分子=72h 内回关（须我们先关注过）。样本 &lt; {{ fb.min_sample }} 不显示比率。
+      今日回关率会偏低（窗口未走完）。自 {{ fb.since }} · 归因 {{ fb.attr_hours }}h · 不卡门禁
+    </p>
+    <div class="kpi-row">
+      <div class="kpi-card">
+        <div class="kpi-num">{{ fb.totals.follows }}</div>
+        <div class="kpi-label">关注成功</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-num">{{ fb.totals.follow_backs }}</div>
+        <div class="kpi-label">回关(72h)</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-num">{% if fb.totals.rate_pct != null %}{{ fb.totals.rate_pct }}%{% else %}-{% endif %}</div>
+        <div class="kpi-label">全网回关率</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-num">{{ fb.totals.ice or 0 }}</div>
+        <div class="kpi-label">破冰(区间)</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-num">{{ fb.totals.ad_link or 0 }}</div>
+        <div class="kpi-label">带链广告(区间)</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-num">{{ dmTotals.ad_link or 0 }}</div>
+        <div class="kpi-label">今日带链广告</div>
+      </div>
+    </div>
+
+    {% if tab == 'accounts' %}
+    <div class="trend-wrap">
+      <h3 style="font-size:14px;color:#c9d1d9;margin:0 0 8px;">进线日记录（SCRM）</h3>
+      <p class="hint">每次 SCRM 上报写入当日峰值；日切后仍保留。粗转化 = 进线 / 当日带链广告。历史从接入日起算。</p>
+      <table class="trend-table">
+        <thead>
+          <tr><th>日期</th><th>进线</th><th>破冰</th><th>带链广告</th><th>粗转化</th></tr>
+        </thead>
+        <tbody>
+          {% for d in inboundSeries %}
+          <tr>
+            <td>{{ d.stat_date }}</td>
+            <td>{{ d.today_done }}</td>
+            <td>{{ d.ice }}</td>
+            <td>{{ d.ad_link }}</td>
+            <td>{% if d.conv_pct != null %}{{ d.conv_pct }}%{% else %}-{% endif %}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="5" class="muted">尚无日记录（等 SCRM 下次上报后出现）</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="trend-wrap">
+      <h3 style="font-size:14px;color:#c9d1d9;margin:0 0 8px;">近 14 日趋势</h3>
+      <p class="hint">绿条=关注；亮绿条=回关(72h)。比率仅样本达标日显示。</p>
+      <table class="trend-table">
+        <thead>
+          <tr><th>日期</th><th>关注</th><th>回关</th><th>回关率</th><th>量</th></tr>
+        </thead>
+        <tbody>
+          {% for d in trend.series %}
+          <tr>
+            <td>{{ d.date }}</td>
+            <td>{{ d.follows }}</td>
+            <td>{{ d.follow_backs }}</td>
+            <td>{% if d.rate_pct != null %}{{ d.rate_pct }}%{% else %}-{% endif %}</td>
+            <td>
+              <span class="trend-bar" style="width:{{ d.bar_follows }}px" title="关注"></span>
+              <span class="trend-bar fb" style="width:{{ d.bar_backs }}px;margin-left:4px" title="回关"></span>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+
+    {% if tab == 'bloggers' and demoteHints and demoteHints.length %}
+    <div class="trend-wrap" style="border:1px solid #d29922;border-radius:8px;padding:12px;margin-bottom:16px;">
+      <h3 style="font-size:14px;color:#d29922;margin:0 0 8px;">建议降权博主（关注≥80 且回关率&lt;1.5%）</h3>
+      <p class="hint">这些源吃关注但不产回关，稀释全网回关率。请在号池停止推这些博主的粉丝。</p>
+      <p style="font-size:12px;color:#c9d1d9;word-break:break-all;margin:0 0 8px;">
+        {% for b in demoteHints %}@{{ b.blogger }}{% if not loop.last %} {% endif %}{% endfor %}
+      </p>
+      <table class="trend-table">
+        <thead><tr><th>博主</th><th>关注</th><th>回关</th><th>回关率</th></tr></thead>
+        <tbody>
+          {% for b in demoteHints %}
+          <tr>
+            <td>@{{ b.blogger }}</td>
+            <td>{{ b.follows }}</td>
+            <td>{{ b.follow_backs }}</td>
+            <td>{% if b.rate_pct != null %}{{ b.rate_pct }}%{% else %}-{% endif %}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+
+    <p class="sort-tabs hint">排序：
+      <a href="/analytics?tab={{ tab }}&days={{ days }}&sort=rate" class="{% if sort=='rate' %}active{% endif %}">回关率</a>
+      <a href="/analytics?tab={{ tab }}&days={{ days }}&sort=follows" class="{% if sort=='follows' %}active{% endif %}">关注</a>
+      <a href="/analytics?tab={{ tab }}&days={{ days }}&sort=follow_backs" class="{% if sort=='follow_backs' %}active{% endif %}">回关</a>
+      <a href="/analytics?tab={{ tab }}&days={{ days }}&sort=ice" class="{% if sort=='ice' %}active{% endif %}">破冰</a>
+      <a href="/analytics?tab={{ tab }}&days={{ days }}&sort=ad_link" class="{% if sort=='ad_link' %}active{% endif %}">带链广告</a>
+      {% if tab == 'accounts' %}
+      <a href="/analytics?tab=accounts&days={{ days }}&sort=failed" class="{% if sort=='failed' %}active{% endif %}">失败</a>
+      {% else %}
+      <a href="/analytics?tab=bloggers&days={{ days }}&sort=account_count" class="{% if sort=='account_count' %}active{% endif %}">覆盖账号</a>
+      {% endif %}
+    </p>
+
+    {% if tab == 'bloggers' %}
+    <p class="hint">
+      博主来自关注上报 <code>meta.blogger_handle</code>（插件 3.0.27+）；旧数据可从粉丝页 URL 解析，否则归入 <code>(unknown)</code>。
+      当前 unknown 关注 {{ bloggers.unknown_follows }}。低回关博主建议号池降权/dead（人工确认）。
+    </p>
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>博主</th>
+          <th>关注</th>
+          <th>回关(72h)</th>
+          <th>回关率</th>
+          <th>破冰</th>
+          <th>带链广告</th>
+          <th>覆盖账号</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for b in bloggers.bloggers %}
+        <tr>
+          <td>{{ loop.index }}</td>
+          <td>{% if b.blogger == '(unknown)' %}(unknown){% else %}@{{ b.blogger }}{% endif %}</td>
+          <td>{{ b.follows }}</td>
+          <td>{{ b.follow_backs }}</td>
+          <td>
+            {% if b.rate_pct != null %}
+              <span class="{% if b.rate_pct >= 15 %}rate-ok{% else %}rate-low{% endif %}">{{ b.rate_pct }}%</span>
+            {% else %}
+              <span class="rate-na" title="样本不足">-</span>
+            {% endif %}
+          </td>
+          <td>{{ b.ice }}</td>
+          <td>{{ b.ad_link }}</td>
+          <td>{{ b.account_count }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="8" class="muted">暂无博主数据（需插件上报 blogger_handle）</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>账号</th>
+          <th>Day</th>
+          <th>关注</th>
+          <th>回关(72h)</th>
+          <th>回关率</th>
+          <th>破冰</th>
+          <th>带链广告</th>
+          <th>失败</th>
+          <th>状态</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for a in fb.accounts %}
+        <tr>
+          <td>{{ loop.index }}</td>
+          <td>@{{ a.x_handle }}</td>
+          <td>{{ a.day_count }}</td>
+          <td>{{ a.follows }}</td>
+          <td>{{ a.follow_backs }}</td>
+          <td>
+            {% if a.rate_pct != null %}
+              <span class="{% if a.rate_pct >= 15 %}rate-ok{% else %}rate-low{% endif %}">{{ a.rate_pct }}%</span>
+            {% else %}
+              <span class="rate-na" title="样本不足">-</span>
+            {% endif %}
+          </td>
+          <td>{{ a.ice }}</td>
+          <td>{{ a.ad_link }}</td>
+          <td>{{ a.failed }}</td>
+          <td>{{ a.status }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="10" class="muted">暂无账号</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+    {% endif %}
+  </section>
+</main>
+</body>
+</html>

@@ -1,0 +1,20 @@
+services:
+  x-ops-console-test:
+    build: .
+    ports:
+      - "15680:15680"
+    environment:
+      PORT: "15680"
+      DB_PATH: "/data/x-ops-console-test.sqlite"
+      RULES_PATH: "/data/rules-test.json"
+      DATA_DIR: "/data"
+      CONTENT_MEDIA_DIR: "/data/content-media"
+      LANG: "C.UTF-8"
+      LC_ALL: "C.UTF-8"
+      TZ: "Asia/Shanghai"
+      SCRM_CONFIG_URL: "http://192.168.0.100:3211/api/config"
+      SCRM_SYNC_INTERVAL_MS: "300000"
+      SCRM_SYNC_ENABLED: "1"
+      POOL_URL: "http://192.168.0.100:15678"
+    volumes:
+      - ./data:/data

@@ -75,6 +75,9 @@ var SKeys = (function () {
     // --- 用户点「停止」：禁止引擎 recover / 克隆续跑拉养号 ---
     LK_USER_PAUSED: 'sg_user_paused',
 
+    // --- 本号绑定（换号对账；与 matrix_my_handle 对齐，专指「调度认领的登录号」）---
+    LK_BOUND_HANDLE: 'sg_bound_handle',
+
     // --- 新号自动上路（onboarding）---
     LK_ONBOARDING_STATE: 'sg_onboarding_state_',
     SK_ONBOARDING_ACTIVE: 'sg_onboarding_active',

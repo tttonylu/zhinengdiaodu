@@ -1,0 +1,238 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <title>{{ title }}</title>
+    <link rel="stylesheet" href="/public/app.css">
+      </head>
+  <body>
+        <header class="shell-header">
+      <h1>X 运营轻总控后台</h1>
+      {% set navActive = 'scripts' %}
+      {% include 'partials/shell-nav.njk' %}
+    </header>
+    <main class="shell-main">
+      <section class="panel">
+        <div class="panel-heading">
+          <h2>话术中心 & 链接管理</h2>
+        </div>
+
+        <div class="add-form" style="margin-bottom:24px;">
+          <h3>🌐 推广链接管理</h3>
+          <label>链接（每行一个）
+            <textarea id="links-ta" rows="3">{% for link in promoLinks %}{{ link }}{% if not loop.last %}&#10;{% endif %}{% endfor %}</textarea>
+          </label>
+          <p class="muted" style="font-size:11px; margin-top:4px;">插件从服务器拉取这些链接，用于广告轮发送。保存后插件刷新即可生效。</p>
+          <button id="save-links-btn">保存链接</button>
+          <button type="button" id="sync-scrm-btn" style="margin-left:8px;background:#1f6feb;color:#fff;border:none;border-radius:4px;padding:6px 12px;cursor:pointer;">链接已更新并同步到 SCRM</button>
+          <span id="links-save-msg" style="margin-left:12px; font-size:12px;"></span>
+          <div id="scrm-gate-box" style="margin-top:12px;padding:10px 12px;border-radius:6px;background:#161b22;border:1px solid #30363d;font-size:12px;">
+            <div><b>SCRM 私信闸门</b>
+              {% if scrmGate and scrmGate.allow_chat %}
+                <span class="tag success" style="margin-left:8px;">可放行</span>
+              {% else %}
+                <span class="tag warning" style="margin-left:8px;">已拦截</span>
+                <span class="muted">{{ scrmGate.reason if scrmGate else '未上报' }}</span>
+              {% endif %}
+            </div>
+            <div class="muted" style="margin-top:6px;">
+              {% if scrmGate and scrmGate.snapshot_at %}
+                在线 {{ scrmGate.online_count }}/{{ scrmGate.total_monitored }}
+              {% else %}
+                尚无快照
+              {% endif %}
+              · 快照 {{ scrmGate.snapshot_at if scrmGate and scrmGate.snapshot_at else '-' }}
+              · 链接解析：{% if linkAgentIds and linkAgentIds.length %}{{ linkAgentIds | join(', ') }}{% else %}-{% endif %}
+              · 同步 agentIds：{% if scrmAgentIds and scrmAgentIds.length %}{{ scrmAgentIds | join(', ') }}{% else %}-{% endif %}
+              · 上次同步 {{ scrmSyncedAt or '-' }}
+              {% if activePromoAgent %} · 插件当前生效链 {{ activePromoAgent }}{% endif %}
+            </div>
+            {% if scrmLinkMismatch %}
+            <p style="margin:8px 0 0;font-size:12px;color:#f85149;font-weight:600;">
+              链接里的客服号与上次同步到 SCRM 的不一致。请点上方「链接已更新并同步到 SCRM」，否则闸门白名单可能对不上。
+            </p>
+            {% endif %}
+            {% if promoLinks and promoLinks.length == 0 %}
+            <p style="margin:8px 0 0;font-size:12px;color:#f85149;font-weight:600;">
+              当前无推广链接：广告轮会跳过，进线不会上涨。
+            </p>
+            {% endif %}
+            {% if scrmGate and scrmGate.snapshot_at and scrmGate.agents and scrmGate.agents.length %}
+            <table style="width:100%;margin-top:8px;border-collapse:collapse;font-size:12px;">
+              <thead>
+                <tr style="text-align:left;color:#8b949e;border-bottom:1px solid #30363d;">
+                  <th style="padding:4px 6px;">客服号</th>
+                  <th style="padding:4px 6px;">昵称</th>
+                  <th style="padding:4px 6px;">状态</th>
+                  <th style="padding:4px 6px;">备注</th>
+                  <th style="padding:4px 6px;">今日</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for a in scrmGate.agents %}
+                <tr style="border-bottom:1px solid #21262d;">
+                  <td style="padding:4px 6px;">{{ a.agent_id }}</td>
+                  <td style="padding:4px 6px;">{{ a.nickname or '-' }}</td>
+                  <td style="padding:4px 6px;">{% if a.not_found %}⚠️ 未找到{% elif a.online %}✅ 在线{% else %}❌ 离线{% endif %}</td>
+                  <td style="padding:4px 6px;">{{ a.remark or '-' }}</td>
+                  <td style="padding:4px 6px;">{{ a.today_done }}/{{ a.today_target }}</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+            {% else %}
+            <p class="muted" style="margin:8px 0 0;font-size:11px;">等待 SCRM 上报</p>
+            {% endif %}
+            <p class="muted" style="margin:6px 0 0;font-size:11px;">换链后点「同步到 SCRM」即可；晚上同步好明天链接后次日不必再点。放行只看客服是否检测通过且在线（进线数字不参与判定）。</p>
+          </div>
+        </div>
+
+        <div class="panel-heading">
+          <h2>话术方案</h2>
+          <span class="muted">{{ sets.length }} 套方案</span>
+        </div>
+
+        <form class="shuffle-bar" id="shuffle-form">
+          <span style="font-weight:600;">发放模式：</span>
+          <label><input type="radio" name="mode" value="random" {% if shuffleMode == 'random' %}checked{% endif %}> 随机抽取</label>
+          <label><input type="radio" name="mode" value="round_robin" {% if shuffleMode == 'round_robin' %}checked{% endif %}> 轮换发放</label>
+        </form>
+
+        <div class="script-cards">
+          {% for set in sets %}
+          <div class="script-card {% if not set.enabled %}disabled{% endif %}" data-set-id="{{ set.set_id }}">
+            <div class="script-card-header">
+              <h3>{{ set.name }} <span class="muted" style="font-weight:normal;">{{ set.set_id }}</span></h3>
+              <span class="tag {% if set.enabled %}on{% endif %}">{% if set.enabled %}已启用{% else %}已禁用{% endif %}</span>
+            </div>
+            <div class="muted" style="margin-bottom:10px;">{{ set.description }}</div>
+            <div class="tpl-grid">
+              {% for tt in templateTypes %}
+              <div class="tpl-item">
+                <label>{{ tt.label }}</label>
+                <textarea data-type="{{ tt.key }}" rows="2">{{ set.templates[tt.key] or '' }}</textarea>
+              </div>
+              {% endfor %}
+            </div>
+            <div class="card-actions">
+              <button class="save-set-btn enable-btn" data-set-id="{{ set.set_id }}">保存</button>
+              <button class="toggle-set-btn secondary-button" data-set-id="{{ set.set_id }}" data-enabled="{{ set.enabled }}">
+                {% if set.enabled %}禁用{% else %}启用{% endif %}
+              </button>
+              <button class="delete-set-btn danger-btn" data-set-id="{{ set.set_id }}">删除</button>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+
+        <div class="add-form">
+          <h3>添加新方案</h3>
+          <label>方案 ID（英文，如 custom_v1）
+            <input id="new-set-id" placeholder="custom_v1">
+          </label>
+          <label>方案名称
+            <input id="new-set-name" placeholder="自定义方案">
+          </label>
+          <label>描述
+            <input id="new-set-desc" placeholder="一句话描述">
+          </label>
+          <button id="add-set-btn">添加方案</button>
+        </div>
+
+      </section>
+    </main>
+
+    <script>
+    document.querySelectorAll('input[name="mode"]').forEach(function(radio) {
+      radio.addEventListener('change', function() {
+        fetch('/api/scripts/settings/shuffle', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ mode: radio.value })
+        });
+      });
+    });
+    document.querySelectorAll('.save-set-btn').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var card = btn.closest('.script-card');
+        var setId = card.dataset.setId;
+        var templates = {};
+        card.querySelectorAll('textarea[data-type]').forEach(function(ta) {
+          templates[ta.dataset.type] = ta.value;
+        });
+        fetch('/api/scripts', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ set_id: setId, templates: templates })
+        }).then(function(r) {
+          if (r.ok) { btn.textContent = '已保存'; setTimeout(function() { btn.textContent = '保存'; }, 1500); }
+        });
+      });
+    });
+    document.querySelectorAll('.toggle-set-btn').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var setId = btn.dataset.setId;
+        var currentlyEnabled = btn.dataset.enabled === '1';
+        fetch('/api/scripts/' + setId + '/enable', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ enabled: !currentlyEnabled })
+        }).then(function() { location.reload(); });
+      });
+    });
+    document.querySelectorAll('.delete-set-btn').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        if (!confirm('确定删除该方案？')) return;
+        fetch('/api/scripts/' + btn.dataset.setId, { method: 'DELETE' })
+          .then(function() { location.reload(); });
+      });
+    });
+    document.getElementById('add-set-btn').addEventListener('click', function() {
+      var setId = document.getElementById('new-set-id').value.trim();
+      var name = document.getElementById('new-set-name').value.trim();
+      var desc = document.getElementById('new-set-desc').value.trim();
+      if (!setId) { alert('请填写方案 ID'); return; }
+      fetch('/api/scripts', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ set_id: setId, name: name || setId, description: desc, templates: {} })
+      }).then(function() { location.reload(); });
+    });
+    document.getElementById('save-links-btn').addEventListener('click', function() {
+      var raw = document.getElementById('links-ta').value.trim();
+      var links = raw ? raw.split('\n').map(function(l) { return l.trim(); }).filter(Boolean) : [];
+      fetch('/api/links', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ links: links })
+      }).then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (data.ok) {
+          document.getElementById('links-save-msg').textContent = '✅ 已保存 ' + links.length + ' 个链接';
+        }
+      });
+    });
+    document.getElementById('sync-scrm-btn').addEventListener('click', function() {
+      var raw = document.getElementById('links-ta').value.trim();
+      var links = raw ? raw.split('\n').map(function(l) { return l.trim(); }).filter(Boolean) : [];
+      var msg = document.getElementById('links-save-msg');
+      msg.textContent = '同步中…';
+      fetch('/api/links/sync-scrm', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ links: links })
+      }).then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (data.ok) {
+          msg.textContent = '✅ 已同步 SCRM ' + (data.agentIds || []).join(', ') + (data.skipped ? '（已一致）' : '');
+          setTimeout(function() { location.reload(); }, 800);
+        } else {
+          msg.textContent = '❌ 同步失败: ' + (data.msg || 'unknown');
+        }
+      }).catch(function(e) {
+        msg.textContent = '❌ 同步异常';
+      });
+    });
+    </script>
+  </body>
+</html>

@@ -42,7 +42,9 @@
     },
     chat_outbound: {
       running: {
-        actions: ['lease_start', 'phase_', 'step_', 'identity_', 'queue_', 'outbound_', 'ice_'],
+        // 4.6.129：补 has_target/progress 精确名——noteChatProgress 心跳上报（content_chat.js:9705 has_target）
+        // 撞契约每次吐 anomaly+freeze 两条事件（当日实测 34k 条/42% 事件量），风暴根因
+        actions: ['lease_start', 'phase_', 'step_', 'identity_', 'queue_', 'outbound_', 'ice_', 'has_target', 'progress'],
         timeoutMs: 120000
       }
     },

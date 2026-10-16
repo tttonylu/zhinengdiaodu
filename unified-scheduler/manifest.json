@@ -1,10 +1,10 @@
-﻿{
+{
   "manifest_version": 3,
   "name": "智能调度中心",
-  "version": "4.6.137",
-  "description": "4.6.137：新增H11原创内容池——repost_content_pool=1的账号从内容池claim已审核日文原创帖+配图直发，posted/retry/failed回报OPS；config-sync透传contentPoolMode",
+  "version": "4.6.145",
+  "description": "4.6.145：修硬停止旗误压私信——白天过私信下班点硬停不再置 chatYieldToFollow（窗外 chat 本就不在 priority，置旗只会同日窗重开时误压 chat，造成早上硬停→全天不发私信）；附一次性清残留让路旗自愈",
   "action": {
-    "default_title": "智能调度中心 4.6.137"
+    "default_title": "智能调度中心 4.6.145"
   },
   "permissions": [
     "storage",

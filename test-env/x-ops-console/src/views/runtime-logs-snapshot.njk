@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>{{ title }} #{{ snapshotId }}</title>
+<link rel="stylesheet" href="/public/app.css">
+<style>
+.snap-meta{font-size:12px;color:#8b949e;margin-bottom:14px}
+.snap-sect{margin-bottom:18px}
+.snap-sect h3{font-size:13px;color:#58a6ff;margin-bottom:8px}
+.snap-pre{background:#0d1117;border:1px solid #21262d;border-radius:6px;padding:10px;font-size:11px;max-height:280px;overflow:auto;white-space:pre-wrap;word-break:break-all}
+.log-line{font-size:11px;padding:3px 0;border-bottom:1px solid #21262d;font-family:ui-monospace,monospace}
+.log-line .ts{color:#484f58;margin-right:6px}
+</style>
+</head>
+<body>
+<header class="shell-header">
+  <h1>X 运营轻总控后台</h1>
+  {% set navActive = 'runtime-logs' %}
+  {% include 'partials/shell-nav.njk' %}
+</header>
+<main class="shell-main">
+<section class="panel">
+  <div class="panel-heading">
+    <h2>诊断包 #{{ snapshotId }}</h2>
+    <a href="/runtime-logs" style="color:#58a6ff;font-size:13px">← 返回运行日志</a>
+  </div>
+  <div class="snap-meta">
+  账号：@{{ account.x_handle if account else (snap.account_handle or '--') }}
+  · 时间：{{ meta.created_at or snap.time_zh or '--' }}
+  · 会话：{{ snap.session_id or '--' }}
+  · 插件版本：{{ snap.extension_version or '--' }}
+  </div>
+
+  {% if snap.extra and snap.extra.diag and snap.extra.diag.chatDiag %}
+  <div class="snap-sect">
+    <h3>私信诊断 chatDiag</h3>
+    <pre class="snap-pre">{{ snap.extra.diag.chatDiag | dump(2) }}</pre>
+  </div>
+  {% endif %}
+
+  {% if snap.console_lines and (snap.console_lines | length) %}
+  <div class="snap-sect">
+    <h3>Console 日志（{{ snap.console_lines | length }} 条）</h3>
+    <div>
+      {% for line in snap.console_lines %}
+      <div class="log-line">
+        <span class="ts">{{ line.time_zh or '' }}</span>
+        <span>[{{ line.source or 'chat' }}]</span>
+        {{ line.message or '' }}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  {% if snap.recent_events and (snap.recent_events | length) %}
+  <div class="snap-sect">
+    <h3>最近事件（{{ snap.recent_events | length }} 条）</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>时间</th><th>事件</th><th>摘要</th></tr></thead>
+        <tbody>
+          {% for e in snap.recent_events %}
+          <tr>
+            <td style="font-size:11px">{{ e.time_zh or '' }}</td>
+            <td>{{ e.label_zh or e.event_id }}</td>
+            <td style="font-size:11px;color:#8b949e">{{ e.meta.reason or e.meta.target or e.meta.message or '' }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+
+  <div class="snap-sect">
+    <h3>完整 JSON</h3>
+    <a href="/api/telemetry/snapshot/{{ snapshotId }}" target="_blank" style="color:#58a6ff;font-size:12px">下载 JSON</a>
+  </div>
+</section>
+</main>
+</body>
+</html>

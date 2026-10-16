@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <title>活动日志 - X 运营轻总控后台</title>
+    <link rel="stylesheet" href="/public/app.css">
+  </head>
+  <body>
+    <header class="shell-header">
+      <h1>X 运营轻总控后台</h1>
+      {% set navActive = 'activity-logs' %}
+      {% include 'partials/shell-nav.njk' %}
+    </header>
+    <main class="shell-main">
+      <div style="padding:0 0 20px 0;">
+        <h2 style="margin-bottom:6px;">活动日志</h2>
+        <p style="color:#8b949e;font-size:12px;margin-bottom:16px;">共 {{ total }} 条</p>
+
+        <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>时间</th>
+              <th>账号</th>
+              <th>操作</th>
+              <th>目标</th>
+              <th>阶段变化</th>
+              <th>详情</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for l in logs %}
+            <tr>
+              <td style="white-space:nowrap;font-size:11px;">{{ l.created_at }}</td>
+              <td>{{ l.account_handle or '--' }}</td>
+              <td style="font-weight:600;">{{ l.action_type }}</td>
+              <td>{{ l.target_handle or '--' }}</td>
+              <td style="font-size:11px;">{{ l.from_stage or '' }}{% if l.from_stage and l.to_stage %} → {% endif %}{{ l.to_stage or '' }}</td>
+              <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;">{{ l.detail_json or '--' }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="6" style="text-align:center;color:#484f58;">暂无记录</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        </div>
+
+        {% if logs.length > 0 %}
+        <div style="margin-top:12px;display:flex;gap:8px;justify-content:center;">
+          {% if offset > 0 %}
+          <a href="/activity-logs?offset={{ offset - limit if offset - limit > 0 else 0 }}" class="btn btn-outline btn-sm" style="text-decoration:none;">上一页</a>
+          {% endif %}
+          {% if logs.length >= limit %}
+          <a href="/activity-logs?offset={{ offset + limit }}" class="btn btn-outline btn-sm" style="text-decoration:none;">下一页</a>
+          {% endif %}
+        </div>
+        {% endif %}
+      </div>
+    </main>
+  </body>
+</html>

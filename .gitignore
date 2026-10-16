@@ -11,14 +11,38 @@ test-env/scrm-monitor/.cookie_import_token.txt
 # 调试抓包、一次性脚本
 .tmp*
 _tmp_*
+/tmp-*
 .tmp_hour_monitor/
 dashboard_live.html
 PUSH_BLOGGER_*
+lark-auth-qr.png
+.trae-html-share-packages/
+
+# 一次性运维/排障/远程部署脚本（含内网地址与凭据，仅本地保留）
+test-env/_*
+test-env/**/_*
+test-env/**/nas_*.sh
 
 # 历史快照与缓存（现网插件只看 unified-scheduler/）
 _archive/
 **/node_modules/
 **/chrome_profile/
+
+# 数据库与 Docker 数据卷（每次启动自动生成）
+*.sqlite
+*.sqlite3
+*.db
+*.log
+**/data/
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+
+# 系统文件
+.DS_Store
+Thumbs.db
 
 # 插件观测日志，不是源码
 unified-scheduler/obs/*.jsonl

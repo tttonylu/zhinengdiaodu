@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>智能调度中心 - 设置</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: #0d1117;
+  color: #c9d1d9;
+  padding: 24px;
+  max-width: 700px;
+  margin: 0 auto;
+}
+h1 { font-size: 20px; color: #58a6ff; margin-bottom: 4px; }
+.subtitle { font-size: 12px; color: #484f58; margin-bottom: 20px; }
+.section {
+  background: #161b22;
+  border: 1px solid #21262d;
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+.section-title {
+  font-size: 14px; font-weight: 700; margin-bottom: 12px;
+  padding-bottom: 8px; border-bottom: 1px solid #21262d;
+}
+.form-row {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 10px;
+}
+.form-label { font-size: 13px; flex: 1; }
+.form-input {
+  width: 80px; padding: 6px 8px; border: 1px solid #30363d;
+  border-radius: 6px; background: #0d1117; color: #c9d1d9;
+  font-size: 13px; text-align: center;
+}
+.form-input.lg { width: 200px; text-align: left; }
+.btn-row { display: flex; gap: 10px; margin-top: 16px; }
+.btn {
+  padding: 10px 20px; border: none; border-radius: 8px;
+  font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.btn-save { background: #238636; color: #fff; }
+.btn-save:hover { background: #2ea043; }
+.btn-reset { background: #21262d; color: #8b949e; border: 1px solid #30363d; }
+.toast {
+  position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
+  padding: 10px 24px; border-radius: 8px; font-size: 13px;
+  font-weight: 600; z-index: 999; opacity: 0; transition: opacity 0.3s;
+}
+.toast.show { opacity: 1; }
+.toast.success { background: #238636; color: #fff; }
+.toast.error { background: #da3633; color: #fff; }
+</style>
+</head>
+<body>
+<h1>智能调度中心 v3</h1>
+<p class="subtitle">所有参数修改后即时生效，修改前请确认数据。</p>
+
+<div class="section">
+  <div class="section-title">服务器地址</div>
+  <div class="form-row">
+    <span class="form-label">号池服务器</span>
+    <input class="form-input lg" id="poolServer" value="http://192.168.0.100:15678">
+  </div>
+  <div class="form-row">
+    <span class="form-label">运营后台</span>
+    <input class="form-input lg" id="opsServer" value="http://192.168.0.100:15680">
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-title">关注参数</div>
+  <div class="form-row">
+    <span class="form-label">每日上限（人）</span>
+    <input class="form-input" id="followCap" value="200">
+  </div>
+  <div class="form-row">
+    <span class="form-label">每轮关注（人）</span>
+    <input class="form-input" id="followBatch" value="15">
+  </div>
+  <div class="form-row">
+    <span class="form-label">间隔（秒）</span>
+    <span style="font-size:12px;color:#8b949e;">
+      <input class="form-input" id="followMin" value="12" style="width:50px;"> ~
+      <input class="form-input" id="followMax" value="19" style="width:50px;">
+    </span>
+  </div>
+  <div class="form-row">
+    <span class="form-label">轮间休息（分钟）</span>
+    <span style="font-size:12px;color:#8b949e;">
+      <input class="form-input" id="restMin" value="30" style="width:50px;"> ~
+      <input class="form-input" id="restMax" value="50" style="width:50px;">
+    </span>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-title">养号参数（每小时预算）</div>
+  <div class="form-row">
+    <span class="form-label">点赞（次）</span>
+    <span style="font-size:12px;color:#8b949e;">
+      <input class="form-input" id="nLikeMin" value="5" style="width:50px;"> ~
+      <input class="form-input" id="nLikeMax" value="15" style="width:50px;">
+    </span>
+  </div>
+  <div class="form-row">
+    <span class="form-label">评论（次）</span>
+    <span style="font-size:12px;color:#8b949e;">
+      <input class="form-input" id="nCommentMin" value="0" style="width:50px;"> ~
+      <input class="form-input" id="nCommentMax" value="3" style="width:50px;">
+    </span>
+  </div>
+  <div class="form-row">
+    <span class="form-label">转发（次）</span>
+    <span style="font-size:12px;color:#8b949e;">
+      <input class="form-input" id="nRepostMin" value="0" style="width:50px;"> ~
+      <input class="form-input" id="nRepostMax" value="2" style="width:50px;">
+    </span>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-title">私信参数</div>
+  <div class="form-row">
+    <span class="form-label">每轮处理（人）</span>
+    <span style="font-size:12px;color:#8b949e;">
+      <input class="form-input" id="cBatchMin" value="1" style="width:50px;"> ~
+      <input class="form-input" id="cBatchMax" value="3" style="width:50px;">
+    </span>
+  </div>
+  <div class="form-row">
+    <span class="form-label">破冰→广告（分钟）</span>
+    <span style="font-size:12px;color:#8b949e;">
+      <input class="form-input" id="cIceMin" value="15" style="width:50px;"> ~
+      <input class="form-input" id="cIceMax" value="25" style="width:50px;">
+    </span>
+  </div>
+  <div class="form-row">
+    <span class="form-label">广告→催加（分钟）</span>
+    <span style="font-size:12px;color:#8b949e;">
+      <input class="form-input" id="cAdMin" value="25" style="width:50px;"> ~
+      <input class="form-input" id="cAdMax" value="45" style="width:50px;">
+    </span>
+  </div>
+</div>
+
+<div class="btn-row">
+  <button class="btn btn-save" id="btnSave">保存设置</button>
+  <button class="btn btn-reset" id="btnReset">恢复默认</button>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="options.js"></script>
+</body>
+</html>

@@ -67,6 +67,19 @@ function isLanUrl(u) {
     || /^https?:\/\/192\.168\.0\.100(?::\d+)?$/i.test(String(u || ''));
 }
 
+// B2↔I1（2026-10-15 号池来源切换）：外网 haochi1 仅映射 78 主池；
+// 号池配置为非 78 池（如 79 兼职池）时内网不通禁止回退 78 外网兜底——
+// 宁可 POOL_unreachable 歇等，不得跨池错领。OPS 外网兜底不受影响。
+function isDefaultPool78(u) {
+  return /:15678$/i.test(normalizeServerUrl(u, ''));
+}
+
+function canFallBackToWan(kind, preferred) {
+  if (!isLanUrl(preferred)) return false;
+  if (kind !== 'pool') return true;
+  return isDefaultPool78(preferred);
+}
+
 function refreshServersFromStorage() {
   try {
     chrome.storage.local.get(['pool_server', 'ops_server'], function (r) {
@@ -123,13 +136,13 @@ function candidatesFor(kind) {
   if (sticky.base && sticky.until > now) {
     push(sticky.base);
     push(preferred);
-    if (isLanUrl(preferred)) push(wan);
+    if (canFallBackToWan(kind, preferred)) push(wan);
     return list;
   }
 
-  // 默认：内网 preferred → 外网 fallback（仅 preferred 是内网时自动加）
+  // 默认：内网 preferred → 外网 fallback（仅 preferred 是内网且号池为 78 主池时自动加）
   push(preferred);
-  if (isLanUrl(preferred)) push(wan);
+  if (canFallBackToWan(kind, preferred)) push(wan);
   return list;
 }
 

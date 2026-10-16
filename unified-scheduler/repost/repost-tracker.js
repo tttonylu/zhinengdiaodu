@@ -28,9 +28,11 @@
     day5Quota: 1,   // Day5+ 每日条数（与 OPS 一致）
     maxMinutes: 60,
     // 开跑时刻（上海）；followWorkEnd=true 时跟 stage 的 workHours.end
-    followWorkEnd: true,
-    startHour: 6,
+    followWorkEnd: false,
+    startHour: 20,
     startMin: 0,
+    // 多开错峰：开跑后 0..N 分钟按号哈希分槽（默认 240）
+    startJitterMaxMin: 240,
     // 旧双窗字段仅兼容旧 LS，门禁不再使用
     eveEndHour: 23,
     eveEndMin: 0,
@@ -101,8 +103,18 @@
   }
 
   function setConfig(partial) {
-    var cfg = Object.assign(getConfig(), partial || {});
+    var prev = getConfig();
+    var cfg = Object.assign({}, prev, partial || {});
     saveJson(CONFIG_KEY, cfg);
+    try {
+      if (Number(prev.startJitterMaxMin) !== Number(cfg.startJitterMaxMin)
+          || Number(prev.startHour) !== Number(cfg.startHour)
+          || Number(prev.startMin) !== Number(cfg.startMin)
+          || !!prev.followWorkEnd !== !!cfg.followWorkEnd) {
+        localStorage.removeItem('sg_repost_start_jitter_min');
+        localStorage.removeItem('sg_repost_start_jitter_max_used');
+      }
+    } catch (eClr) {}
     return cfg;
   }
 
@@ -505,8 +517,34 @@
     return { h: h, m: Math.min(59, Math.max(0, m)) };
   }
 
+  function configuredJitterMax() {
+    var n = Number(getConfig().startJitterMaxMin);
+    if (!isFinite(n) || n < 0) n = 240;
+    if (n > 360) n = 360;
+    return Math.floor(n);
+  }
+
+  // 4.6.140/141：转帖硬窗 [20:00, 23:59]——错峰不得超过窗尾，余量按当日配额算（见 windowJitterCap）
+  var WINDOW_END_H = 23;
+  var WINDOW_END_M = 59;
+  var WINDOW_SEND_MARGIN_MIN = 20;   // 发帖本身 + 抓取/导航的安全余量
+  function windowEndMin() { return hmToMin(WINDOW_END_H, WINDOW_END_M); }
+  // 4.6.141：错峰余量按当日配额算——(配额−1)×发帖间隔上限 + 发帖余量，确保配额能在 23:59 前发完
+  function windowJitterCap() {
+    try {
+      var start = getStartHm();
+      var sM = hmToMin(start.h, start.m);
+      var quota = getEffectiveDailyLimit();
+      var gapMax = Number(getConfig().cooldownMax);
+      if (!isFinite(gapMax) || gapMax < 30) gapMax = 90;   // 与 repost-engine 默认（30–90 分）一致
+      var needMin = Math.max(0, quota - 1) * gapMax + WINDOW_SEND_MARGIN_MIN;
+      return Math.max(0, windowEndMin() - sM - needMin);
+    } catch (eWj) { return Math.min(configuredJitterMax(), 60); }   // 读配额/开跑失败时保守回退（勿用满 240 把开跑顶出窗）
+  }
+
+  /** 晚间开跑用满配置上限；凌晨开跑夹紧到上班前，避免抖动吃进工作窗 */
   function morningJitterCap() {
-    var maxJ = 15;
+    var maxJ = configuredJitterMax();
     try {
       var start = getStartHm();
       var ws = workStartHm();
@@ -514,7 +552,7 @@
       var workStartM0 = hmToMin(ws.h, ws.m);
       if (startM0 < workStartM0) {
         var gap = workStartM0 - startM0;
-        maxJ = Math.max(0, Math.min(15, gap - 15));
+        maxJ = Math.max(0, Math.min(maxJ, Math.max(0, gap - 15)));
       }
     } catch (eG) {}
     return maxJ;
@@ -522,17 +560,13 @@
 
   function startJitterMin() {
     var maxJ = morningJitterCap();
+    try { maxJ = Math.min(maxJ, windowJitterCap()); } catch (eWj) {}
     try {
+      var cachedMax = localStorage.getItem('sg_repost_start_jitter_max_used');
       var cached = localStorage.getItem('sg_repost_start_jitter_min');
-      if (cached != null && cached !== '') {
+      if (cached != null && cached !== '' && String(cachedMax) === String(maxJ)) {
         var n = parseInt(cached, 10);
-        if (isFinite(n) && n >= 0 && n <= 15) {
-          if (n > maxJ) {
-            n = maxJ;
-            try { localStorage.setItem('sg_repost_start_jitter_min', String(n)); } catch (eC2) {}
-          }
-          return n;
-        }
+        if (isFinite(n) && n >= 0 && n <= maxJ) return n;
       }
     } catch (eC) {}
     var seed = '';
@@ -549,7 +583,10 @@
       h = Math.imul(h, 16777619);
     }
     var j = maxJ <= 0 ? 0 : ((h >>> 0) % (maxJ + 1));
-    try { localStorage.setItem('sg_repost_start_jitter_min', String(j)); } catch (eW) {}
+    try {
+      localStorage.setItem('sg_repost_start_jitter_min', String(j));
+      localStorage.setItem('sg_repost_start_jitter_max_used', String(maxJ));
+    } catch (eW) {}
     return j;
   }
 
@@ -570,9 +607,9 @@
       return nowM >= effectiveStartM && nowM < workStartM;
     }
 
+    // 4.6.140：硬窗上界 23:59——过了窗尾一律不算窗内（旧版「过 0 点仍算已到开跑」导致整夜占坑）
+    if (nowM > windowEndMin()) return false;
     if (nowM >= effectiveStartM) return true;
-    // 晚间开跑跨午夜：已过 0 点且未到上班点 → 仍算已到开跑之后
-    if (effectiveStartM >= 12 * 60 && nowM < workStartM) return true;
     return false;
   }
 
@@ -602,11 +639,12 @@
     if (isChatTimeNowRt()) return null;
     var st = getAutoStatus();
     if (st === 'done' || st === 'timeout') return null;
-    if (st === 'running' && getAutoStartedAt() && !isAutoTimedOut()) {
-      return { name: 'scheduled', endH: 23, endM: 59 };
-    }
+    // 4.6.140：当日配额已满 → 不再转帖（1/1 满即停）
+    if (dailyExhausted()) return null;
+    // 4.6.140：硬窗 [开跑+jitter, 23:59]——running 也必须在窗内，过 23:59 一律关（不再整夜占坑）
     if (!isPastStartClock()) return null;
-    return { name: 'scheduled', endH: 23, endM: 59 };
+    if (st === 'running' && getAutoStartedAt() && isAutoTimedOut()) return null;
+    return { name: 'scheduled', endH: WINDOW_END_H, endM: WINDOW_END_M };
   }
 
   function isInRepostWindowNow() {

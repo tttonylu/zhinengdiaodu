@@ -1,6 +1,7 @@
 {
   "version": "1.0",
   "events": [
+    { "id": "cpu.profile_minute", "label_zh": "CPU 仪表分钟桶", "category": "system", "severity": "info", "upload": true, "push": false, "description": "sg_cpu_profile=1 时每分钟上报各 js 文件定时器/观察器回调耗时 top15，用于架构级 CPU 治理归因" },
     { "id": "chat.inbox_watch_start", "label_zh": "守箱开始", "category": "chat", "severity": "info", "upload": true, "push": false, "description": "进入 inbox 守箱段，开始清债" },
     { "id": "chat.inbox_open", "label_zh": "守箱打开会话", "category": "chat", "severity": "info", "upload": true, "push": false, "description": "从消息列表打开有债会话" },
     { "id": "inbox.arm_step2", "label_zh": "守箱武装步进", "category": "chat", "severity": "info", "upload": true, "push": false, "description": "身份证明通过后写入 dan_auto_step=2" },

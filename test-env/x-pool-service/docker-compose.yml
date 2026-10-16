@@ -1,0 +1,23 @@
+services:
+  x-pool-service-test:
+    build: .
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      PORT: "15678"
+      DB_PATH: "/data/x-pool-test.sqlite"
+      DATA_DIR: "/data"
+      TZ: "Asia/Shanghai"
+      ASSIGN_EXPIRE_MINUTES: "60"
+      EXPIRE_INTERVAL_MS: "300000"
+      HTTP_PROXY: "http://127.0.0.1:7890"
+      X_COOKIES: '[]'
+      INACTIVE_HOURS: "72"
+      MIN_FOLLOWERS: "300"
+      MAX_FOLLOWERS: "20000"
+      FOLLOWING_LIMIT_BASE: "50"
+      FOLLOWING_LIMIT_RATE: "0.01"
+      ACTIVITY_CHECK_TIME: "02:00"
+      ACTIVITY_CHECK_BATCH_SIZE: "500"
+    volumes:
+      - ./data:/data

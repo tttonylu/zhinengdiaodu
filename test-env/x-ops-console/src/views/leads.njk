@@ -1,0 +1,51 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <title>目标池 - X 运营轻总控后台</title>
+    <link rel="stylesheet" href="/public/app.css">
+  </head>
+  <body>
+    <header class="shell-header">
+      <h1>X 运营轻总控后台</h1>
+      {% set navActive = 'leads' %}
+      {% include 'partials/shell-nav.njk' %}
+    </header>
+    <main class="shell-main">
+      <section class="panel">
+        <div class="panel-heading">
+          <h2>目标池</h2>
+          <span class="muted">{{ leads.length }} 条记录</span>
+        </div>
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>用户名</th>
+              <th>阶段</th>
+              <th>来源</th>
+              <th>处理账号</th>
+              <th>最后活动</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for lead in leads %}
+            <tr>
+              <td><a href="/leads/{{ lead.id }}">{{ lead.target_handle }}</a></td>
+              <td>
+                {% set stageLabels = {'discovered':'待关注','followed':'已关注','followed_back':'已回关','dm_ready':'待私信','ice_sent':'破冰中','ad_sent':'广告中','kick_sent':'已盾牌','rejected':'已婉拒','dm_sent':'已私信','completed':'已完成','skipped':'已跳过'} %}
+                {% set stageColors = {'discovered':'#8b949e','followed':'#58a6ff','followed_back':'#3fb950','dm_ready':'#d29922','ice_sent':'#d29922','ad_sent':'#f0883e','kick_sent':'#a371f7','rejected':'#f85149','dm_sent':'#58a6ff','completed':'#3fb950','skipped':'#8b949e'} %}
+                <span class="tag" style="background:{{ stageColors[lead.current_stage] or '#8b949e' }}22;color:{{ stageColors[lead.current_stage] or '#8b949e' }};">{{ stageLabels[lead.current_stage] or lead.current_stage }}</span>
+              </td>
+              <td>{{ lead.source or '-' }}</td>
+              <td>{{ lead.bound_handle or '-' }}</td>
+              <td class="mono">{{ lead.last_activity_at or '-' }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5" class="empty-cell">暂无目标</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </section>
+    </main>
+  </body>
+</html>

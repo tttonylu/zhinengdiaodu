@@ -199,8 +199,11 @@
       }
     } catch (e2) {}
     try {
-      if (typeof SchedulerGate !== 'undefined' && SchedulerGate.go) SchedulerGate.go('panel', 'https://x.com/' + src + '?lang=ja');
-      else location.href = 'https://x.com/' + src + '?lang=ja';
+      if (typeof SchedulerGate !== 'undefined' && SchedulerGate.goRaw) {
+        SchedulerGate.goRaw('https://x.com/' + src + '?lang=ja', { force: true });
+      } else if (typeof SchedulerGate !== 'undefined' && SchedulerGate.go) {
+        SchedulerGate.go('panel', 'https://x.com/' + src + '?lang=ja', { force: true });
+      } else location.href = 'https://x.com/' + src + '?lang=ja';
     } catch (e3) {}
   }
 
@@ -447,7 +450,7 @@
     } catch (eL) {}
 
     updateDot();
-    setInterval(updateDot, 4000);
+    setInterval(function () { if (!document.hidden && isRunning()) updateDot(); }, 4000);
   }
 
   function boot() {

@@ -370,14 +370,14 @@
     // 4.6.26：改用一次性粘贴（模拟用户复制粘贴）
     // 不再逐字输入——逐字输入节奏规律+事件多，反而更容易被检测为自动化
     try { editor.focus(); } catch (_) {}
-    await sleep(rand(200, 500));
+    await sleep(_nr_rand(200, 500));
 
     // 先清空
     try {
       document.execCommand('selectAll', false);
       document.execCommand('delete', false);
     } catch (eClr) {}
-    await sleep(rand(100, 250));
+    await sleep(_nr_rand(100, 250));
 
     // 粘贴
     try {
@@ -392,7 +392,7 @@
       // 兜底：execCommand
       try { document.execCommand('insertText', false, want); } catch (_) {}
     }
-    await sleep(rand(300, 600));
+    await sleep(_nr_rand(300, 600));
 
     if (looksOk(read())) return true;
 
@@ -401,7 +401,7 @@
       document.execCommand('selectAll', false);
       document.execCommand('delete', false);
     } catch (eClr2) {}
-    await sleep(rand(150, 300));
+    await sleep(_nr_rand(150, 300));
     try {
       var dt2 = new DataTransfer();
       dt2.setData('text/plain', want);
@@ -413,7 +413,7 @@
     } catch (_) {
       try { document.execCommand('insertText', false, want); } catch (_) {}
     }
-    await sleep(rand(300, 600));
+    await sleep(_nr_rand(300, 600));
     return looksOk(read());
   }
 
@@ -872,6 +872,17 @@
   function tick() {
     if (!EngineUtils.isActive(NAME)) return;
 
+    // 4.6.102：跳页落地 settle
+    try {
+      if (typeof SchedulerGate !== 'undefined' && SchedulerGate.arriveSettleLeftMs) {
+        var left = SchedulerGate.arriveSettleLeftMs() || 0;
+        if (left > 0) {
+          tickTimer = EngineUtils.createTimeout(tick, Math.min(left, 3000));
+          return;
+        }
+      }
+    } catch (eSettle) {}
+
     // 进帖/进主页/评论导航进行中：只续 tick，禁止强拽 /home（否则来回调转）
     if (_nurtureActionBusy || isNavBusy()) {
       try { EngineUtils.ping(NAME); } catch (ePing) {}
@@ -921,25 +932,49 @@
       } catch (eSf) {}
       if (softFill && (p.indexOf('/followers') >= 0 || p.indexOf('/following') >= 0)) {
         Logger.info('养号', '软窗停在粉丝列表白壳 → 跳首页');
-        if (typeof SchedulerGate !== 'undefined') SchedulerGate.go('nurture', 'https://x.com/home');
+        if (typeof SchedulerGate !== 'undefined' && SchedulerGate.go) SchedulerGate.go('nurture', 'https://x.com/home', { force: true });
+        else if (typeof SchedulerGate !== 'undefined' && SchedulerGate.goRaw) SchedulerGate.goRaw('https://x.com/home', { force: true });
         else window.location.href = 'https://x.com/home';
         tickTimer = EngineUtils.createTimeout(tick, 5000);
         return;
       }
+      // 4.6.110：连续 N 次白壳才 soft_reload，给页面自然加载时间
+      var _nshN = parseInt(sessionStorage.getItem('sg_nurture_shell_wait_n') || '0') + 1;
+      sessionStorage.setItem('sg_nurture_shell_wait_n', String(_nshN));
+      if (_nshN <= 3) {
+        Logger.info('养号', 'feed 未灌水，等待加载 (' + _nshN + '/3) path=' + p);
+        try {
+          if (typeof SgTelemetry !== 'undefined') SgTelemetry.emit('nurture.step_mismatch', { step: 'feed', page: p, action: 'wait', mismatch_count: _nshN });
+        } catch (eT) {}
+        tickTimer = EngineUtils.createTimeout(tick, 3000);
+        return;
+      }
+      sessionStorage.removeItem('sg_nurture_shell_wait_n');
       Logger.info('养号', '可养路径白壳，软愈不盲跳 home path=' + p);
       requestSharedSoftHealNurture('nurture_ok_shell');
       markNavBusy(20000);
       tickTimer = EngineUtils.createTimeout(tick, 5000);
       return;
     }
+    try { sessionStorage.removeItem('sg_nurture_shell_wait_n'); } catch (eClrNsh) {}
     // 软风控养号段：必须在时间线互动；粉丝列表 / 私信·加密页一律拉回 /home
+    // 例外：私信仍占坑开人（current_target+step）时禁止抢导航，否则正开 DM 会被拽回主页
     try {
       var sgHome = JSON.parse(localStorage.getItem('sg_state') || '{}');
       var softNurture = !!(sgHome.softRiskUntil && Date.now() < sgHome.softRiskUntil
         && (sgHome.softRiskPhase === 'nurture' || sgHome.softRiskMode === 'nurture'
           || sgHome.softFillMode === 'nurture_only'));
+      var chatMidOpen = false;
+      try {
+        var msChat = {};
+        try { msChat = JSON.parse(sessionStorage.getItem('sg_module_chat') || '{}'); } catch (eMs) { msChat = {}; }
+        var chatRun = sessionStorage.getItem('dan_auto_run') === 'true' || !!msChat.running;
+        var ctN = sessionStorage.getItem('current_target') || '';
+        var stN = sessionStorage.getItem('dan_auto_step') || '';
+        chatMidOpen = !!(chatRun && ctN && stN);
+      } catch (eCm) { chatMidOpen = false; }
       var onHome = (p === '/home' || p.indexOf('/home/') === 0);
-      var softOffHome = softNurture && !onHome && (
+      var softOffHome = softNurture && !onHome && !chatMidOpen && (
         p.indexOf('/followers') >= 0 || p.indexOf('/following') >= 0
         || /\/i\/(chat|flow|premium)/i.test(p)
         || /\/messages/i.test(p)
@@ -949,11 +984,17 @@
         if (Date.now() - lastHomeNav > 20000) {
           sessionStorage.setItem('sg_nurture_soft_home_nav_at', String(Date.now()));
           Logger.info('养号', '软窗养号段偏离首页 path=' + p + ' → 跳首页');
-          if (typeof SchedulerGate !== 'undefined') SchedulerGate.go('nurture', 'https://x.com/home');
+          if (typeof SchedulerGate !== 'undefined' && SchedulerGate.go) SchedulerGate.go('nurture', 'https://x.com/home', { force: true });
+          else if (typeof SchedulerGate !== 'undefined' && SchedulerGate.goRaw) SchedulerGate.goRaw('https://x.com/home', { force: true });
           else window.location.href = 'https://x.com/home';
           tickTimer = EngineUtils.createTimeout(tick, 5000);
           return;
         }
+      }
+      if (chatMidOpen && softNurture) {
+        Logger.info('养号', '私信正开人，软窗养号暂不抢导航 @' + (sessionStorage.getItem('current_target') || ''));
+        tickTimer = EngineUtils.createTimeout(tick, 5000);
+        return;
       }
     } catch (eHn) {}
     if (!isNurtureOkPath(p)) {
@@ -974,7 +1015,8 @@
       }
       try { sessionStorage.removeItem('sg_nurture_back_once'); } catch (eBk3) {}
       Logger.info('养号', '检测到非养号页面(' + p + ')，跳回首页');
-      if (typeof SchedulerGate !== 'undefined') SchedulerGate.go('nurture', 'https://x.com/home');
+      if (typeof SchedulerGate !== 'undefined' && SchedulerGate.go) SchedulerGate.go('nurture', 'https://x.com/home', { force: true });
+      else if (typeof SchedulerGate !== 'undefined' && SchedulerGate.goRaw) SchedulerGate.goRaw('https://x.com/home', { force: true });
       else window.location.href = 'https://x.com/home';
       return;
     }
@@ -1157,7 +1199,8 @@
       EngineUtils.start(NAME);
       writeModuleState({ running: true, phase: 'starting', targetUrl: dest, startedAt: Date.now(), lastActive: Date.now() });
       Logger.info('养号', '启动跳转 ' + curPath + ' → ' + dest);
-      if (typeof SchedulerGate !== 'undefined') SchedulerGate.go('nurture', dest);
+      if (typeof SchedulerGate !== 'undefined' && SchedulerGate.go) SchedulerGate.go('nurture', dest, { force: true });
+      else if (typeof SchedulerGate !== 'undefined' && SchedulerGate.goRaw) SchedulerGate.goRaw(dest, { force: true });
       else window.location.href = dest;
     }
     else if (cmd === 'stop') { stop(); }

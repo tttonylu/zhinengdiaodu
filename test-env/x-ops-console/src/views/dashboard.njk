@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <title>驾驶舱 - X 运营轻总控后台</title>
+    <link rel="stylesheet" href="/public/app.css">
+    <meta http-equiv="refresh" content="30">
+  </head>
+  <body>
+    <header class="shell-header">
+      <h1>X 运营轻总控后台</h1>
+      {% set navActive = 'dashboard' %}
+      {% include 'partials/shell-nav.njk' %}
+    </header>
+    <main class="shell-main">
+
+      <!-- 顶部指标卡 -->
+      <div class="kpi-row">
+        <div class="kpi-card">
+          <div class="kpi-num">{{ todayNew }}</div>
+          <div class="kpi-label">今日新增</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-num">{{ todayActions.ice_sent }}</div>
+          <div class="kpi-label">今日破冰</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-num">{{ todayActions.ad_sent }}</div>
+          <div class="kpi-label">今日广告</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-num">{{ todayActions.kick_sent }}</div>
+          <div class="kpi-label">今日盾牌</div>
+        </div>
+        <div class="kpi-card accent">
+          <div class="kpi-num">{{ onlineAccounts }}</div>
+          <div class="kpi-label">在线账号（15分钟内心跳）</div>
+        </div>
+        <div class="kpi-card" title="status=active 的账号总数（含离线）">
+          <div class="kpi-num">{{ activeAccounts }}</div>
+          <div class="kpi-label">启用账号</div>
+        </div>
+        <div class="kpi-card accent">
+          <div class="kpi-num">{{ activeScripts }}</div>
+          <div class="kpi-label">启用话术</div>
+        </div>
+      </div>
+
+      <section class="panel" style="border:1px solid {% if scrmGate and scrmGate.force_allow %}#d29922{% elif scrmGate and scrmGate.allow_chat %}#238636{% else %}#f85149{% endif %};background:{% if scrmGate and scrmGate.force_allow %}rgba(210,153,34,.10){% elif scrmGate and scrmGate.allow_chat %}rgba(35,134,54,.08){% else %}rgba(248,81,73,.08){% endif %}">
+        <div class="panel-heading">
+          <h2 style="color:{% if scrmGate and scrmGate.force_allow %}#e3b341{% elif scrmGate and scrmGate.allow_chat %}#3fb950{% else %}#f85149{% endif %}">SCRM 私信闸门</h2>
+          <span class="muted">只看客服是否检测通过且在线；进线数字不参与判定</span>
+        </div>
+        <p style="margin:0;font-size:13px;color:#c9d1d9">
+          {% if scrmGate and scrmGate.force_allow %}
+            强制放行中
+            {% if scrmGate.warn_reason %} · 真实原因 {{ scrmGate.warn_reason }}{% endif %}
+            {% if scrmGate.force_until %} · 到期 {{ scrmGate.force_until }}{% endif %}
+            · 在线 {{ scrmGate.online_count }}/{{ scrmGate.total_monitored }}
+          {% elif scrmGate and scrmGate.allow_chat %}
+            可放行{% if scrmGate.inherited %}（{{ scrmGate.inherit_reason or '继承' }}）{% endif %}
+            · 在线 {{ scrmGate.online_count }}/{{ scrmGate.total_monitored }}
+          {% else %}
+            已拦截 · {{ scrmGate.reason if scrmGate else '未上报' }}
+            {% if scrmGate and scrmGate.snapshot_at %}
+              · 在线 {{ scrmGate.online_count }}/{{ scrmGate.total_monitored }}
+            {% else %}
+              · 尚无快照
+            {% endif %}
+          {% endif %}
+          · 模式 <b style="color:#c9d1d9">{{ scrmGate.gate_mode if scrmGate and scrmGate.gate_mode else 'soft' }}</b>
+          · 快照 {{ scrmGate.snapshot_at if scrmGate and scrmGate.snapshot_at else '-' }}
+          · agentIds {% if scrmAgentIds and scrmAgentIds.length %}{{ scrmAgentIds | join(', ') }}{% else %}-{% endif %}
+          · 同步 {{ scrmSyncedAt or '-' }}
+          · <a href="/scripts" style="color:#58a6ff">换链并同步</a>
+        </p>
+        {% if scrmGate and scrmGate.reason == 'SCRM客服号未找到' %}
+        <p style="margin:8px 0 0;font-size:12px;color:#f85149">
+          监控号在 SCRM 分享页里找不到。请核对话术链接里的 Line 客服号是否就是当前在线承接号，改链后点「换链并同步」。
+        </p>
+        {% endif %}
+        <p style="margin:10px 0 0;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <button type="button" id="scrm-mode-soft" class="btn-save" style="padding:4px 10px;font-size:12px;background:#1f6feb">软放行(抗墙)</button>
+          <button type="button" id="scrm-mode-off" class="btn-save" style="padding:4px 10px;font-size:12px;background:#21262d;border:1px solid #30363d">关闭闸门</button>
+          <button type="button" id="scrm-mode-strict" class="btn-save" style="padding:4px 10px;font-size:12px;background:#21262d;border:1px solid #30363d">严格模式</button>
+          <button type="button" id="scrm-force-open" class="btn-save" style="padding:4px 10px;font-size:12px">紧急强制 +6h</button>
+          <button type="button" id="scrm-force-extend" class="btn-save" style="padding:4px 10px;font-size:12px;background:#21262d;border:1px solid #30363d">续期 +6h</button>
+          <button type="button" id="scrm-force-clear" class="btn-save" style="padding:4px 10px;font-size:12px;background:transparent;border:1px solid #f85149;color:#f85149">取消强制</button>
+          <span id="scrm-force-msg" class="muted" style="font-size:12px"></span>
+        </p>
+        <p class="muted" style="margin:6px 0 0;font-size:11px">默认「软放行」：SCRM 被墙/过期/未找到时仍可私信；仅新鲜快照确认客服离线才拦截。严格模式会在检测失败时关闸。</p>
+        {% if scrmGate and scrmGate.snapshot_at and scrmGate.agents and scrmGate.agents.length %}
+        <table style="width:100%;margin-top:10px;border-collapse:collapse;font-size:12px;color:#c9d1d9;">
+          <thead>
+            <tr style="text-align:left;color:#8b949e;border-bottom:1px solid #30363d;">
+              <th style="padding:4px 6px;">客服号</th>
+              <th style="padding:4px 6px;">昵称</th>
+              <th style="padding:4px 6px;">状态</th>
+              <th style="padding:4px 6px;">备注</th>
+              <th style="padding:4px 6px;">今日</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for a in scrmGate.agents %}
+            <tr style="border-bottom:1px solid #21262d;">
+              <td style="padding:4px 6px;">{{ a.agent_id }}</td>
+              <td style="padding:4px 6px;">{{ a.nickname or '-' }}</td>
+              <td style="padding:4px 6px;">{% if a.not_found %}⚠️ 未找到{% elif a.online %}✅ 在线{% else %}❌ 离线{% endif %}</td>
+              <td style="padding:4px 6px;">{{ a.remark or '-' }}</td>
+              <td style="padding:4px 6px;">{{ a.today_done }}/{{ a.today_target }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% else %}
+        <p class="muted" style="margin:8px 0 0;font-size:12px;">等待 SCRM 上报</p>
+        {% endif %}
+        {% if funnelHint %}
+        <p style="margin:10px 0 0;font-size:12px;color:{% if funnelHint.warn_send_no_inbound or funnelHint.link_mismatch %}#e3b341{% else %}#8b949e{% endif %}">
+          发出→进线（仅展示，不卡门禁）：含链接广告 <b style="color:#c9d1d9">{{ funnelHint.ad_link }}</b>
+          · SCRM 进线 <b style="color:#c9d1d9">{{ funnelHint.today_done }}</b>
+          · 粗转化 {{ funnelHint.rate_text }}
+          {% if funnelHint.active_agent %} · 当前生效链 {{ funnelHint.active_agent }}{% endif %}
+          {% if funnelHint.warn_send_no_inbound %}
+            <br><span style="color:#e3b341">发出有量、进线为 0：查 Line 链接是否失效 / 客服承接</span>
+          {% elif funnelHint.warn_no_ads %}
+            <br><span style="color:#8b949e">今日尚无含链接广告：先看私信是否在跑、链接是否为空</span>
+          {% endif %}
+          {% if funnelHint.link_mismatch %}
+            <br><span style="color:#f85149">promo 链接解析的 agentIds 与上次 SCRM 同步不一致，请到话术页「换链并同步」</span>
+          {% endif %}
+        </p>
+        {% endif %}
+      </section>
+
+      {% if capacityAlert %}
+      <section class="panel" style="border:1px solid #d29922;background:rgba(210,153,34,.08)">
+        <div class="panel-heading">
+          <h2 style="color:#e3b341">私信产能告警</h2>
+          <span class="muted">只盯含链接广告（第2轮广告中带推广链的子集）是否断崖；进线转化有波动，不作硬判</span>
+        </div>
+        <p style="margin:0;color:#e3b341;font-size:13px">
+          上一小时含链接广告偏低
+          {% if capacityPrev %}（{{ capacityPrev.hour }}时 含链接广告={{ capacityPrev.ad_link }} / 第1轮破冰={{ capacityPrev.ice }} / 失败={{ capacityPrev.failed }}）{% endif %}
+          · <a href="/dm-records" style="color:#58a6ff">查看小时明细</a>
+        </p>
+      </section>
+      {% endif %}
+
+      <section class="panel">
+        <div class="panel-heading">
+          <h2>今日私信小时（近窗）</h2>
+          <span class="muted">破冰 {{ dmHealthTotals.ice or 0 }} · 广告 {{ dmHealthTotals.ad or 0 }}（链接 {{ dmHealthTotals.ad_link or 0 }}）· 失败 {{ dmHealthTotals.failed or 0 }}</span>
+        </div>
+        <div class="table-wrap">
+          <table style="width:100%;font-size:12px">
+            <thead>
+              <tr>
+                <th>小时</th><th>破冰</th><th>广告</th><th>链接广告</th><th>催加</th><th>失败</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for h in dmHealthHours %}
+              <tr>
+                <td>{{ h.hour }}:00</td>
+                <td>{{ h.ice }}</td>
+                <td>{{ h.ad }}</td>
+                <td>{{ h.ad_link }}</td>
+                <td>{{ h.kick }}</td>
+                <td>{{ h.failed }}</td>
+              </tr>
+              {% else %}
+              <tr><td colspan="6" class="empty-cell">今日暂无数据</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- 漏斗图：事件口径（非 current_stage 快照） -->
+      <section class="panel">
+        <div class="panel-heading">
+          <h2>今日私信漏斗（事件口径）</h2>
+          <span class="muted">关注→回关→破冰→带链广告→SCRM进线 · 桥上为上一步转化率 · <a href="/analytics?tab=efficiency" style="color:#58a6ff">效率分析</a></span>
+        </div>
+        <div class="funnel-v2">
+          {% for step in funnel %}
+          <div class="funnel-v2-step" style="--bar-w:{{ step.funnel_pct }}%;--bar-color:{{ step.color }};">
+            <div class="funnel-v2-row">
+              <div class="funnel-v2-label">{{ step.label }}{% if step.conv_label %} <span style="color:#8b949e;font-weight:400;font-size:12px">{{ step.conv_label }}</span>{% endif %}</div>
+              <div class="funnel-v2-bar">
+                <span class="funnel-v2-num">{{ step.count }}</span>
+              </div>
+            </div>
+            {% if not loop.last %}
+            <div class="funnel-v2-bridge"></div>
+            {% endif %}
+          </div>
+          {% endfor %}
+          {% if rejectedCount > 0 or skippedCount > 0 %}
+          <div class="funnel-v2-side">
+            {% if rejectedCount > 0 %}<span class="tag danger">已婉拒 {{ rejectedCount }}</span>{% endif %}
+            {% if skippedCount > 0 %}<span class="tag muted-tag">已跳过 {{ skippedCount }}</span>{% endif %}
+          </div>
+          {% endif %}
+        </div>
+      </section>
+
+      <!-- 今日操作汇总 -->
+      <section class="panel section-gap">
+        <div class="panel-heading">
+          <h2>今日操作</h2>
+          <span class="muted">共 {{ todayActions.total }} 次</span>
+        </div>
+        <div class="action-summary">
+          <div class="action-item"><span class="dot" style="background:#58a6ff;"></span>关注 <strong>{{ todayActions.follow }}</strong></div>
+          <div class="action-item"><span class="dot" style="background:#3fb950;"></span>回关 <strong>{{ todayActions.follow_back }}</strong></div>
+          <div class="action-item"><span class="dot" style="background:#d29922;"></span>破冰 <strong>{{ todayActions.ice_sent }}</strong></div>
+          <div class="action-item"><span class="dot" style="background:#f0883e;"></span>广告 <strong>{{ todayActions.ad_sent }}</strong></div>
+          <div class="action-item"><span class="dot" style="background:#a371f7;"></span>盾牌 <strong>{{ todayActions.kick_sent }}</strong></div>
+          <div class="action-item"><span class="dot" style="background:#f85149;"></span>婉拒 <strong>{{ todayActions.reject_sent }}</strong></div>
+        </div>
+      </section>
+
+      <!-- 底部两栏 -->
+      <div class="two-col section-gap">
+        <section class="panel">
+          <div class="panel-heading">
+            <h2>⏳ 等待回复</h2>
+            <span class="muted">超过 1 小时未回复</span>
+          </div>
+          <table class="data-table">
+            <thead><tr><th>目标</th><th>状态</th><th>等待</th><th>处理人</th></tr></thead>
+            <tbody>
+              {% for lead in waitingReply %}
+              <tr>
+                <td>@{{ lead.target_handle }}</td>
+                <td>
+                  {% if lead.current_stage == 'ice_sent' %}<span class="tag warning">破冰中</span>
+                  {% elif lead.current_stage == 'ad_sent' %}<span class="tag info">广告中</span>
+                  {% else %}<span class="tag">{{ lead.current_stage }}</span>{% endif %}
+                </td>
+                <td>{{ lead.hours_waiting }} 小时</td>
+                <td>{{ lead.bound_handle or '-' }}</td>
+              </tr>
+              {% else %}
+              <tr><td colspan="4" class="empty-cell">暂无等待 👍</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </section>
+
+        <section class="panel">
+          <div class="panel-heading">
+            <h2>📋 最近动态</h2>
+            <span class="muted">最新 20 条</span>
+          </div>
+          <table class="data-table compact">
+            <thead><tr><th>时间</th><th>操作</th><th>目标</th><th>账号</th></tr></thead>
+            <tbody>
+              {% for log in recentLogs %}
+              <tr>
+                <td class="mono">{{ log.created_at.slice(5, 16) }}</td>
+                <td><span class="tag" style="background:{{ actionColors[log.action_type] or '#8b949e' }}22;color:{{ actionColors[log.action_type] or '#8b949e' }};">{{ actionLabels[log.action_type] or log.action_type }}</span></td>
+                <td>@{{ log.target_handle or '-' }}</td>
+                <td>{{ log.account_handle or '-' }}</td>
+              </tr>
+              {% else %}
+              <tr><td colspan="4" class="empty-cell">暂无记录</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </section>
+      </div>
+
+    </main>
+    <script>
+    (function () {
+      function flash(msg, ok) {
+        var el = document.getElementById('scrm-force-msg');
+        if (!el) return;
+        el.textContent = msg || '';
+        el.style.color = ok ? '#3fb950' : '#f85149';
+      }
+      function postForce(action) {
+        flash('处理中…', true);
+        fetch('/api/scrm/force-allow', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: action, hours: 6 })
+        }).then(function (r) { return r.json(); }).then(function (d) {
+          if (!d || !d.ok) {
+            flash((d && d.msg) || '失败', false);
+            return;
+          }
+          flash(action === 'clear' ? '已取消' : ('已更新 · 到期 ' + (d.until || '')), true);
+          setTimeout(function () { location.reload(); }, 600);
+        }).catch(function (e) {
+          flash(String(e && e.message || e), false);
+        });
+      }
+      function postMode(mode) {
+        flash('切换模式…', true);
+        fetch('/api/scrm/gate-mode', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode: mode })
+        }).then(function (r) { return r.json(); }).then(function (d) {
+          if (!d || !d.ok) {
+            flash((d && d.msg) || '失败', false);
+            return;
+          }
+          flash('已切换为 ' + mode, true);
+          setTimeout(function () { location.reload(); }, 500);
+        }).catch(function (e) {
+          flash(String(e && e.message || e), false);
+        });
+      }
+      var softBtn = document.getElementById('scrm-mode-soft');
+      var offBtn = document.getElementById('scrm-mode-off');
+      var strictBtn = document.getElementById('scrm-mode-strict');
+      if (softBtn) softBtn.addEventListener('click', function () { postMode('soft'); });
+      if (offBtn) offBtn.addEventListener('click', function () {
+        if (!confirm('关闭闸门后私信不再看 SCRM 在线状态，仅保留展示。确定？')) return;
+        postMode('off');
+      });
+      if (strictBtn) strictBtn.addEventListener('click', function () {
+        if (!confirm('严格模式：SCRM 被墙/过期会拦截私信。确定？')) return;
+        postMode('strict');
+      });
+      var openBtn = document.getElementById('scrm-force-open');
+      var extBtn = document.getElementById('scrm-force-extend');
+      var clrBtn = document.getElementById('scrm-force-clear');
+      if (openBtn) openBtn.addEventListener('click', function () {
+        if (!confirm('确认链接/进线可用后强制放行 6 小时？')) return;
+        postForce('open');
+      });
+      if (extBtn) extBtn.addEventListener('click', function () {
+        if (!confirm('确认仍然可用，续期 +6 小时？')) return;
+        postForce('extend');
+      });
+      if (clrBtn) clrBtn.addEventListener('click', function () {
+        if (!confirm('取消强制放行，恢复真实闸门？')) return;
+        postForce('clear');
+      });
+    })();
+    </script>
+  </body>
+</html>

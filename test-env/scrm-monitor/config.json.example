@@ -1,0 +1,16 @@
+{
+  "shareUrl": "https://admin.scrmceo.com/#/workShareDetail?code=YOUR_CODE",
+  "password": "YOUR_PASSWORD",
+  "pushplusToken": "YOUR_PUSHPLUS_TOKEN",
+  "zeroTime": "08:00:00",
+  "workStart": "08:00",
+  "workEnd": "19:00",
+  "scrapeIntervalMin": 30,
+  "scrapeJitterSec": 90,
+  "residentBrowser": true,
+  "agentIds": ["@example"],
+  "configApiUrl": "http://192.168.0.100:3211/api/config",
+  "opsStatusUrl": "http://192.168.0.100:15680/api/scrm/status",
+  "opsStatusToken": "",
+  "note": "换链后到 OPS 话术中心点「链接已更新并同步到 SCRM」"
+}

@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <title>任务监控 - X 运营轻总控后台</title>
+    <link rel="stylesheet" href="/public/app.css">
+    <meta http-equiv="refresh" content="30">
+    <style>
+      .mon-filter a{margin-right:10px;color:#8b949e;font-size:12px;text-decoration:none}
+      .mon-filter a.active{color:#58a6ff;font-weight:700}
+      .mon-filter a b{font-weight:700}
+      .pool-card{border:1px solid #30363d;border-radius:8px;padding:10px 12px;margin:0 0 12px;font-size:13px;color:#c9d1d9;background:#161b22}
+      .pool-card.ok{border-color:#238636;background:rgba(35,134,54,.06)}
+      .pool-card.bad{border-color:#f85149;background:rgba(248,81,73,.06)}
+      .pool-metric{display:inline-block;margin-right:18px}
+      .pool-metric .n{font-size:18px;font-weight:700;color:#c9d1d9}
+      .pool-metric .l{font-size:11px;color:#8b949e}
+    </style>
+  </head>
+  <body>
+    <header class="shell-header">
+      <h1>X 运营轻总控后台</h1>
+      {% set navActive = 'monitor' %}
+      {% include 'partials/shell-nav.njk' %}
+    </header>
+    <main class="shell-main">
+      <section class="panel">
+        <div class="panel-heading">
+          <h2>任务监控</h2>
+          <span class="muted">只观测不调度 · 约 30s 刷新 · {{ generatedAt }}</span>
+        </div>
+
+        <div class="mon-filter" style="margin:0 0 12px">
+          <a href="#" data-mon-tab="overview" class="active">总览</a>
+          <a href="#" data-mon-tab="logs">日志</a>
+        </div>
+
+        <div id="mon-tab-overview">
+        {% if overview.alerts and overview.alerts.length %}
+        <div style="margin:0 0 12px;padding:10px 12px;border:1px solid #d29922;border-radius:8px;background:rgba(210,153,34,.08)">
+          <div style="font-size:13px;color:#e3b341;margin:0 0 4px">⚠ {{ overview.alerts.length }} 条告警</div>
+          {% for a in overview.alerts %}
+          <div style="font-size:12px;color:#e3b341;margin:1px 0 1px 16px">· {{ a.text }}</div>
+          {% endfor %}
+        </div>
+        {% endif %}
+
+        <div class="kpi-row">
+          <div class="kpi-card accent">
+            <div class="kpi-num">{{ overview.kpi.online }}</div>
+            <div class="kpi-label">在线</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-num">{{ overview.kpi.auto_active }}</div>
+            <div class="kpi-label">自动模式(非离线)</div>
+          </div>
+          <div class="kpi-card" title="AUTO 但心跳陈旧/离线">
+            <div class="kpi-num" style="color:{% if overview.kpi.auto_stale_or_offline > 0 %}#e3b341{% endif %}">{{ overview.kpi.auto_stale_or_offline }}</div>
+            <div class="kpi-label">AUTO 心跳超时</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-num">{{ overview.kpi.total }}</div>
+            <div class="kpi-label">账号总数</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-num">{% if overview.pool.ok %}{{ overview.pool.pending }}{% else %}-{% endif %}</div>
+            <div class="kpi-label">号池 pending</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-num">{% if overview.pool.ok %}{{ overview.pool.assigned }}{% else %}-{% endif %}</div>
+            <div class="kpi-label">号池 assigned</div>
+          </div>
+        </div>
+
+        {% if overview.pool %}
+        <div class="pool-card {% if overview.pool.ok %}ok{% else %}bad{% endif %}">
+          {% if overview.pool.ok %}
+            <span style="color:#3fb950">号池可达</span>
+            <span class="pool-metric" style="margin-left:16px"><span class="n">{{ overview.pool.pending }}</span> <span class="l">pending</span></span>
+            <span class="pool-metric"><span class="n">{{ overview.pool.assigned }}</span> <span class="l">assigned</span></span>
+            <span class="pool-metric"><span class="n">{{ overview.pool.completed }}</span> <span class="l">completed</span></span>
+            <span class="pool-metric"><span class="n">{{ overview.pool.dead }}</span> <span class="l">dead</span></span>
+          {% else %}
+            <span style="color:#f85149">号池不可达：{{ overview.pool.error or 'unknown' }}</span>
+            <span class="muted" style="margin-left:12px">账号表仍显示最近快照</span>
+          {% endif %}
+        </div>
+        {% endif %}
+
+        <div class="mon-filter" style="margin:0 0 10px">
+          <a href="/monitor" class="{% if filter == 'all' %}active{% endif %}">全部 <b>{{ overview.kpi.total }}</b></a>
+          <a href="/monitor?filter=online" class="{% if filter == 'online' %}active{% endif %}">在线 <b>{{ overview.counts.online }}</b></a>
+          <a href="/monitor?filter=stale" class="{% if filter == 'stale' %}active{% endif %}">陈旧 <b>{{ overview.counts.stale }}</b></a>
+          <a href="/monitor?filter=offline" class="{% if filter == 'offline' %}active{% endif %}">离线 <b>{{ overview.counts.offline }}</b></a>
+          <a href="/monitor?filter=never" class="{% if filter == 'never' %}active{% endif %}">从未上报 <b>{{ overview.counts.never }}</b></a>
+          {% if overview.counts.test > 0 %}
+          <a href="/monitor?filter=test" class="{% if filter == 'test' %}active{% endif %}" style="color:#a371f7">测试号 <b>{{ overview.counts.test }}</b></a>
+          {% endif %}
+        </div>
+
+        <div style="overflow:auto">
+          <table class="data-table" style="width:100%;border-collapse:collapse;font-size:13px">
+            <thead>
+              <tr style="text-align:left;border-bottom:1px solid #30363d;color:#8b949e">
+                <th style="padding:8px">账号</th>
+                <th style="padding:8px">在线态</th>
+                <th style="padding:8px">阶段</th>
+                <th style="padding:8px">引擎</th>
+                <th style="padding:8px">模块</th>
+                <th style="padding:8px">原因</th>
+                <th style="padding:8px">今日关注</th>
+                <th style="padding:8px">心跳</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for a in overview.accounts %}
+              {% if filter == 'all' or (filter == 'test' and a.test_like) or (filter != 'test' and not a.test_like and a.presence == filter) %}
+              <tr style="border-bottom:1px solid #21262d;{% if a.test_like %}opacity:.6{% endif %}">
+                <td style="padding:8px"><a href="/accounts" style="color:#58a6ff">@{{ a.x_handle }}</a>{% if a.auto_mode %} <span class="muted" style="font-size:11px">AUTO</span>{% endif %}{% if a.test_like %} <span style="font-size:10px;color:#a371f7">测试</span>{% endif %}</td>
+                <td style="padding:8px;color:{% if a.presence == 'online' %}#3fb950{% elif a.presence == 'stale' %}#e3b341{% elif a.presence == 'offline' %}#f85149{% else %}#8b949e{% endif %}">{{ a.presence_label }}</td>
+                <td style="padding:8px">{{ a.stage or '-' }}</td>
+                <td style="padding:8px">{{ a.engine or '-' }}</td>
+                <td style="padding:8px">{{ a.running_module or '-' }}</td>
+                <td style="padding:8px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#f0883e" title="{{ a.why_idle }}">{{ a.why_idle or '-' }}</td>
+                <td style="padding:8px">{% if a.never_reported %}-{% else %}{{ a.followed_today }}/{% if a.follow_limit %}{{ a.follow_limit }}{% else %}-{% endif %}{% endif %}</td>
+                <td style="padding:8px;color:#8b949e;font-size:12px">{{ a.last_seen_at or '-' }}</td>
+              </tr>
+              {% endif %}
+              {% else %}
+              <tr><td colspan="8" style="padding:16px;color:#8b949e">暂无账号</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        </div>{# /mon-tab-overview #}
+
+        <div id="mon-tab-logs" style="display:none">
+          <div id="log-stats" style="margin:0 0 12px;color:#8b949e;font-size:12px">加载中…</div>
+          <div id="log-loop" class="pool-card" style="margin:0 0 12px">指挥闭环加载中…</div>
+          <div class="mon-filter" style="margin:0 0 8px">
+            <label style="font-size:12px;color:#8b949e">级别</label>
+            <select id="log-sev" style="background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:2px 6px;font-size:12px">
+              <option value="">全部</option>
+              <option value="error">error</option>
+              <option value="warn">warn</option>
+              <option value="info">info</option>
+            </select>
+            <label style="font-size:12px;color:#8b949e;margin-left:12px">账号</label>
+            <select id="log-account" style="background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:2px 6px;font-size:12px">
+              <option value="">全部</option>
+            </select>
+            <label style="font-size:12px;color:#8b949e;margin-left:12px">预设</label>
+            <select id="log-preset" style="background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:2px 6px;font-size:12px">
+              <option value="">全部事件</option>
+              <option value="command_loop">指挥闭环</option>
+              <option value="round_start">round_start</option>
+              <option value="zombie">zombie_reclaim</option>
+            </select>
+            <button id="log-refresh" style="background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:2px 10px;font-size:12px;margin-left:12px">刷新</button>
+          </div>
+          <div id="log-trend" style="margin:0 0 12px"></div>
+          <div style="overflow-x:auto">
+            <table style="width:100%;border-collapse:collapse;font-size:12px;color:#c9d1d9">
+              <thead>
+                <tr style="color:#8b949e;text-align:left">
+                  <th style="padding:6px">时间</th>
+                  <th style="padding:6px">账号</th>
+                  <th style="padding:6px">级别</th>
+                  <th style="padding:6px">事件</th>
+                  <th style="padding:6px">描述</th>
+                </tr>
+              </thead>
+              <tbody id="log-rows">
+                <tr><td colspan="5" style="padding:12px;color:#8b949e">加载中…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </main>
+    <script>
+      (function () {
+        var esc = function (s) {
+          return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+            return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+          });
+        };
+        var sevColor = { error: '#f85149', warn: '#e3b341', info: '#8b949e' };
+
+        function switchTab(name) {
+          var on = name === 'logs';
+          document.getElementById('mon-tab-overview').style.display = on ? 'none' : 'block';
+          document.getElementById('mon-tab-logs').style.display = on ? 'block' : 'none';
+          document.querySelectorAll('[data-mon-tab]').forEach(function (a) {
+            a.classList.toggle('active', a.getAttribute('data-mon-tab') === name);
+          });
+          if (on) loadLogs();
+        }
+
+        function fillAccounts(accounts) {
+          var sel = document.getElementById('log-account');
+          var cur = sel.value;
+          sel.innerHTML = '<option value="">全部</option>' + accounts.map(function (h) {
+            return '<option value="' + esc(h) + '">' + esc(h) + '</option>';
+          }).join('');
+          if (cur) sel.value = cur;
+        }
+
+        function renderTrend(trend) {
+          var el = document.getElementById('log-trend');
+          if (!trend || !trend.length) {
+            el.innerHTML = '<div style="font-size:12px;color:#8b949e">近 24h 暂无日志</div>';
+            return;
+          }
+          var max = Math.max.apply(null, trend.map(function (t) { return t.c; })) || 1;
+          var html = '<div style="font-size:12px;color:#8b949e;margin:0 0 4px">近 24h 事件趋势</div><div style="display:flex;align-items:flex-end;gap:2px;height:48px">';
+          trend.forEach(function (t) {
+            var h = Math.max(2, Math.round(t.c / max * 44));
+            html += '<div title="' + esc(t.hour_key) + ' · ' + t.c + '" style="width:14px;height:' + h + 'px;background:' + (sevColor[t.severity] || '#8b949e') + ';opacity:.85"></div>';
+          });
+          el.innerHTML = html + '</div>';
+        }
+
+        function renderRows(events) {
+          var tb = document.getElementById('log-rows');
+          if (!events || !events.length) {
+            tb.innerHTML = '<tr><td colspan="5" style="padding:12px;color:#8b949e">暂无日志</td></tr>';
+            return;
+          }
+          tb.innerHTML = events.map(function (e) {
+            var meta = e.meta || {};
+            var hint = meta.message || meta.target || meta.reason || meta.step || meta.pulseId || meta.via || '';
+            if (hint && typeof hint === 'object') hint = JSON.stringify(hint);
+            if (meta.pulseId && String(hint).indexOf(String(meta.pulseId)) < 0) {
+              hint = (hint ? hint + ' · ' : '') + 'pulse=' + meta.pulseId;
+            }
+            return '<tr style="border-bottom:1px solid #21262d">'
+              + '<td style="padding:6px;color:#8b949e;white-space:nowrap">' + esc(e.created_at) + '</td>'
+              + '<td style="padding:6px">' + esc(e.account_handle) + '</td>'
+              + '<td style="padding:6px;color:' + (sevColor[e.severity] || '#8b949e') + '">' + esc(e.severity) + '</td>'
+              + '<td style="padding:6px;color:#58a6ff">' + esc(e.event_id) + '</td>'
+              + '<td style="padding:6px;color:#c9d1d9;max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(hint) + '">' + esc(e.label_zh || '') + (hint ? ' — ' + esc(String(hint).slice(0, 120)) : '') + '</td>'
+              + '</tr>';
+          }).join('');
+        }
+
+        function renderCommandLoop(d) {
+          var el = document.getElementById('log-loop');
+          if (!el) return;
+          if (!d || !d.ok) {
+            el.className = 'pool-card bad';
+            el.textContent = '指挥闭环加载失败';
+            return;
+          }
+          var bad = (d.gaps || 0) + (d.zombies || 0);
+          el.className = 'pool-card ' + (bad > 0 ? 'bad' : 'ok');
+          var top = (d.pulses || []).slice(0, 5).map(function (p) {
+            var mark = p.status === 'ok' ? '✓' : (p.status === 'zombie_reclaim' ? '🧟' : '⚠');
+            return mark + ' ' + (p.pulseId || '(无pulse)') + ' · ' + (p.gap || p.status) + ' · ' + (p.chain || '').slice(0, 80);
+          }).join('<br>');
+          el.innerHTML = '<div style="margin:0 0 6px"><b>指挥闭环</b>（近 ' + d.hours + 'h）'
+            + ' · 租约 ' + (d.total_pulses || 0)
+            + ' · 完整 ' + (d.complete || 0)
+            + ' · 断环 <span style="color:' + (d.gaps ? '#e3b341' : '#8b949e') + '">' + (d.gaps || 0) + '</span>'
+            + ' · 假活 <span style="color:' + (d.zombies ? '#f85149' : '#8b949e') + '">' + (d.zombies || 0) + '</span>'
+            + '</div>'
+            + (top ? '<div style="font-size:11px;color:#8b949e;line-height:1.5">' + top + '</div>' : '<div class="muted">暂无 round_* 事件</div>');
+        }
+
+        var LOOP_EVENT_IDS = 'scheduler.round_start,scheduler.round_complete,scheduler.chat_zombie_reclaim,chat.round_plan,chat.round_progress,chat.round_result';
+
+        function loadLogs() {
+          var sev = document.getElementById('log-sev').value;
+          var acc = document.getElementById('log-account').value;
+          var preset = document.getElementById('log-preset').value;
+          var q = '?hours=24';
+          if (sev) q += '&severity=' + encodeURIComponent(sev);
+          if (acc) q += '&account=' + encodeURIComponent(acc);
+          var loopQ = '?hours=6';
+          if (acc) loopQ += '&account=' + encodeURIComponent(acc);
+          fetch('/api/monitor/logs/command-loop' + loopQ).then(function (r) { return r.json(); }).then(renderCommandLoop).catch(function () {
+            renderCommandLoop(null);
+          });
+          fetch('/api/monitor/logs/stats' + q).then(function (r) { return r.json(); }).then(function (st) {
+            if (!st || !st.ok) throw new Error('stats_failed');
+            document.getElementById('log-stats').textContent = '近 ' + st.hours + 'h 共 ' + st.total + ' 条 · '
+              + (st.severity || []).map(function (s) { return s.severity + ' ' + s.c; }).join(' · ');
+            fillAccounts(st.accounts || []);
+            renderTrend(st.trend || []);
+            var eq = '?limit=120';
+            if (sev) eq += '&severity=' + encodeURIComponent(sev);
+            if (acc) eq += '&account=' + encodeURIComponent(acc);
+            if (preset === 'command_loop') eq += '&event_ids=' + encodeURIComponent(LOOP_EVENT_IDS);
+            else if (preset === 'round_start') eq += '&event_id=' + encodeURIComponent('scheduler.round_start');
+            else if (preset === 'zombie') eq += '&event_id=' + encodeURIComponent('scheduler.chat_zombie_reclaim');
+            return fetch('/api/monitor/logs' + eq).then(function (r2) { return r2.json(); });
+          }).then(function (d) {
+            if (!d || !d.ok) throw new Error('events_failed');
+            renderRows(d.events || []);
+          }).catch(function (e) {
+            document.getElementById('log-stats').textContent = '日志加载失败: ' + e.message;
+          });
+        }
+
+        document.querySelectorAll('[data-mon-tab]').forEach(function (a) {
+          a.addEventListener('click', function (ev) {
+            ev.preventDefault();
+            switchTab(a.getAttribute('data-mon-tab'));
+          });
+        });
+        document.getElementById('log-sev').addEventListener('change', loadLogs);
+        document.getElementById('log-account').addEventListener('change', loadLogs);
+        document.getElementById('log-preset').addEventListener('change', loadLogs);
+        document.getElementById('log-refresh').addEventListener('click', loadLogs);
+
+        if (location.hash === '#logs') switchTab('logs');
+      })();
+    </script>
+  </body>
+</html>

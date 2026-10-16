@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <title>{{ title }} - X 运营轻总控后台</title>
+    <link rel="stylesheet" href="/public/app.css">
+    <style>
+      .src-handle{font-family:ui-monospace,monospace;font-weight:600}
+      .st{display:inline-block;padding:2px 10px;border-radius:10px;font-size:12px}
+      .st-unknown{background:#30363d;color:#8b949e}
+      .st-alive{background:#238636;color:#fff}
+      .st-banned{background:#f85149;color:#fff;font-weight:600}
+      .src-refs{font-size:12px;color:#8b949e;max-width:260px;word-break:break-all}
+      .src-note-input{width:180px;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:3px 6px;border-radius:4px;font-size:12px}
+      .mini-btn{padding:2px 8px;font-size:11px;border:none;border-radius:3px;cursor:pointer;margin-left:4px}
+      .mini-btn.save{background:#238636;color:#fff}
+      .mini-btn.ban{background:#f85149;color:#fff}
+      .mini-btn.alive{background:#238636;color:#fff}
+      .mini-btn.del{background:#21262d;color:#ff7b72;border:1px solid #f85149}
+      .add-box textarea{width:100%;max-width:520px;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:8px;border-radius:4px;font-size:13px;font-family:ui-monospace,monospace}
+      .flash-msg{margin:0 0 12px;padding:8px 14px;background:rgba(35,134,54,.15);border:1px solid #238636;border-radius:6px;color:#3fb950;font-size:13px}
+    </style>
+  </head>
+  <body>
+    <header class="shell-header">
+      <h1>X 运营轻总控后台</h1>
+      {% set navActive = 'sources' %}
+      {% include 'partials/shell-nav.njk' %}
+    </header>
+    <main class="shell-main">
+      {% if msg %}<div class="flash-msg">{{ msg }}</div>{% endif %}
+
+      <section class="panel add-box">
+        <div class="panel-heading"><h2>登记来源号</h2></div>
+        <form method="post" action="/sources/add">
+          <textarea name="handles" rows="3" placeholder="每行一个来源 handle（支持空格/逗号分隔批量）"></textarea>
+          <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
+            <input class="src-note-input" type="text" name="note" placeholder="备注（可选，整批共用）">
+            <button type="submit" class="btn-save">登记</button>
+          </div>
+        </form>
+        <form method="post" action="/sources/backfill" style="margin-top:10px">
+          <button type="submit" class="mini-btn save" title="把现有全局/账号配置里的来源号收编进池（幂等）">从现有配置回填</button>
+          <span class="muted" style="font-size:12px;margin-left:6px">首次使用点这个，把各账号已配的来源号收进池</span>
+        </form>
+      </section>
+
+      <section class="panel section-gap">
+        <div class="panel-heading">
+          <h2>来源号池（{{ sources.length }}）</h2>
+          <span class="muted">banned 自动从所有账号下发中剔除</span>
+        </div>
+        <table>
+          <thead>
+            <tr><th>来源号</th><th>状态</th><th>被引用</th><th>备注</th><th>最近检测</th><th>操作</th></tr>
+          </thead>
+          <tbody>
+            {% for s in sources %}
+            <tr>
+              <td class="src-handle">@{{ s.handle }}</td>
+              <td>
+                <span class="st st-{{ s.status }}">
+                  {{ '正常' if s.status == 'alive' else ('已封禁' if s.status == 'banned' else '未检测') }}
+                </span>
+              </td>
+              <td class="src-refs">
+                {% if refs[s.handle] %}{{ refs[s.handle] | length }} 账号：{{ refs[s.handle] | join(', ') }}{% else %}—{% endif %}
+              </td>
+              <td>
+                <form method="post" action="/sources/{{ s.handle }}/note" style="display:inline">
+                  <input class="src-note-input" type="text" name="note" value="{{ s.note }}" placeholder="备注">
+                  <button type="submit" class="mini-btn save">存</button>
+                </form>
+              </td>
+              <td class="muted" style="font-size:12px">{{ s.last_checked_at or '—' }}</td>
+              <td style="white-space:nowrap">
+                {% if s.status != 'banned' %}
+                <form method="post" action="/sources/{{ s.handle }}/status" style="display:inline">
+                  <input type="hidden" name="status" value="banned">
+                  <button type="submit" class="mini-btn ban">标封禁</button>
+                </form>
+                {% endif %}
+                {% if s.status != 'alive' %}
+                <form method="post" action="/sources/{{ s.handle }}/status" style="display:inline">
+                  <input type="hidden" name="status" value="alive">
+                  <button type="submit" class="mini-btn alive">标正常</button>
+                </form>
+                {% endif %}
+                <form method="post" action="/sources/{{ s.handle }}/delete" style="display:inline" onsubmit="return confirm('确定从池中删除 @{{ s.handle }}？已勾选它的账号配置不受影响，需另行保存。')">
+                  <button type="submit" class="mini-btn del">删除</button>
+                </form>
+              </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="6" class="muted" style="text-align:center;padding:24px">池为空 — 先登记或点「从现有配置回填」</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </section>
+    </main>
+  </body>
+</html>

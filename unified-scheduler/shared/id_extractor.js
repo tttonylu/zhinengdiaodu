@@ -58,6 +58,12 @@
 
             // 统一使用 @handle#guard 格式
             const profileId = '@' + handle + '#guard';
+            let prevHandle = '';
+            try {
+                prevHandle = String(localStorage.getItem('sg_bound_handle') || localStorage.getItem('matrix_extracted_handle') || '')
+                    .replace(/^@/, '').replace(/#guard$/gi, '').toLowerCase().trim();
+            } catch (ePrev) { prevHandle = ''; }
+            const changed = !!(prevHandle && prevHandle !== handle.toLowerCase());
 
             // 获取 bit_id（多开区分，BitBrowser 窗口 ID）
             let bitId = sessionStorage.getItem('matrix_bit_id');
@@ -75,7 +81,8 @@
                 localStorage.setItem('matrix_bit_id', bitId);
             }
 
-            console.log('[ID提取器] 已写入: matrix_my_handle =', profileId, 'bit_id =', bitId || '(none)');
+            console.log('[ID提取器] 已写入: matrix_my_handle =', profileId, 'bit_id =', bitId || '(none)',
+                changed ? ('换号 prev=@' + prevHandle) : '');
 
             // Sync to chrome.storage.local via background.js
             try {
@@ -86,9 +93,9 @@
                 });
             } catch(e) {}
 
-            // 通知其他 content script（关注/聊天引擎）
+            // 通知其他 content script（关注/聊天/调度）；changed 时调度层做换号隔离
             window.dispatchEvent(new CustomEvent('matrix:handle-ready', {
-                detail: { handle, profileId, bitId }
+                detail: { handle, profileId, bitId, prevHandle: prevHandle || '', changed: changed }
             }));
 
         } catch (e) {

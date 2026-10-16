@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <title>DM 记录 - X 运营轻总控后台</title>
+    <link rel="stylesheet" href="/public/app.css">
+    <meta http-equiv="refresh" content="60">
+    <style>
+      .health-wrap{margin:0 0 18px}
+      .health-note{color:#8b949e;font-size:12px;margin:0 0 10px}
+      .health-alert{padding:10px 12px;margin:0 0 12px;border:1px solid #d29922;background:rgba(210,153,34,.12);border-radius:6px;color:#e3b341;font-size:13px}
+      .health-table{width:100%;border-collapse:collapse;font-size:12px}
+      .health-table th,.health-table td{padding:6px 8px;border-bottom:1px solid #21262d;text-align:right}
+      .health-table th:first-child,.health-table td:first-child{text-align:left}
+      .health-table .warn{color:#e3b341;font-weight:600}
+      .health-table .bad{color:#f85149;font-weight:600}
+      .res-fail{color:#f85149}
+      .res-ok{color:#3fb950}
+    </style>
+  </head>
+  <body>
+    <header class="shell-header">
+      <h1>X 运营轻总控后台</h1>
+      {% set navActive = 'dm-records' %}
+      {% include 'partials/shell-nav.njk' %}
+    </header>
+    <main class="shell-main">
+      <div style="padding:0 0 20px 0;">
+        <h2 style="margin-bottom:6px;">私信小时健康</h2>
+        <p class="health-note">{{ capacityNote }}</p>
+        <p class="health-note">今日合计：第1轮·破冰 {{ healthTotals.ice or 0 }} / 第2轮·广告 {{ healthTotals.ad or 0 }}（其中含链接 {{ healthTotals.ad_link or 0 }}）/ 婉拒 {{ healthTotals.reject or 0 }} / 第3轮·催加 {{ healthTotals.kick or 0 }} / 失败 {{ healthTotals.failed or 0 }}</p>
+
+        {% if capacityAlert %}
+        <div class="health-alert">
+          产能告警：上一小时含链接广告偏低
+          {% if capacityPrev %}（{{ capacityPrev.hour }}时 含链接广告={{ capacityPrev.ad_link }}，第1轮破冰={{ capacityPrev.ice }}，失败={{ capacityPrev.failed }}）{% endif %}
+          — 已按可控发送量提醒，不代表进线一定异常。
+        </div>
+        {% endif %}
+
+        <div class="health-wrap table-wrap">
+          <table class="health-table">
+            <thead>
+              <tr>
+                <th>小时</th>
+                <th>第1轮·破冰</th>
+                <th>第2轮·广告（含链接）</th>
+                <th>婉拒</th>
+                <th>第3轮·催加</th>
+                <th>失败/未确认</th>
+                <th>合计</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for h in healthHours %}
+              <tr>
+                <td>{{ h.hour }}:00</td>
+                <td>{{ h.ice }}</td>
+                <td class="{% if h.ad > 0 and h.ad_link == 0 %}warn{% endif %}">{{ h.ad }}{% if h.ad > 0 %}（{{ h.ad_link }}）{% endif %}</td>
+                <td>{{ h.reject }}</td>
+                <td>{{ h.kick }}</td>
+                <td class="{% if h.failed > 0 %}bad{% endif %}">{{ h.failed }}</td>
+                <td>{{ h.total }}</td>
+              </tr>
+              {% else %}
+              <tr><td colspan="7" style="text-align:center;color:#484f58;">今日暂无 DM 记录</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+
+        <h2 style="margin:20px 0 6px;">今日目标进度</h2>
+        <p class="health-note">按 Bot+目标 去重、取当日最大成功轮次：今日共 {{ progressSummary.total }} 个目标 —
+          已完结 <b style="color:#3fb950">{{ progressSummary.done }}</b> ·
+          停在第2轮 <b style="color:#e3b341">{{ progressSummary.adOnly }}</b> ·
+          仅破冰未推进 <b style="color:#e3b341">{{ progressSummary.iceOnly }}</b> ·
+          发送失败/未确认 <b style="color:#f85149">{{ progressSummary.failedOnly }}</b>
+          （完结=最大成功轮次≥3，含婉拒/拉黑完结标记；未完结目标见下表）</p>
+
+        {% if progressStalled.length > 0 %}
+        <div class="health-wrap table-wrap">
+          <table class="health-table">
+            <thead>
+              <tr>
+                <th>最后时间</th>
+                <th style="text-align:left">Bot</th>
+                <th style="text-align:left">目标</th>
+                <th style="text-align:left">进度</th>
+                <th>失败次数</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for s in progressStalled %}
+              <tr>
+                <td style="white-space:nowrap">{{ s.lastTs }}</td>
+                <td style="text-align:left">@{{ s.bot }}</td>
+                <td style="text-align:left">@{{ s.target }}</td>
+                <td style="text-align:left">{{ s.stage }}</td>
+                <td class="{% if s.fails > 0 %}bad{% endif %}">{{ s.fails }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+          {% if progressStalledTotal > progressStalled.length %}
+          <p class="health-note" style="margin-top:6px;">仅显示最近 {{ progressStalled.length }} / {{ progressStalledTotal }} 个未完结目标</p>
+          {% endif %}
+        </div>
+        {% else %}
+        <p class="health-note">今日目标均已完结（或暂无目标）。</p>
+        {% endif %}
+
+        <h2 style="margin:20px 0 6px;">DM 发送记录</h2>
+        <p style="color:#8b949e;font-size:12px;margin-bottom:16px;">共 {{ total }} 条</p>
+
+        <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>时间</th>
+              <th>Bot</th>
+              <th>目标</th>
+              <th>轮次</th>
+              <th>内容</th>
+              <th>结果</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for r in records %}
+            <tr>
+              <td style="white-space:nowrap;font-size:11px;">{{ r.created_at }}</td>
+              <td>@{{ r.bot_handle }}</td>
+              <td>@{{ r.target_handle }}</td>
+              <td>
+                {% if r.display_round == 'reject' %}<span class="engine-tag nurture">婉拒</span>
+                {% elif r.display_round == 'marker' %}<span class="engine-tag" style="background:#21262d;color:#8b949e;">完结标记</span>
+                {% elif r.round_number == 1 %}<span class="engine-tag nurture">破冰</span>
+                {% elif r.round_number == 2 %}<span class="engine-tag follow">广告</span>
+                {% else %}<span class="engine-tag chat">催加</span>{% endif %}
+              </td>
+              <td style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;">{{ r.message_content or '--' }}</td>
+              <td class="{% if r.result and r.result != 'success' %}res-fail{% else %}res-ok{% endif %}">{{ r.result or 'success' }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="6" style="text-align:center;color:#484f58;">暂无记录</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        </div>
+
+        {% if records.length > 0 %}
+        <div style="margin-top:12px;display:flex;gap:8px;justify-content:center;">
+          {% if offset > 0 %}
+          <a href="/dm-records?offset={{ offset - limit if offset - limit > 0 else 0 }}" class="btn btn-outline btn-sm" style="text-decoration:none;">上一页</a>
+          {% endif %}
+          {% if records.length >= limit %}
+          <a href="/dm-records?offset={{ offset + limit }}" class="btn btn-outline btn-sm" style="text-decoration:none;">下一页</a>
+          {% endif %}
+        </div>
+        {% endif %}
+      </div>
+    </main>
+  </body>
+</html>

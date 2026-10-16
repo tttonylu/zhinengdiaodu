@@ -10,7 +10,10 @@
   var _linkRoundIdx = 0; // 轮播索引（round-robin）
   var MY_LINKS_KEY = 'dan_promo_links';
   var LINKS_SYNC_KEY = 'dan_links_last_sync';
+  var LINKS_SOURCE_KEY = 'dan_links_source'; // 'server' | 'local'
   var LINK_SYNC_INTERVAL = 5 * 60 * 1000;
+  // 每天换号：本地缓存超过 24h 视为过期，不再使用（防止发出昨天的客服号）
+  var LOCAL_LINK_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
   var hooks = {
     getBotKey: null,
@@ -99,6 +102,7 @@
         current_live_links = serverLinks;
         localStorage.setItem(MY_LINKS_KEY, JSON.stringify(serverLinks));
         localStorage.setItem(LINKS_SYNC_KEY, String(Date.now()));
+        localStorage.setItem(LINKS_SOURCE_KEY, 'server');
         console.log('[推广链接] ✅ 使用服务器链接:', serverLinks);
         return true;
       }
@@ -108,6 +112,7 @@
           var links = JSON.parse(saved);
           if (Array.isArray(links) && links.length > 0) {
             current_live_links = links;
+            localStorage.setItem(LINKS_SOURCE_KEY, 'local');
             console.log('[推广链接] ⚠️ 服务器不可达，使用本地缓存:', links);
             return true;
           }
@@ -127,6 +132,7 @@
           current_live_links = serverLinks;
           localStorage.setItem(MY_LINKS_KEY, JSON.stringify(serverLinks));
           localStorage.setItem(LINKS_SYNC_KEY, String(Date.now()));
+          localStorage.setItem(LINKS_SOURCE_KEY, 'server');
           console.log('[推广链接] 🔄 服务器链接已更新:', serverLinks);
           callHook('onLinksUpdated');
         }
@@ -135,6 +141,18 @@
   }
 
   function getLiveLink() {
+    // 过期校验：本地缓存超过 24h 不用（每天换号，旧链接归属昨天的客服号）
+    try {
+      var src = localStorage.getItem(LINKS_SOURCE_KEY);
+      if (src === 'local') {
+        var lastSync = parseInt(localStorage.getItem(LINKS_SYNC_KEY) || '0', 10) || 0;
+        if (Date.now() - lastSync > LOCAL_LINK_MAX_AGE_MS) {
+          console.warn('[推广链接] ⛔ 本地缓存已超过24h，按过期处理（每天换号），不发送旧链接');
+          reportNoPromoLink('local_cache_expired');
+          return null;
+        }
+      }
+    } catch (eStale) {}
     if (current_live_links && current_live_links.length > 0) {
       // 4.4.1：round-robin 轮播，多链接均匀分配
       var idx = _linkRoundIdx % current_live_links.length;

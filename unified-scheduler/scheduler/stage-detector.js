@@ -4,11 +4,11 @@
   var K = SKeys;
 
   var DEFAULT_POLICY = {
-    // 北京时间 Asia/Shanghai；区间左闭右开
-    workHours: { start: [6, 0], end: [2, 0] },
+    // 北京时间 Asia/Shanghai；区间左闭右开；兼职默认 10:00–19:00
+    workHours: { start: [10, 0], end: [19, 0] },
     chatHours:  { start: [8, 0], end: [18, 0] },
     // 早间渐进：与上班点相同=一上班就可关注（私信仍 08–18）
-    morningNurtureUntil: [6, 0],
+    morningNurtureUntil: [10, 0],
     stages: {
       S0: { priority: [] },
       // 4.6.21：Day1 先关注后养号（用户要求先点关注）
@@ -197,12 +197,32 @@
         if (st && (st.done || st.textDone)) profileOk = true;
       }
     } catch (eP) {}
-    // 检查是否发过帖子（per-handle 标记，避免多号串扰）
+    // 检查是否发过帖子（候选 handle + 今日日限）
     var postOk = false;
     try {
-      var h3 = (localStorage.getItem(K.LK_MY_HANDLE) || 'unknown').replace('@', '').replace('#guard', '').toLowerCase();
-      if (localStorage.getItem('sg_repost_posted_ok_' + h3) === '1') postOk = true;
-    } catch (ePost) {}
+      if (typeof RepostTracker !== 'undefined' && RepostTracker.hasPostedOk) {
+        postOk = !!RepostTracker.hasPostedOk();
+      }
+    } catch (ePost0) {}
+    if (!postOk) {
+      try {
+        var h3 = (localStorage.getItem(K.LK_MY_HANDLE) || 'unknown').replace('@', '').replace('#guard', '').toLowerCase();
+        if (localStorage.getItem('sg_repost_posted_ok_' + h3) === '1') postOk = true;
+      } catch (ePost) {}
+    }
+    if (!postOk) {
+      try {
+        var daily = typeof RepostTracker !== 'undefined' && RepostTracker.getDaily
+          ? RepostTracker.getDaily() : JSON.parse(localStorage.getItem('sg_repost_daily') || '{}');
+        var today = '';
+        try {
+          today = (typeof TimeUtil !== 'undefined' && TimeUtil.shanghaiDate)
+            ? TimeUtil.shanghaiDate()
+            : new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' });
+        } catch (eTd) {}
+        if (daily && daily.date === today && (daily.count || 0) > 0) postOk = true;
+      } catch (eD2) {}
+    }
     return profileOk && postOk;
   }
 
@@ -264,8 +284,8 @@
     }
     g_isWorkTime = inRange(wh.start[0], wh.start[1], wh.end[0], wh.end[1]);
     g_isChatTime = inRange(ch.start[0], ch.start[1], ch.end[0], ch.end[1]);
-    // 脏配置自愈：本地工作窗判定下班，但产品默认跨夜窗（06–02）仍在班
-    // 典型：localStorage 残留 08–18 / 旧日窗，OPS 已是 06–02，晚上误进 S0 停关注
+    // 脏配置自愈：本地工作窗判定下班，但产品默认窗（10–19）仍在班
+    // 典型：localStorage 残留错误日窗，OPS 已是 10–19，白天误停关注
     if (!test24 && !g_isWorkTime) {
       var defWh = DEFAULT_POLICY.workHours;
       if (inRange(defWh.start[0], defWh.start[1], defWh.end[0], defWh.end[1])) {

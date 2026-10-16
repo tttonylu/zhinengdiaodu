@@ -1,0 +1,596 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <title>账号中心 - X 运营轻总控后台</title>
+    <link rel="stylesheet" href="/public/app.css">
+    <meta http-equiv="refresh" content="20">
+    <style>
+      .batch-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+      .batch-bar label{font-size:12px;color:#8b949e}
+      .batch-bar input[type=number]{width:64px;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:4px 6px;border-radius:4px}
+      .batch-bar .btn{padding:5px 12px;border:none;border-radius:4px;cursor:pointer;font-size:12px}
+      .batch-bar .btn-start{background:#238636;color:#fff}
+      .batch-bar .btn-pause{background:#21262d;color:#c9d1d9;border:1px solid #30363d}
+      .batch-bar .btn-reset-media{background:#1f6feb;color:#fff}
+      .batch-bar .batch-msg{font-size:12px;color:#8b949e}
+      .sort-input,.day-input{width:56px;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:3px 6px;border-radius:4px}
+      .rp-input{width:140px;max-width:22vw;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:3px 6px;border-radius:4px;font-size:11px;font-family:ui-monospace,monospace}
+      .mini-save{margin-left:4px;padding:2px 8px;font-size:11px;background:#238636;color:#fff;border:none;border-radius:3px;cursor:pointer}
+      .col-check{width:36px;text-align:center}
+      .col-sort{width:110px}
+      .col-wh{width:150px}
+      tr.acct-ghost{opacity:.75;background:rgba(210,153,34,.06)}
+      tr.acct-ghost td:nth-child(3)::after{content:' 待确认';font-size:10px;color:#e3b341;margin-left:4px}
+      tr.acct-unconfirmed td:nth-child(3)::after{content:' 待确认';font-size:10px;color:#8b949e;margin-left:4px}
+      tr.acct-frozen td{opacity:.95}
+      .tag.ban{background:#f85149;color:#fff;font-weight:600}
+      .acct-start-btn:disabled,.acct-pause-btn:disabled{opacity:.4;cursor:not-allowed}
+      .acct-confirm-btn{padding:2px 8px;font-size:11px;background:#1f6feb;color:#fff;border:none;border-radius:3px;cursor:pointer;margin-right:4px}
+      .acct-confirm-btn:disabled{opacity:.4;cursor:not-allowed}
+      .btn-confirm{background:#1f6feb;color:#fff}
+      .tag.chat-on{background:#238636;color:#fff}
+      .tag.chat-idle{background:#9e6a03;color:#fff}
+      .tag.chat-off{background:#30363d;color:#8b949e}
+      .tag.chat-pin{background:#d29922;color:#fff;font-weight:600}
+      .tag.cmd-warn{background:#f85149;color:#fff;font-size:10px;margin-left:4px}
+      .tag.cmd-wait{background:#1f6feb;color:#fff;font-size:10px;margin-left:4px}
+      .why-idle{display:block;font-size:10px;color:#8b949e;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    </style>
+  </head>
+  <body>
+    <header class="shell-header">
+      <h1>X 运营轻总控后台</h1>
+      {% set navActive = 'accounts' %}
+      {% include 'partials/shell-nav.njk' %}
+    </header>
+    <main class="shell-main">
+      <section class="panel">
+        <div class="panel-heading">
+          <h2>运营账号</h2>
+          <div class="batch-bar">
+            <span class="muted">显示 {{ accounts.length }}{% if ghostCount %}／共 {{ totalCount }}{% endif %} 个账号</span>
+            {% if ghostCount %}
+            <span class="muted" style="color:#e3b341">待确认 {{ ghostCount }}</span>
+            {% if showGhosts %}
+            <a href="/accounts" class="btn btn-pause" style="text-decoration:none;display:inline-block">隐藏待确认</a>
+            {% else %}
+            <a href="/accounts?show=ghosts" class="btn btn-pause" style="text-decoration:none;display:inline-block">显示待确认</a>
+            {% endif %}
+            <button type="button" class="btn btn-confirm" id="batchConfirmBtn" title="将勾选的账号标记为已确认真实账号，不再判定为待确认">批量确认</button>
+            <button type="button" class="btn btn-pause" id="purgeGhostsBtn" title="删除未确认且从未上线、无业务数据的账号">清理待确认</button>
+            {% endif %}
+            <label>间隔(秒) <input type="number" id="batchGapSec" min="1" max="600" value="10"></label>
+            <button type="button" class="btn btn-start" id="batchStartBtn">一键启动</button>
+            <button type="button" class="btn btn-pause" id="batchPauseBtn">一键停止</button>
+            <button type="button" class="btn btn-reset-media" id="batchResetPcBtn" title="清各号本地资料克隆状态（名/简介/头像/横幅），下次养号整份重刮；需扩展≥4.1.69，建议关掉自动翻译">重置资料克隆</button>
+            <button type="button" class="btn btn-reset-media" id="batchResetFollowQuotaBtn" title="清各号当日已锁关注日限，按当前 OPS DayN 区间重抽；需扩展≥4.2.41；不改已关注数">重锁今日关注配额</button>
+            <button type="button" class="btn btn-reset-media" id="batchClearDeadHandlesBtn" title="清空各号插件本地 matrix_dead_handles，避免误杀后本地黑名单继续跳过；需扩展≥4.3.27">清本地死号名单</button>
+            <button type="button" class="btn btn-reset-media" id="batchResetDmBtn" title="清除勾选号在 OPS 的私信轮次(dm_records)与线索私信阶段，可重新破冰；可选同时通知插件清本地私信底账">重置私信</button>
+            <label style="font-size:12px;color:#8b949e;margin-left:4px" title="勾选后额外下发 reset_chat_local，约10s内插件清本地目标库/队列">
+              <input type="checkbox" id="wipePluginDmChk"> 同时清插件本地
+            </label>
+            <span class="batch-msg" id="batchMsg"></span>
+          </div>
+        </div>
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th class="col-check"><input type="checkbox" id="selectAll" title="全选"></th>
+              <th class="col-sort">排序</th>
+              <th>账号</th>
+              <th title="转帖来源号：空格/逗号分隔，绑到本运营号；插件约1分钟同步">转帖来源</th>
+              <th title="上班/下班时间：输入框改的是下班；留空=跟全局默认；下方小字为已设的上班~下班；约1分钟生效">上下班</th>
+              <th title="运行天数：插件 register/heartbeat 跨上海自然日时 +1；首日注册不涨">Day</th>
+              <th title="插件上报冻结后显示「账号被封禁」（优先于在线）；否则 15 分钟内心跳为在线">状态</th>
+              <th title="调度自动模式（心跳 auto_mode）">调度</th>
+              <th title="当前真正在跑的业务模块">模块</th>
+              <th title="私信开启 / 歇着 / 未自动；远程指令 30s 未 ACK 会提示">私信态</th>
+              <th title="绑定到该运营号的线索数（leads.bound_account_id），非关注配额">绑定线索</th>
+              <th title="优先插件心跳 followed_today；无 runtime 时回退今日 activity_logs follow/success">今日关注</th>
+              <th title="今日私信相关日志（dm/ice/ad/kick）条数">今日私信</th>
+              <th>最后活跃</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for a in accounts %}
+            {% set is_banned = (a.status == 'frozen' or a.status == 'banned') %}
+            {% set is_unconfirmed = (a.confirmed_at == null or a.confirmed_at == '') %}
+            <tr class="{% if is_banned %}acct-frozen{% endif %}{% if a.is_ghost %} acct-ghost{% endif %}{% if is_unconfirmed and not a.is_ghost %} acct-unconfirmed{% endif %}" data-handle="{{ a.x_handle }}" data-id="{{ a.id }}" data-leads="{{ a.lead_count or 0 }}" data-sort="{{ a.sort_order if a.sort_order != null else '' }}" data-status="{{ a.status or '' }}" data-confirmed="{% if a.confirmed_at %}1{% else %}0{% endif %}">
+              <td class="col-check"><input type="checkbox" class="row-check"></td>
+              <td class="col-sort">
+                <input type="number" class="sort-input" min="0" max="9999" placeholder="机位"
+                  title="机位序号全局唯一，不能与其他账号重复；空=未分配"
+                  value="{{ a.sort_order if a.sort_order != null else '' }}">
+                <button type="button" class="mini-save sort-save">改</button>
+                <span class="sort-msg" style="font-size:11px;margin-left:4px;color:#3fb950"></span>
+              </td>
+              <td><a href="/accounts/{{ a.id }}">{{ a.display_name or a.x_handle }}</a>
+                <a href="/dm-roster/{{ a.x_handle }}" style="font-size:10px;margin-left:6px;color:#58a6ff" title="私信台账早对账">台账</a>
+                {% if a.tag_labels and a.tag_labels.length %}{% for lbl in a.tag_labels %}<span class="tag" style="background:#1f6feb;color:#fff;font-size:10px;margin-left:4px" title="按标签管理：被关闭模块见详情页">{{ lbl }}</span>{% endfor %}{% endif %}
+                <select class="tag-select" data-handle="{{ a.x_handle }}" style="font-size:10px;margin-left:6px;background:#161b22;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:1px 3px;vertical-align:middle" title="直接打标签：选中即保存并生效（插件约1分钟内收到）">
+                  {% if a.tag_labels and a.tag_labels.length %}
+                  <option value="__keep" selected hidden>{{ a.tag_labels|join(' + ') }}</option>
+                  {% else %}
+                  <option value="__keep" selected>🏷 标签</option>
+                  {% endif %}
+                  <option value="">清除标签</option>
+                  {% for tp in tagPresets %}<option value="{{ tp.id }}">{{ tp.label }}</option>{% endfor %}
+                </select>
+              </td>
+              <td class="col-rp" title="来源号统一在账号详情页从来源号池勾选">
+                <span style="font-size:11px;font-family:ui-monospace,monospace;word-break:break-all">{{ a.repost_targets_text or '—' }}</span>
+                <a href="/accounts/{{ a.id }}" style="margin-left:4px;font-size:11px;color:#1f6feb;white-space:nowrap">去勾选</a>
+              </td>
+              <td class="col-wh" title="上班/下班；留空=跟全局。下班不固定直接在这里改，约1分钟生效">
+                <input type="time" class="wh-end-input" value="{{ a.work_end or '' }}" style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:2px 4px;border-radius:3px;font-size:11px">
+                <button type="button" class="mini-save wh-save">存</button>
+                <span class="wh-msg" style="font-size:11px;margin-left:3px;color:#3fb950">{{ a.work_start or '' }}{% if a.work_start %}~{% endif %}{{ '已设' if a.work_end else '' }}</span>
+              </td>
+              <td title="跨上海自然日心跳时自动 +1">
+                <input type="number" class="day-input" min="1" max="9999" value="{{ a.day_count or 1 }}">
+                <button type="button" class="mini-save day-save">改</button>
+                <span class="day-msg" style="font-size:11px;margin-left:4px;color:#3fb950"></span>
+              </td>
+              <td>
+                {% if is_banned %}<span class="tag ban" title="插件上报账号冻结">账号被封禁</span>
+                {% elif a.is_online %}<span class="tag success">在线</span>
+                {% else %}<span class="tag warning">离线</span>{% endif %}
+              </td>
+              <td>
+                {% if a.sched_label == '开' %}<span class="tag success">开</span>
+                {% elif a.sched_label == '关' %}<span class="tag">关</span>
+                {% else %}<span class="muted">-</span>{% endif %}
+                {% if a.stage %}<span class="muted" style="font-size:10px;margin-left:4px">{{ a.stage }}</span>{% endif %}
+              </td>
+              <td>{{ a.module_label or '-' }}</td>
+              <td>
+                {% if a.chat_state == 'running' %}<span class="tag chat-on">私信开启</span>
+                {% elif a.chat_state == 'pin_blocked' %}<span class="tag chat-pin" title="X 显示 Enter Passcode 门禁，插件自动解锁失败，需手动解锁">PIN 拦截</span>
+                {% elif a.chat_state == 'idle' %}<span class="tag chat-idle" title="{{ a.why_idle or '' }}">私信歇</span>
+                {% elif a.chat_state == 'off' %}<span class="tag chat-off">未自动</span>
+                {% else %}<span class="muted">未上报</span>{% endif %}
+                {% if a.cmd_unconfirmed %}<span class="tag cmd-warn" title="远程指令超过 30 秒未收到插件 ACK">指令未确认</span>
+                {% elif a.cmd_pending %}<span class="tag cmd-wait" title="等待插件 ACK">待确认</span>{% endif %}
+                {% if a.chat_state == 'idle' and a.why_idle %}<span class="why-idle" title="{{ a.why_idle }}">{{ a.why_idle }}</span>{% endif %}
+              </td>
+              <td title="绑定线索数">{{ a.lead_count or 0 }}</td>
+              <td>{{ a.today_follow_count or 0 }}</td>
+              <td>{{ a.today_dm_count or 0 }}</td>
+              <td class="mono">{{ a.last_seen_at or '-' }}</td>
+              <td>
+                {% if not a.confirmed_at %}
+                <button type="button" class="acct-confirm-btn" title="标记为已确认真实账号，不再判定为待确认">确认</button>
+                {% endif %}
+                <button type="button" class="acct-start-btn" {% if is_banned %}disabled title="账号已封禁"{% endif %} style="padding:2px 8px;font-size:11px;background:#238636;color:#fff;border:none;border-radius:3px;cursor:pointer;margin-right:4px;">启动</button>
+                <button type="button" class="acct-pause-btn" {% if is_banned %}disabled title="账号已封禁"{% endif %} style="padding:2px 8px;font-size:11px;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:3px;cursor:pointer;margin-right:4px;">暂停</button>
+                <button type="button" class="danger-btn acct-delete-btn" style="padding:2px 8px;font-size:11px;">删除</button>
+              </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="15" class="empty-cell">暂无账号记录</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </section>
+    </main>
+    <script>
+    (function () {
+      var selectAll = document.getElementById('selectAll');
+      var batchMsg = document.getElementById('batchMsg');
+      var batchStartBtn = document.getElementById('batchStartBtn');
+      var batchPauseBtn = document.getElementById('batchPauseBtn');
+      var batchResetPcBtn = document.getElementById('batchResetPcBtn');
+      var batchResetFollowQuotaBtn = document.getElementById('batchResetFollowQuotaBtn');
+      var batchClearDeadHandlesBtn = document.getElementById('batchClearDeadHandlesBtn');
+      var batchResetDmBtn = document.getElementById('batchResetDmBtn');
+      var wipePluginDmChk = document.getElementById('wipePluginDmChk');
+      var batchGapSec = document.getElementById('batchGapSec');
+      var batchRunning = false;
+
+      function setBatchButtonsDisabled(on) {
+        if (batchStartBtn) batchStartBtn.disabled = on;
+        if (batchPauseBtn) batchPauseBtn.disabled = on;
+        if (batchResetPcBtn) batchResetPcBtn.disabled = on;
+        if (batchResetFollowQuotaBtn) batchResetFollowQuotaBtn.disabled = on;
+        if (batchClearDeadHandlesBtn) batchClearDeadHandlesBtn.disabled = on;
+        if (batchResetDmBtn) batchResetDmBtn.disabled = on;
+      }
+
+      if (selectAll) {
+        selectAll.addEventListener('change', function () {
+          document.querySelectorAll('.row-check').forEach(function (cb) {
+            cb.checked = selectAll.checked;
+          });
+        });
+      }
+
+      function sleep(ms) {
+        return new Promise(function (resolve) { setTimeout(resolve, ms); });
+      }
+
+      function selectedRows() {
+        return Array.prototype.slice.call(document.querySelectorAll('tr[data-id]')).filter(function (row) {
+          var cb = row.querySelector('.row-check');
+          return cb && cb.checked;
+        }).sort(function (a, b) {
+          var sa = a.getAttribute('data-sort');
+          var sb = b.getAttribute('data-sort');
+          var na = sa === '' || sa == null ? Infinity : Number(sa);
+          var nb = sb === '' || sb == null ? Infinity : Number(sb);
+          if (na !== nb) return na - nb;
+          return Number(a.getAttribute('data-id')) - Number(b.getAttribute('data-id'));
+        });
+      }
+
+      async function runBatch(command, label) {
+        if (batchRunning) return;
+        var rows = selectedRows();
+        if (!rows.length) {
+          alert('请先勾选账号');
+          return;
+        }
+        var gap = parseInt(batchGapSec && batchGapSec.value, 10);
+        if (!gap || gap < 1) gap = 10;
+        if (command === 'reset_profile_media' && gap > 2) gap = 2;
+        if (command === 'reset_follow_daily_limit' && gap > 2) gap = 2;
+        if (command === 'clear_dead_handles' && gap > 2) gap = 2;
+        batchRunning = true;
+        setBatchButtonsDisabled(true);
+        var ok = 0;
+        var fail = 0;
+        for (var i = 0; i < rows.length; i++) {
+          var id = rows[i].getAttribute('data-id');
+          var handle = rows[i].getAttribute('data-handle');
+          batchMsg.textContent = label + ' ' + (i + 1) + '/' + rows.length + ' @' + handle;
+          try {
+            var res = await fetch('/api/accounts/' + encodeURIComponent(id) + '/command', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ command: command })
+            }).then(function (r) { return r.json(); });
+            if (res && res.ok) ok++;
+            else fail++;
+          } catch (e) {
+            fail++;
+          }
+          if (i < rows.length - 1) await sleep(gap * 1000);
+        }
+        batchMsg.textContent = label + '完成：成功 ' + ok + '，失败 ' + fail
+          + (command === 'reset_profile_media' ? '（各号约10s内领取；下次养号整份重刮含简介）' : '')
+          + (command === 'reset_follow_daily_limit' ? '（清OPS今日关注记录+插件重锁日限；各号约10s内领取）' : '')
+          + (command === 'clear_dead_handles' ? '（各号约10s内领取；清空本机 matrix_dead_handles）' : '');
+        batchRunning = false;
+        setBatchButtonsDisabled(false);
+      }
+
+      if (batchStartBtn) batchStartBtn.addEventListener('click', function () { runBatch('start', '启动'); });
+      if (batchPauseBtn) batchPauseBtn.addEventListener('click', function () { runBatch('pause', '停止'); });
+      if (batchResetPcBtn) {
+        batchResetPcBtn.addEventListener('click', function () {
+          if (!confirm('将勾选账号的资料克隆整份重置（昵称/简介/头像/横幅）。需扩展 ≥4.1.69；建议各号关掉自动翻译。下次养号会重刮日文原文。继续？')) return;
+          runBatch('reset_profile_media', '重置资料克隆');
+        });
+      }
+      if (batchResetFollowQuotaBtn) {
+        batchResetFollowQuotaBtn.addEventListener('click', function () {
+          if (!confirm('将勾选账号的「今日关注日限」按当前 OPS DayN 区间重新锁定（不改已关注数）。需扩展 ≥4.2.41。用于 OPS 改阶梯后当天旧锁未重抽。继续？')) return;
+          runBatch('reset_follow_daily_limit', '重锁今日关注配额');
+        });
+      }
+      if (batchClearDeadHandlesBtn) {
+        batchClearDeadHandlesBtn.addEventListener('click', function () {
+          if (!confirm('将勾选账号的插件本地死号名单 matrix_dead_handles 清空（不改号池服务端）。需扩展 ≥4.3.27。误杀捞回 pending 后应清一次。继续？')) return;
+          runBatch('clear_dead_handles', '清本地死号名单');
+        });
+      }
+
+      if (batchResetDmBtn) {
+        batchResetDmBtn.addEventListener('click', async function () {
+          if (batchRunning) return;
+          var rows = selectedRows();
+          if (!rows.length) {
+            alert('请先勾选账号');
+            return;
+          }
+          var wipe = !!(wipePluginDmChk && wipePluginDmChk.checked);
+          var msg = '将清除勾选账号在 OPS 的私信轮次（dm_records）与线索私信阶段（ice/ad/kick/rejected/converted→followed_back），之后可重新破冰。不删账号、不动关注配额。';
+          if (wipe) msg += '\n并下发插件指令 reset_chat_local 清本地目标库/队列（需在线扩展）。';
+          if (!confirm(msg + '\n继续？')) return;
+          batchRunning = true;
+          setBatchButtonsDisabled(true);
+          var ids = rows.map(function (r) { return Number(r.getAttribute('data-id')); }).filter(function (n) { return n > 0; });
+          batchMsg.textContent = '重置私信中…';
+          try {
+            var res = await fetch('/api/accounts/batch-reset-dm', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ ids: ids, wipe_plugin: wipe })
+            }).then(function (r) { return r.json(); });
+            if (res && res.ok) {
+              var okN = 0, failN = 0, dmN = 0, leadN = 0;
+              (res.results || []).forEach(function (x) {
+                if (x && x.ok) {
+                  okN++;
+                  dmN += Number(x.dm_deleted || 0);
+                  leadN += Number(x.leads_reverted || 0);
+                } else failN++;
+              });
+              batchMsg.textContent = '重置私信完成：成功 ' + okN + '，失败 ' + failN
+                + '；删 dm ' + dmN + ' 条，回退线索 ' + leadN
+                + (wipe ? '；已下发清本地指令' : '');
+            } else {
+              batchMsg.textContent = (res && res.msg) || '重置失败';
+            }
+          } catch (e) {
+            batchMsg.textContent = '网络错误';
+          }
+          batchRunning = false;
+          setBatchButtonsDisabled(false);
+        });
+      }
+
+      var batchConfirmBtn = document.getElementById('batchConfirmBtn');
+      if (batchConfirmBtn) {
+        batchConfirmBtn.addEventListener('click', async function () {
+          if (batchRunning) return;
+          var rows = selectedRows();
+          if (!rows.length) {
+            alert('请先勾选账号');
+            return;
+          }
+          if (!confirm('将勾选的账号标记为"已确认真实账号"，确认后不再判定为待确认。继续？')) return;
+          batchRunning = true;
+          setBatchButtonsDisabled(true);
+          var ids = rows.map(function (r) { return Number(r.getAttribute('data-id')); }).filter(function (n) { return n > 0; });
+          batchMsg.textContent = '确认中…';
+          try {
+            var res = await fetch('/api/accounts/batch-confirm', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ ids: ids })
+            }).then(function (r) { return r.json(); });
+            if (res && res.ok) {
+              batchMsg.textContent = '已确认 ' + res.confirmed_count + ' 个账号';
+              setTimeout(function () { location.href = '/accounts'; }, 800);
+            } else {
+              batchMsg.textContent = (res && res.msg) || '确认失败';
+              batchRunning = false;
+              setBatchButtonsDisabled(false);
+            }
+          } catch (e) {
+            batchMsg.textContent = '网络错误';
+            batchRunning = false;
+            setBatchButtonsDisabled(false);
+          }
+        });
+      }
+
+      var purgeBtn = document.getElementById('purgeGhostsBtn');
+      if (purgeBtn) {
+        purgeBtn.addEventListener('click', function () {
+          if (!confirm('清理待确认账号？将删除「未确认 + 从未上线 + 无业务数据」的账号；已手动确认的账号不会被删。')) return;
+          purgeBtn.disabled = true;
+          fetch('/api/accounts/purge-ghosts', { method: 'POST' })
+            .then(function (r) { return r.json(); })
+            .then(function (res) {
+              if (res && res.ok) {
+                alert('已删除 ' + (res.deleted_count || 0) + ' 个幽灵号');
+                location.href = '/accounts';
+              } else {
+                alert((res && res.msg) || '清理失败');
+                purgeBtn.disabled = false;
+              }
+            })
+            .catch(function () {
+              alert('网络错误');
+              purgeBtn.disabled = false;
+            });
+        });
+      }
+
+      document.querySelectorAll('tr[data-handle]').forEach(function (row) {
+        var handle = row.getAttribute('data-handle');
+        var id = row.getAttribute('data-id');
+        var leads = row.getAttribute('data-leads') || '0';
+        var dayInput = row.querySelector('.day-input');
+        var dayBtn = row.querySelector('.day-save');
+        var dayMsg = row.querySelector('.day-msg');
+        var rpInput = row.querySelector('.rp-input');
+        var rpBtn = row.querySelector('.rp-save');
+        var rpMsg = row.querySelector('.rp-msg');
+        var sortInput = row.querySelector('.sort-input');
+        var sortBtn = row.querySelector('.sort-save');
+        var sortMsg = row.querySelector('.sort-msg');
+        var delBtn = row.querySelector('.acct-delete-btn');
+        var startBtn = row.querySelector('.acct-start-btn');
+        var pauseBtn = row.querySelector('.acct-pause-btn');
+        var confirmBtn = row.querySelector('.acct-confirm-btn');
+
+        function confirmAccount() {
+          if (!confirmBtn) return;
+          confirmBtn.disabled = true;
+          confirmBtn.textContent = '…';
+          fetch('/api/accounts/' + encodeURIComponent(id) + '/confirm', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: '{}'
+          }).then(function (r) { return r.json(); }).then(function (res) {
+            if (res && res.ok) {
+              confirmBtn.textContent = '已确认';
+              confirmBtn.style.background = '#238636';
+              row.setAttribute('data-confirmed', '1');
+              // 移除待确认样式
+              row.classList.remove('acct-ghost', 'acct-unconfirmed');
+              setTimeout(function () { confirmBtn.style.display = 'none'; }, 1500);
+            } else {
+              confirmBtn.textContent = (res && res.msg) || '失败';
+              setTimeout(function () { confirmBtn.textContent = '确认'; confirmBtn.disabled = false; }, 1500);
+            }
+          }).catch(function () {
+            confirmBtn.textContent = '错误';
+            setTimeout(function () { confirmBtn.textContent = '确认'; confirmBtn.disabled = false; }, 1500);
+          });
+        }
+        if (confirmBtn) confirmBtn.addEventListener('click', confirmAccount);
+
+        function saveRepostTargets() { /* H9：列表页手填已废，统一在详情页从来源号池勾选 */ }
+        if (rpBtn) rpBtn.addEventListener('click', saveRepostTargets);
+
+        // 069：列表页快捷改下班（只发 work_end，不动上班侧）
+        var whInput = row.querySelector('.wh-end-input');
+        var whBtn = row.querySelector('.wh-save');
+        var whMsg = row.querySelector('.wh-msg');
+        function saveWorkEnd() {
+          if (!whInput || !whMsg) return;
+          var v = String(whInput.value || '');
+          whMsg.textContent = '…';
+          whMsg.style.color = '#8b949e';
+          fetch('/api/config/account/' + encodeURIComponent(handle), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ work_end: v || null })
+          }).then(function (r) { return r.json(); }).then(function (res) {
+            if (res.ok) {
+              whMsg.textContent = v ? '下班 ' + v : '跟全局';
+              whMsg.style.color = '#3fb950';
+            } else {
+              whMsg.textContent = res.msg || '失败';
+              whMsg.style.color = '#f85149';
+            }
+          }).catch(function () {
+            whMsg.textContent = '网络错误';
+            whMsg.style.color = '#f85149';
+          });
+        }
+        if (whBtn) whBtn.addEventListener('click', saveWorkEnd);
+        if (whInput) whInput.addEventListener('change', saveWorkEnd);
+
+        function sendCommand(cmd, cmdBtn, label) {
+          if (!cmdBtn) return;
+          cmdBtn.disabled = true;
+          var old = cmdBtn.textContent;
+          cmdBtn.textContent = '…';
+          fetch('/api/accounts/' + encodeURIComponent(id) + '/command', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ command: cmd })
+          }).then(function (r) { return r.json(); }).then(function (res) {
+            cmdBtn.textContent = res.ok ? (label + '✓') : (res.msg || '失败');
+            setTimeout(function () { cmdBtn.textContent = old; cmdBtn.disabled = false; }, 1500);
+          }).catch(function () {
+            cmdBtn.textContent = '错误';
+            setTimeout(function () { cmdBtn.textContent = old; cmdBtn.disabled = false; }, 1500);
+          });
+        }
+        if (startBtn) startBtn.addEventListener('click', function () { sendCommand('start', startBtn, '启动'); });
+        if (pauseBtn) pauseBtn.addEventListener('click', function () { sendCommand('pause', pauseBtn, '暂停'); });
+
+        if (sortBtn && sortInput) {
+          sortBtn.addEventListener('click', function () {
+            var raw = String(sortInput.value || '').trim();
+            var payload = { sort_order: raw === '' ? null : Number(raw) };
+            if (raw !== '' && (!Number.isFinite(payload.sort_order) || payload.sort_order < 0)) {
+              sortMsg.textContent = '无效';
+              sortMsg.style.color = '#f85149';
+              return;
+            }
+            sortMsg.textContent = '…';
+            sortMsg.style.color = '#8b949e';
+            fetch('/api/accounts/' + encodeURIComponent(id) + '/sort', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
+            }).then(function (r) { return r.json().then(function (res) { return { status: r.status, res: res }; }); }).then(function (pack) {
+              var res = pack.res || {};
+              if (res.ok) {
+                sortMsg.textContent = '已改';
+                sortMsg.style.color = '#3fb950';
+                row.setAttribute('data-sort', res.sort_order == null ? '' : String(res.sort_order));
+              } else {
+                sortMsg.textContent = res.msg || '失败';
+                sortMsg.style.color = '#f85149';
+                sortMsg.title = res.conflict ? ('冲突账号 id=' + res.conflict.id) : '';
+              }
+            }).catch(function () {
+              sortMsg.textContent = '网络错误';
+              sortMsg.style.color = '#f85149';
+            });
+          });
+        }
+
+        if (dayBtn && dayInput) {
+          dayBtn.addEventListener('click', function () {
+            var dc = parseInt(dayInput.value, 10);
+            if (!dc || dc < 1) { dayMsg.textContent = '无效'; dayMsg.style.color = '#f85149'; return; }
+            dayMsg.textContent = '…'; dayMsg.style.color = '#8b949e';
+            fetch('/api/config/account/' + encodeURIComponent(handle), {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ day_count: dc })
+            }).then(function (r) { return r.json(); }).then(function (res) {
+              if (res.ok) {
+                dayMsg.textContent = '已改';
+                dayMsg.style.color = '#3fb950';
+              } else {
+                dayMsg.textContent = res.msg || '失败';
+                dayMsg.style.color = '#f85149';
+              }
+            }).catch(function () {
+              dayMsg.textContent = '网络错误';
+              dayMsg.style.color = '#f85149';
+            });
+          });
+        }
+
+        if (delBtn) {
+          delBtn.addEventListener('click', function () {
+            delBtn.disabled = true;
+            delBtn.textContent = '…';
+            fetch('/api/accounts/' + encodeURIComponent(id), { method: 'DELETE' })
+              .then(function (r) { return r.json(); })
+              .then(function (res) {
+                if (res.ok) {
+                  row.remove();
+                } else {
+                  alert(res.msg || '删除失败');
+                  delBtn.disabled = false;
+                  delBtn.textContent = '删除';
+                }
+              })
+              .catch(function () {
+                alert('网络错误');
+                delBtn.disabled = false;
+                delBtn.textContent = '删除';
+              });
+          });
+        }
+      });
+    })();
+
+    // 内联打标签：选中即 POST 保存，成功后刷新显示徽标
+    document.addEventListener('change', function (e) {
+      var el = e.target;
+      if (!el || !el.classList || !el.classList.contains('tag-select')) return;
+      var v = el.value;
+      if (v === '__keep') return; // 占位项
+      var handle = el.getAttribute('data-handle');
+      if (!handle) return;
+      var tags = v === '' ? [] : [v];
+      el.disabled = true;
+      fetch('/api/config/account/' + encodeURIComponent(handle), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tags: tags })
+      })
+        .then(function (r) { return r.json(); })
+        .then(function (j) {
+          if (j && j.ok) { location.reload(); }
+          else { el.disabled = false; alert('标签保存失败：' + ((j && j.msg) || '未知错误')); }
+        })
+        .catch(function () { el.disabled = false; alert('网络错误'); });
+    });
+    </script>
+  </body>
+</html>

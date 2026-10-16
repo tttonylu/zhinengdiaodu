@@ -91,7 +91,7 @@
         follow: {
             intervalMin: 12,                // 关注最小间隔（秒）
             intervalMax: 19,                // 关注最大间隔（秒）
-            onlyJapanese: true,             // 只点日本词条
+            onlyJapanese: false,            // 4.6.40 起关闭只点日文（引擎侧亦强制关）
             backupQueueMax: 50              // backup 队列最大长度
         },
 

@@ -1,0 +1,2 @@
+﻿ALTER TABLE leads ADD COLUMN snapshot_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE leads ADD COLUMN last_dm_action TEXT;

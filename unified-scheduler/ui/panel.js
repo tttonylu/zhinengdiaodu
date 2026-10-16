@@ -1,7 +1,7 @@
 // =============================================================================
-// 智能调度 — 控制面板 UI（双圆形按钮 + 可展开详情面板）
+// 智能调度 — 控制面板 UI（双圆形按钮 + 短详情 + 弹窗翻页）
 // 按钮1：启动/暂停（圆形，一键切换）
-// 按钮2：详情面板（圆形齿轮，点击展开/收起浮动面板）
+// 按钮2：短详情面板（齿轮）；配额/日志/设置在居中弹窗中翻页
 // =============================================================================
 
 (function () {
@@ -22,10 +22,15 @@
 
   var runBtn = null;      // 启动/暂停按钮
   var gearBtn = null;     // 设置按钮
-  var detailPanel = null; // 详情浮动面板
+  var detailPanel = null; // 短详情浮动面板
+  var panelModal = null;  // 配额/日志/设置弹窗
   var panelOpen = false;
+  var modalOpen = false;
   var didDrag = false;
   var activeTab = 'quota'; // quota | logs | settings
+  var _telLines = [];
+  var _telPage = 0;
+  var TEL_PAGE_SIZE = 8;
 
   // 保存数据到本地缓存
   function saveCache() {
@@ -179,8 +184,9 @@
   function updateRunBtnStatus() {
     if (!runBtn) return;
     var d = data || {};
-    var isRunning = !!(d.autoMode || d.runningModule || d.followRunning ||
-      d.chatRunning || d.nurtureRunning || d.repostRunning);
+    // 勿用孤立 runningModule 残影把按钮锁成「暂停」（模块已停但缓存未清时）
+    var isRunning = !!(d.autoMode || d.followRunning || d.chatRunning ||
+      d.nurtureRunning || d.repostRunning);
     var statusCls = getStatusClass();
 
     runBtn.classList.remove('sg-status-run', 'sg-status-idle', 'sg-status-warn', 'sg-status-err');
@@ -206,14 +212,55 @@
     clearTimeout(flashCmd._t);
     flashCmd._t = setTimeout(function () {
       if (el) el.textContent = '';
-    }, 2500);
+    }, 3500);
   }
 
-  function sendCmd(action, label) {
+  function sendCmd(action, label, extra) {
+    var waitResult = action === 'sg_scheduler_start' || action === 'sg_scheduler_pause';
+    var settled = false;
+    var onRes = null;
+    if (waitResult) {
+      onRes = function (ev) {
+        var d = (ev && ev.detail) || {};
+        if (d.action !== action) return;
+        settled = true;
+        try { window.removeEventListener('sg-page-cmd-result', onRes); } catch (eRm) {}
+        flashCmd(!!d.ok, (label || action) + '：' + (d.message || (d.ok ? '成功' : '失败')));
+        if (action === 'sg_scheduler_start' && d.ok) {
+          try { data.autoMode = true; data.engine = 'coor'; saveCache(); updateRunBtnStatus(); } catch (eUi) {}
+        }
+        if (action === 'sg_scheduler_pause' && d.ok) {
+          try {
+            data.autoMode = false; data.runningModule = ''; data.engine = 'idle';
+            data.followRunning = false; data.chatRunning = false;
+            data.nurtureRunning = false; data.repostRunning = false;
+            saveCache(); updateRunBtnStatus();
+          } catch (eUi2) {}
+        }
+        try { refreshTelemetryRecent(); } catch (eTel) {}
+      };
+      try { window.addEventListener('sg-page-cmd-result', onRes); } catch (eAdd) {}
+      setTimeout(function () {
+        if (settled) return;
+        settled = true;
+        try { window.removeEventListener('sg-page-cmd-result', onRes); } catch (eRm2) {}
+        flashCmd(false, (label || action) + '：无响应（请刷新 X 页面后重试）');
+      }, 2000);
+    }
     try {
-      window.dispatchEvent(new CustomEvent('sg-page-cmd', { detail: { action: action } }));
-      flashCmd(true, (label || action) + '：已下发');
+      var detail = { action: action };
+      if (extra && typeof extra === 'object') {
+        for (var k in extra) {
+          if (Object.prototype.hasOwnProperty.call(extra, k)) detail[k] = extra[k];
+        }
+      }
+      window.dispatchEvent(new CustomEvent('sg-page-cmd', { detail: detail }));
+      if (!waitResult) flashCmd(true, (label || action) + '：已下发');
     } catch (e) {
+      if (waitResult && onRes) {
+        settled = true;
+        try { window.removeEventListener('sg-page-cmd-result', onRes); } catch (eRm3) {}
+      }
       flashCmd(false, (label || action) + '：' + (e && e.message ? e.message : '页面未响应'));
     }
   }
@@ -248,18 +295,41 @@
     return extra;
   }
 
+  function renderTelPage() {
+    var row = document.getElementById('row-tel-recent');
+    var el = document.getElementById('v-tel-recent');
+    var info = document.getElementById('sg-modal-pg-info');
+    var prev = document.getElementById('sg-modal-pg-prev');
+    var next = document.getElementById('sg-modal-pg-next');
+    var pager = document.getElementById('sg-modal-pager');
+    if (!row || !el) return;
+    if (!_telLines.length) {
+      row.style.display = 'none';
+      if (pager && activeTab === 'logs') pager.style.display = 'none';
+      return;
+    }
+    row.style.display = 'block';
+    var total = Math.max(1, Math.ceil(_telLines.length / TEL_PAGE_SIZE));
+    if (_telPage >= total) _telPage = total - 1;
+    if (_telPage < 0) _telPage = 0;
+    var slice = _telLines.slice(_telPage * TEL_PAGE_SIZE, _telPage * TEL_PAGE_SIZE + TEL_PAGE_SIZE);
+    el.innerHTML = slice.map(function (l) {
+      return '<div class="sg-tel-line">' + String(l).replace(/</g, '&lt;') + '</div>';
+    }).join('');
+    if (pager && activeTab === 'logs' && modalOpen) {
+      pager.style.display = 'flex';
+      if (info) info.textContent = (_telPage + 1) + ' / ' + total;
+      if (prev) prev.disabled = _telPage <= 0;
+      if (next) next.disabled = _telPage >= total - 1;
+    }
+  }
+
   function refreshTelemetryRecent() {
     if (typeof SgTelemetry === 'undefined' || !SgTelemetry.getRecentSummaries) return;
-    SgTelemetry.getRecentSummaries(5).then(function (lines) {
-      var row = document.getElementById('row-tel-recent');
-      var el = document.getElementById('v-tel-recent');
-      if (!row || !el) return;
-      if (!lines || !lines.length) {
-        row.style.display = 'none';
-        return;
-      }
-      row.style.display = 'block';
-      el.innerHTML = lines.map(function (l) { return '<div>' + String(l).replace(/</g, '&lt;') + '</div>'; }).join('');
+    SgTelemetry.getRecentSummaries(40).then(function (lines) {
+      _telLines = (lines && lines.length) ? lines.slice() : [];
+      _telPage = 0;
+      renderTelPage();
     });
   }
 
@@ -500,21 +570,17 @@
   function positionDetailPanel() {
     if (!detailPanel || !gearBtn) return;
     var gearRect = gearBtn.getBoundingClientRect();
-    var panelW = 280;
-    var panelH = Math.min(detailPanel.scrollHeight || 400, window.innerHeight * 0.7);
+    var panelW = 220;
+    var panelH = Math.min(detailPanel.offsetHeight || 200, window.innerHeight * 0.5);
 
-    // 默认在齿轮按钮右边
     var left = gearRect.right + 8;
     var top = gearRect.top;
 
-    // 如果右边放不下，放左边
     if (left + panelW > window.innerWidth - 8) {
       left = gearRect.left - panelW - 8;
     }
-    // 如果左边也放不下，贴右边缘
     if (left < 8) left = 8;
 
-    // 垂直方向：如果下面放不下，向上对齐
     if (top + panelH > window.innerHeight - 8) {
       top = window.innerHeight - panelH - 8;
     }
@@ -534,9 +600,11 @@
       gearBtn.classList.add('sg-panel-open');
       positionDetailPanel();
       refreshPanelData();
+      if (data) renderDetailQuota(data);
     } else {
       detailPanel.classList.remove('sg-show');
       gearBtn.classList.remove('sg-panel-open');
+      closePanelModal();
     }
   }
 
@@ -546,27 +614,38 @@
       detailPanel.classList.remove('sg-show');
       gearBtn.classList.remove('sg-panel-open');
     }
+    closePanelModal();
+  }
+
+  function openPanelModal(tab) {
+    if (!panelModal) return;
+    activeTab = tab || 'quota';
+    modalOpen = true;
+    panelModal.classList.add('sg-show');
+    var titleMap = { quota: '配额明细', logs: '日志', settings: '设置' };
+    var titleEl = document.getElementById('sg-modal-title');
+    if (titleEl) titleEl.textContent = titleMap[activeTab] || '详情';
+    var panels = panelModal.querySelectorAll('.sg-tab-panel');
+    panels.forEach(function (p) {
+      p.style.display = (p.id === 'sg-tab-' + activeTab) ? 'block' : 'none';
+    });
+    var pager = document.getElementById('sg-modal-pager');
+    if (pager) pager.style.display = activeTab === 'logs' ? 'flex' : 'none';
+    if (activeTab === 'logs') renderTelPage();
+    refreshPanelData();
+    if (data) {
+      renderDetailQuota(data);
+      renderDetailLogs(data);
+    }
+  }
+
+  function closePanelModal() {
+    modalOpen = false;
+    if (panelModal) panelModal.classList.remove('sg-show');
   }
 
   function switchDetailTab(tab) {
-    activeTab = tab;
-    if (!detailPanel) return;
-    var tabs = detailPanel.querySelectorAll('.sg-tab-btn');
-    var panels = detailPanel.querySelectorAll('.sg-tab-panel');
-    tabs.forEach(function (t) {
-      if (t.dataset.tab === tab) {
-        t.classList.add('sg-tab-active');
-      } else {
-        t.classList.remove('sg-tab-active');
-      }
-    });
-    panels.forEach(function (p) {
-      if (p.id === 'sg-tab-' + tab) {
-        p.style.display = 'block';
-      } else {
-        p.style.display = 'none';
-      }
-    });
+    openPanelModal(tab);
   }
 
   function refreshPanelData() {
@@ -589,20 +668,44 @@
   function buildDetailPanel() {
     detailPanel = document.createElement('div');
     detailPanel.id = 'sg-detail-panel';
-    detailPanel.className = 'sg-detail-panel';
+    detailPanel.className = 'sg-detail-panel sg-detail-short';
     detailPanel.innerHTML = ''
       + '<div class="sg-panel-header">'
       + '  <span class="sg-panel-title">智能调度</span>'
       + '  <span class="sg-panel-version" id="v-ext-ver-detail">--</span>'
       + '</div>'
-      + '<div class="sg-panel-tabs">'
-      + '  <button type="button" class="sg-tab-btn sg-tab-active" data-tab="quota">📊 明细</button>'
-      + '  <button type="button" class="sg-tab-btn" data-tab="logs">📋 日志</button>'
-      + '  <button type="button" class="sg-tab-btn" data-tab="settings">⚙ 设置</button>'
-      + '</div>'
-      + '<div class="sg-panel-body">'
+      + '<div class="sg-panel-body sg-short-body">'
+      + '  <div class="sg-quota-row"><span class="sg-quota-label">状态</span><span class="sg-quota-val" id="v-sum-engine">--</span></div>'
+      + '  <div class="sg-quota-row"><span class="sg-quota-label">停机原因</span><span class="sg-quota-val" id="v-sum-laststop" title="最近一次自动/手动停机">-</span></div>'
+      + '  <div class="sg-quota-row"><span class="sg-quota-label">今日关注</span><span class="sg-quota-val" id="v-sum-follow">0 / 200</span></div>'
+      + '  <div class="sg-progress"><div class="sg-fill" id="v-sum-follow-bar" style="width:0%"></div></div>'
+      + '  <div class="sg-quota-row"><span class="sg-quota-label">关注目标</span><span class="sg-quota-val" id="v-sum-blogger">-</span></div>'
+      + '  <div class="sg-quota-row"><span class="sg-quota-label">关注步骤</span><span class="sg-quota-val" id="v-sum-fstep">-</span></div>'
+      + '  <div class="sg-follow-msg" id="v-sum-fmsg" title="关注引擎最近状态（含隐私号识别）">--</div>'
+      + '  <div class="sg-quota-row"><span class="sg-quota-label">账号</span><span class="sg-quota-val" id="v-sum-day">Day 1</span></div>'
+      + '  <div class="sg-quota-row"><span class="sg-quota-label">转帖</span><span class="sg-quota-val" id="v-sum-repost">--</span></div>'
+      + '  <p class="sg-short-hint">明细与日志在弹窗中翻页；隐私号/死号会浮条提示。</p>'
+      + '  <div class="sg-btns sg-short-actions">'
+      + '    <button type="button" class="sg-outline" id="btn-open-quota">配额</button>'
+      + '    <button type="button" class="sg-outline" id="btn-open-logs">日志</button>'
+      + '    <button type="button" class="sg-outline" id="btn-open-settings">设置</button>'
+      + '  </div>'
+      + '  <div id="sg-cmd-msg" class="sg-cmd-msg"></div>'
+      + '</div>';
 
-      // ===== 标签页1：明细配额 =====
+    document.body.appendChild(detailPanel);
+
+    panelModal = document.createElement('div');
+    panelModal.id = 'sg-panel-modal';
+    panelModal.className = 'sg-panel-modal';
+    panelModal.innerHTML = ''
+      + '<div class="sg-modal-card" id="sg-modal-card">'
+      + '  <div class="sg-modal-hd">'
+      + '    <span id="sg-modal-title">详情</span>'
+      + '    <button type="button" class="sg-modal-x" id="sg-modal-close" aria-label="关闭">×</button>'
+      + '  </div>'
+      + '  <div class="sg-modal-bd">'
+
       + '  <div class="sg-tab-panel" id="sg-tab-quota">'
       + '    <div class="sg-quota-section">'
       + '      <div class="sg-quota-title">关注</div>'
@@ -615,8 +718,16 @@
       + '        <span class="sg-quota-label">当前轮次</span>'
       + '        <span class="sg-quota-val" id="v-quota-round">--</span>'
       + '      </div>'
+      + '      <div class="sg-quota-row">'
+      + '        <span class="sg-quota-label">当前博主</span>'
+      + '        <span class="sg-quota-val" id="v-quota-blogger">-</span>'
+      + '      </div>'
+      + '      <div class="sg-quota-row">'
+      + '        <span class="sg-quota-label">引擎步骤</span>'
+      + '        <span class="sg-quota-val" id="v-quota-fstep">-</span>'
+      + '      </div>'
+      + '      <div class="sg-follow-msg" id="v-quota-fmsg" style="margin-top:6px">--</div>'
       + '    </div>'
-
       + '    <div class="sg-quota-section">'
       + '      <div class="sg-quota-title">私信</div>'
       + '      <div class="sg-quota-row">'
@@ -636,7 +747,6 @@
       + '        <span class="sg-quota-val" id="v-script-pool-detail">--</span>'
       + '      </div>'
       + '    </div>'
-
       + '    <div class="sg-quota-section">'
       + '      <div class="sg-quota-title">养号</div>'
       + '      <div class="sg-quota-row">'
@@ -644,7 +754,6 @@
       + '        <span class="sg-quota-val" id="v-quota-nurture">--</span>'
       + '      </div>'
       + '    </div>'
-
       + '    <div class="sg-quota-section">'
       + '      <div class="sg-quota-title">转帖</div>'
       + '      <div class="sg-quota-row">'
@@ -661,7 +770,6 @@
       + '        <button type="button" class="sg-outline" id="btn-rp-manual" style="font-size:9px;border-color:#58a6ff;color:#58a6ff">只转帖</button>'
       + '      </div>'
       + '    </div>'
-
       + '    <div class="sg-quota-section">'
       + '      <div class="sg-quota-title">账号</div>'
       + '      <div class="sg-quota-row">'
@@ -681,11 +789,8 @@
       + '        <span class="sg-quota-val" id="v-quota-engine">--</span>'
       + '      </div>'
       + '    </div>'
-
-      + '    <div id="sg-cmd-msg" class="sg-cmd-msg"></div>'
       + '  </div>'
 
-      // ===== 标签页2：日志报错 =====
       + '  <div class="sg-tab-panel" id="sg-tab-logs" style="display:none">'
       + '    <div class="sg-quota-section">'
       + '      <div class="sg-quota-title">诊断工具</div>'
@@ -697,7 +802,6 @@
       + '      </div>'
       + '      <div id="sg-diag-freeze-bar" style="display:none;margin:6px 0 0;padding:6px;border:1px solid #f85149;border-radius:4px;background:rgba(248,81,73,.12);font-size:9px;color:#f85149;line-height:1.4"></div>'
       + '    </div>'
-
       + '    <div class="sg-quota-section">'
       + '      <div class="sg-quota-title">日志监控</div>'
       + '      <div class="sg-btns" style="margin-top:4px">'
@@ -717,14 +821,12 @@
       + '        <button class="sg-outline" id="btn-test-clear" style="font-size:9px">清空</button>'
       + '      </div>'
       + '    </div>'
-
       + '    <div class="sg-quota-section" id="row-tel-recent" style="display:none">'
       + '      <div class="sg-quota-title">最近日志</div>'
-      + '      <div id="v-tel-recent" style="font-size:9px;color:#8b949e;line-height:1.5;margin-top:4px;max-height:80px;overflow:hidden"></div>'
+      + '      <div id="v-tel-recent" class="sg-tel-recent"></div>'
       + '    </div>'
       + '  </div>'
 
-      // ===== 标签页3：设置 =====
       + '  <div class="sg-tab-panel" id="sg-tab-settings" style="display:none">'
       + '    <div class="sg-quota-section">'
       + '      <div class="sg-quota-title">模块开关</div>'
@@ -735,7 +837,6 @@
       + '        <button class="sg-toggle-btn" id="btn-toggle-rp">转帖 ON</button>'
       + '      </div>'
       + '    </div>'
-
       + '    <div class="sg-quota-section">'
       + '      <div class="sg-quota-title">手动模式</div>'
       + '      <div class="sg-btns" style="margin-top:4px">'
@@ -757,7 +858,6 @@
       + '        <button class="sg-outline" id="btn-mark-posted" title="标记本号已发过帖" style="font-size:9px;border-color:#3fb950;color:#3fb950">标记已发帖</button>'
       + '      </div>'
       + '    </div>'
-
       + '    <div class="sg-quota-section">'
       + '      <div class="sg-quota-title">服务器地址</div>'
       + '      <div style="margin-top:4px;display:flex;flex-direction:column;gap:4px">'
@@ -766,38 +866,49 @@
       + '            style="width:100%;box-sizing:border-box;margin-top:2px;padding:3px 6px;border-radius:3px;border:1px solid #30363d;background:#0d1117;color:#c9d1d9;font-size:9px">'
       + '        </label>'
       + '        <label style="display:block;font-size:9px;color:#8b949e">号池'
-      + '          <input id="sg-pool-url" type="text" spellcheck="false" '
-      + '            style="width:100%;box-sizing:border-box;margin-top:2px;padding:3px 6px;border-radius:3px;border:1px solid #30363d;background:#0d1117;color:#c9d1d9;font-size:9px">'
+      + '          <div style="display:flex;gap:4px;margin-top:2px">'
+      + '            <input id="sg-pool-url" type="text" spellcheck="false" '
+      + '              style="flex:1;min-width:0;box-sizing:border-box;padding:3px 6px;border-radius:3px;border:1px solid #30363d;background:#0d1117;color:#c9d1d9;font-size:9px">'
+      + '            <select id="sg-pool-preset" title="号池预设" '
+      + '              style="width:auto;padding:3px 4px;border-radius:3px;border:1px solid #30363d;background:#0d1117;color:#c9d1d9;font-size:9px">'
+      + '              <option value="">预设…</option>'
+      + '              <option value="http://192.168.0.100:15678">默认池 15678</option>'
+      + '              <option value="http://192.168.0.100:15679">兼职池 15679</option>'
+      + '              <option value="https://haochi1.kooldns.cn">备用 haochi1</option>'
+      + '            </select>'
+      + '          </div>'
       + '        </label>'
       + '        <button type="button" id="sg-save-servers" class="sg-outline" style="width:100%;padding:3px 0;font-size:9px">保存地址</button>'
-      + '        <span id="sg-servers-hint" style="font-size:8px;color:#8b949e;line-height:1.4">默认内网；不通自动：号池 haochi1 / OPS kongzhi1</span>'
+      + '        <span id="sg-servers-hint" style="font-size:8px;color:#8b949e;line-height:1.4">默认内网；78池不通自动切 haochi1，79池仅内网；OPS 下发号池来源时以 OPS 为准（约1分钟）</span>'
       + '        <span id="sg-servers-msg" style="font-size:9px;min-height:1.2em"></span>'
       + '      </div>'
       + '    </div>'
       + '  </div>'
 
+      + '  </div>'
+      + '  <div class="sg-modal-ft" id="sg-modal-pager" style="display:none">'
+      + '    <button type="button" id="sg-modal-pg-prev">上一页</button>'
+      + '    <span id="sg-modal-pg-info">1 / 1</span>'
+      + '    <button type="button" id="sg-modal-pg-next">下一页</button>'
+      + '  </div>'
       + '</div>';
 
-    document.body.appendChild(detailPanel);
+    document.body.appendChild(panelModal);
 
-    // 标签页切换
-    var tabBtns = detailPanel.querySelectorAll('.sg-tab-btn');
-    tabBtns.forEach(function (btn) {
-      btn.addEventListener('click', function (e) {
-        e.stopPropagation();
-        switchDetailTab(btn.dataset.tab);
-      });
-    });
+    detailPanel.addEventListener('click', function (e) { e.stopPropagation(); });
+    var card = document.getElementById('sg-modal-card');
+    if (card) card.addEventListener('click', function (e) { e.stopPropagation(); });
+    panelModal.addEventListener('click', function () { closePanelModal(); });
 
-    // 点击面板内部不冒泡到 body
-    detailPanel.addEventListener('click', function (e) {
-      e.stopPropagation();
-    });
+    bindElClick('btn-open-quota', function () { openPanelModal('quota'); });
+    bindElClick('btn-open-logs', function () { openPanelModal('logs'); });
+    bindElClick('btn-open-settings', function () { openPanelModal('settings'); });
+    bindElClick('sg-modal-close', function () { closePanelModal(); });
+    bindElClick('sg-modal-pg-prev', function () { _telPage--; renderTelPage(); });
+    bindElClick('sg-modal-pg-next', function () { _telPage++; renderTelPage(); });
 
-    // 绑定各种按钮事件
     bindDetailEvents();
 
-    // 版本号
     try {
       if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getManifest) {
         var verEl = document.getElementById('v-ext-ver-detail');
@@ -1029,6 +1140,16 @@
       updateTestMonitorUi();
     });
 
+    // 号池预设下拉：选中后自动填到 sg-pool-url 输入框（不立即保存，仍要点保存按钮，避免误改）
+    var poolPresetEl = document.getElementById('sg-pool-preset');
+    if (poolPresetEl) poolPresetEl.addEventListener('change', function () {
+      var v = poolPresetEl.value;
+      if (!v) return;
+      var inputEl = document.getElementById('sg-pool-url');
+      if (inputEl) inputEl.value = v;
+      poolPresetEl.value = '';
+    });
+
     // 服务器
     bindElClick('sg-save-servers', function (e) {
       e.stopPropagation();
@@ -1082,7 +1203,8 @@
         ev.preventDefault();
         try {
           var url = 'https://x.com/' + h + '?lang=ja';
-          if (typeof SchedulerGate !== 'undefined' && SchedulerGate.go) SchedulerGate.go('panel', url);
+          if (typeof SchedulerGate !== 'undefined' && SchedulerGate.goRaw) SchedulerGate.goRaw(url, { force: true });
+          else if (typeof SchedulerGate !== 'undefined' && SchedulerGate.go) SchedulerGate.go('panel', url, { force: true });
           else location.href = url;
         } catch (eGo) {
           try { location.href = 'https://x.com/' + h + '?lang=ja'; } catch (e2) {}
@@ -1160,13 +1282,16 @@
       }
     });
 
-    // 启动/暂停按钮点击
+    // 启动/暂停：主钮是切换。转帖跑着时再点 = 整机暂停（不是点「暂停」文案也会停）
     runBtn.addEventListener('click', function (e) {
       if (didDrag) return;
       e.stopPropagation();
       var d = data || {};
-      var isRunning = !!(d.autoMode || d.runningModule || d.followRunning ||
-        d.chatRunning || d.nurtureRunning || d.repostRunning);
+      var wasRepost = !!d.repostRunning;
+      var wasAuto = !!d.autoMode;
+      // 与 updateRunBtnStatus 一致：勿因 runningModule 残影误走暂停
+      var isRunning = !!(d.autoMode || d.followRunning || d.chatRunning ||
+        d.nurtureRunning || d.repostRunning);
       if (isRunning) {
         try {
           data.autoMode = false;
@@ -1179,7 +1304,8 @@
           saveCache();
           updateRunBtnStatus();
         } catch (eUi) {}
-        sendCmd('sg_scheduler_pause', '暂停');
+        var why = wasRepost && !wasAuto ? 'panel_fab_while_repost' : 'panel_fab';
+        sendCmd('sg_scheduler_pause', '暂停', { reason: why });
       } else {
         sendCmd('sg_scheduler_start', '启动');
       }
@@ -1192,11 +1318,17 @@
       toggleDetailPanel();
     });
 
-    // 点击页面其他地方关闭面板
+    // 点击页面其他地方：先关弹窗，再关短面板
     document.addEventListener('click', function (e) {
+      if (modalOpen && panelModal) {
+        if (panelModal.contains(e.target) && e.target !== panelModal) return;
+        closePanelModal();
+        return;
+      }
       if (!panelOpen || !detailPanel) return;
       if (detailPanel.contains(e.target)) return;
       if (gearBtn.contains(e.target)) return;
+      if (panelModal && panelModal.contains(e.target)) return;
       closeDetailPanel();
     });
 
@@ -1212,6 +1344,11 @@
         if (panelOpen) refreshTelemetryRecent();
       });
     } catch (eTel) {}
+    try {
+      document.addEventListener('matrix-follow-status', function (ev) {
+        try { refreshFollowRuntimeUi(ev && ev.detail); } catch (eFs) {}
+      });
+    } catch (eFs2) {}
     try {
       window.addEventListener('sg-test-monitor-update', function () {
         if (panelOpen) updateTestMonitorUi();
@@ -1365,27 +1502,152 @@
 
     // 引擎状态
     var engEl = document.getElementById('v-quota-engine');
-    if (engEl) {
-      var engText = '空闲';
-      var rm = d.runningModule || '';
-      if (rm === 'follow' || (!rm && d.followRunning && d.engine !== 'chat')) {
-        engText = d.followPhase === 'warmup' ? '养号中' : ('关注轮' + (d.followRound || 1));
-      } else if (rm === 'chat' || d.engine === 'chat' || d.chatRunning) {
-        engText = '私信中';
-      } else if (rm === 'nurture' || d.engine === 'nurture' || d.nurtureRunning) {
-        engText = d.nurtureOnly ? '纯养号' : '养号中';
-      } else if (rm === 'repost' || d.repostRunning) {
-        engText = '转帖中';
-      } else if (d.engine === 'coor' || d.autoMode) {
-        engText = '自动调度';
-      } else if (d.engine === 'manual') {
-        engText = '手动模式';
+    var engText = '空闲';
+    var rm = d.runningModule || '';
+    if (rm === 'follow' || (!rm && d.followRunning && d.engine !== 'chat')) {
+      engText = d.followPhase === 'warmup' ? '养号中' : ('关注轮' + (d.followRound || 1));
+    } else if (rm === 'chat' || d.engine === 'chat' || d.chatRunning) {
+      engText = '私信中';
+    } else if (rm === 'nurture' || d.engine === 'nurture' || d.nurtureRunning) {
+      engText = d.nurtureOnly ? '纯养号' : '养号中';
+    } else if (rm === 'onboarding') {
+      engText = '新号上路';
+      try {
+        var ob = d.onboarding || null;
+        if (ob && ob.phase === 'cloning') engText = '新号·资料克隆';
+        else if (ob && ob.phase === 'reposting') engText = '新号·转帖';
+        else if (ob && ob.phase === 'waiting_source') engText = '新号·等来源';
+      } catch (eOb) {}
+    } else if (d.repostRunning) {
+      // 仅引擎真跑时展示过程态（粘贴/发送中）；停机后勿用过期「正文已粘贴」冒充仍在转帖
+      var rpMsg = '';
+      try { rpMsg = (localStorage.getItem('sg_repost_last_msg') || '').trim(); } catch (eRp) {}
+      engText = rpMsg ? ('转帖·' + rpMsg.slice(0, 18)) : '转帖中';
+    } else if (rm === 'repost') {
+      // runningModule 残影但引擎已停：只认终态文案，过程态丢弃
+      try {
+        var rpIdle = (localStorage.getItem('sg_repost_last_msg') || '').trim();
+        if (rpIdle && /^✓发帖成功|^今日转帖已满|^本轮转帖完成|^转帖已停止/.test(rpIdle)) {
+          engText = rpIdle.slice(0, 20);
+        } else {
+          engText = d.autoMode ? '自动调度' : '空闲';
+          if (rpIdle && /粘贴|发送|复制|打开发帖|抓取/.test(rpIdle)) {
+            try { localStorage.removeItem('sg_repost_last_msg'); } catch (eClr) {}
+          }
+        }
+      } catch (eRp2) {
+        engText = d.autoMode ? '自动调度' : '空闲';
       }
-      engEl.textContent = engText;
+    } else if (d.engine === 'coor' || d.autoMode) {
+      engText = '自动调度';
+      try {
+        var staleRp = (localStorage.getItem('sg_repost_last_msg') || '').trim();
+        if (staleRp && /^✓发帖成功|^今日转帖已满|^本轮转帖完成/.test(staleRp)) {
+          engText = staleRp.slice(0, 20);
+        } else if (staleRp && /粘贴|发送|复制|打开发帖|抓取/.test(staleRp)) {
+          try { localStorage.removeItem('sg_repost_last_msg'); } catch (eClr2) {}
+        }
+      } catch (eStale) {}
+    } else if (d.engine === 'manual') {
+      engText = '手动模式';
+    } else {
+      // 空闲：若刚发成功，显示成功文案而非卡在「正文已粘贴」
+      try {
+        var idleMsg = (localStorage.getItem('sg_repost_last_msg') || '').trim();
+        if (idleMsg && (/^✓发帖成功|^今日转帖已满|^本轮转帖完成|^转帖已停止/.test(idleMsg))) {
+          engText = idleMsg.slice(0, 20);
+        } else if (idleMsg && /粘贴|发送|复制|打开发帖|抓取/.test(idleMsg)) {
+          try { localStorage.removeItem('sg_repost_last_msg'); } catch (eClr3) {}
+        }
+      } catch (eIdle) {}
     }
+    if (engEl) engEl.textContent = engText;
+
+    // 短面板摘要
+    var sumEng = document.getElementById('v-sum-engine');
+    if (sumEng) {
+      var running = !!(d.autoMode || d.followRunning || d.chatRunning || d.nurtureRunning || d.repostRunning);
+      sumEng.textContent = (running ? '运行 · ' : '暂停 · ') + engText;
+    }
+    var sumStop = document.getElementById('v-sum-laststop');
+    if (sumStop) {
+      var ls = d.lastStop || null;
+      if (!ls) {
+        try { ls = JSON.parse(localStorage.getItem('sg_last_stop') || 'null'); } catch (eLs) { ls = null; }
+      }
+      if (ls && ls.reason) {
+        var plain = String(ls.reason || '');
+        if (plain === 'scheduler_pause') plain = '整机暂停';
+        else if (plain === 'co_stop') plain = '模块停:' + (ls.module || '');
+        else if (/frozen|account_frozen/i.test(plain)) plain = '本号冻结';
+        else if (/challenge|cf/i.test(plain)) plain = '验证页保护';
+        else if (/quota/i.test(plain)) plain = '日限满';
+        else if (/pool_empty|empty/i.test(plain)) plain = '号池暂无';
+        var ago = ls.at ? Math.max(0, Math.round((Date.now() - ls.at) / 60000)) : '';
+        sumStop.textContent = plain + (ago !== '' ? ' ·' + ago + '分前' : '');
+        sumStop.title = JSON.stringify(ls);
+      } else {
+        sumStop.textContent = d.whyIdle ? String(d.whyIdle).slice(0, 28) : '-';
+      }
+    }
+    var sumFollow = document.getElementById('v-sum-follow');
+    if (sumFollow) sumFollow.textContent = (d.followedToday || 0) + ' / ' + (d.followLimit || 200);
+    var sumBar = document.getElementById('v-sum-follow-bar');
+    if (sumBar) {
+      var pct2 = d.followLimit > 0 ? Math.min(100, ((d.followedToday || 0) / d.followLimit) * 100) : 0;
+      sumBar.style.width = pct2 + '%';
+    }
+    var sumDay = document.getElementById('v-sum-day');
+    if (sumDay) {
+      var handle = '';
+      try { handle = (localStorage.getItem('matrix_my_handle') || '').replace(/^@/, '').trim(); } catch (eH) {}
+      sumDay.textContent = (handle ? '@' + handle + ' · ' : '') + 'Day ' + (d.dayCount || 1);
+    }
+    var sumRp = document.getElementById('v-sum-repost');
+    if (sumRp) {
+      if (d.repostDaily != null) sumRp.textContent = (d.repostDaily.used || 0) + ' / ' + (d.repostDaily.cap || '-');
+      else sumRp.textContent = '--';
+    }
+
+    try { refreshFollowRuntimeUi(); } catch (eFr) {}
 
     updateNewAcctReadyUi();
     try { refreshRepostTargetsRow(); } catch (e) {}
+  }
+
+  function refreshFollowRuntimeUi(detail) {
+    var blogger = '';
+    var step = '';
+    var msg = '';
+    try {
+      if (detail && detail.blogger != null) blogger = String(detail.blogger || '');
+      else blogger = localStorage.getItem('matrix_current_creator') || '';
+      if (detail && detail.step != null) step = String(detail.step || '');
+      else step = localStorage.getItem('matrix_step') || '';
+      if (detail && detail.message != null) msg = String(detail.message || '');
+      else msg = localStorage.getItem('sg_follow_last_msg') || '';
+    } catch (eR) {}
+    blogger = String(blogger || '').replace(/^@/, '').trim();
+    step = String(step || '').trim() || '-';
+    msg = String(msg || '').trim() || '--';
+
+    var pairs = [
+      ['v-sum-blogger', blogger ? '@' + blogger : '-'],
+      ['v-sum-fstep', step],
+      ['v-quota-blogger', blogger ? '@' + blogger : '-'],
+      ['v-quota-fstep', step]
+    ];
+    for (var i = 0; i < pairs.length; i++) {
+      var el = document.getElementById(pairs[i][0]);
+      if (el) el.textContent = pairs[i][1];
+    }
+    var msgIds = ['v-sum-fmsg', 'v-quota-fmsg'];
+    for (var j = 0; j < msgIds.length; j++) {
+      var mEl = document.getElementById(msgIds[j]);
+      if (!mEl) continue;
+      mEl.textContent = msg;
+      mEl.className = 'sg-follow-msg' + (/隐私|保护号|死号|封禁|🔒|⛔|💀/.test(msg) ? ' sg-follow-msg-warn' : '');
+    }
   }
 
   function renderDetailLogs(d) {

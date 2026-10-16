@@ -1,8 +1,0 @@
-{
-  "name": "unified-scheduler",
-  "private": true,
-  "version": "4.2.64",
-  "scripts": {
-    "test": "node --test test/*.test.js"
-  }
-}

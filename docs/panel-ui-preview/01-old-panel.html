@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>预览 01 · 旧式整块面板</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh;
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background:
+        radial-gradient(ellipse at 20% 10%, rgba(56,139,253,.08), transparent 40%),
+        #0d1117;
+      color: #c9d1d9;
+    }
+    .page-hint {
+      position: fixed; top: 16px; left: 16px; right: 16px; z-index: 1;
+      max-width: 420px; font-size: 12px; color: #8b949e; line-height: 1.5;
+      background: rgba(22,27,34,.9); border: 1px solid #30363d; border-radius: 8px; padding: 10px 12px;
+    }
+    .page-hint a { color: #58a6ff; }
+    .fake-x {
+      position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+      color: #30363d; font-size: 48px; font-weight: 700; letter-spacing: .08em; pointer-events: none;
+    }
+
+    /* ===== 旧式整块面板 ===== */
+    #sg-panel {
+      position: fixed; right: 16px; bottom: 16px; width: 240px; z-index: 10;
+      background: rgba(13,17,23,.94); border: 1px solid #30363d; border-radius: 10px;
+      box-shadow: 0 8px 28px rgba(0,0,0,.45); overflow: hidden;
+      backdrop-filter: blur(8px);
+    }
+    .sg-head {
+      display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+      border-bottom: 1px solid #21262d; cursor: pointer; user-select: none;
+    }
+    .sg-head:hover { background: rgba(48,54,61,.25); }
+    .sg-dot {
+      width: 8px; height: 8px; border-radius: 50%; background: #3fb950;
+      box-shadow: 0 0 0 3px rgba(63,185,80,.2); flex-shrink: 0;
+    }
+    .sg-head-main { flex: 1; min-width: 0; }
+    .sg-title { font-size: 12px; color: #e6edf3; font-weight: 600; }
+    .sg-sub { font-size: 10px; color: #8b949e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .sg-run {
+      border: none; border-radius: 6px; padding: 4px 8px; font-size: 11px; cursor: pointer;
+      background: #da3633; color: #fff;
+    }
+    .sg-run.stopped { background: #238636; }
+    .sg-chevron { color: #8b949e; font-size: 11px; transition: transform .15s; }
+    #sg-panel.collapsed .sg-chevron { transform: rotate(-90deg); }
+    #sg-panel.collapsed .sg-body { display: none; }
+    #sg-panel.collapsed { width: 220px; }
+
+    .sg-body { padding: 8px 10px 10px; }
+    .sg-row {
+      display: flex; justify-content: space-between; align-items: center;
+      font-size: 11px; padding: 3px 0; gap: 8px;
+    }
+    .sg-row .lbl { color: #8b949e; }
+    .sg-row .val { color: #e6edf3; font-variant-numeric: tabular-nums; }
+    .sg-bar {
+      height: 4px; background: #21262d; border-radius: 99px; margin: 4px 0 8px; overflow: hidden;
+    }
+    .sg-bar > i { display: block; height: 100%; width: 26%; background: #238636; border-radius: 99px; }
+    .sg-toggles { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0 8px; }
+    .sg-tog {
+      font-size: 10px; border-radius: 4px; padding: 3px 6px; border: 1px solid #30363d;
+      background: #21262d; color: #8b949e; cursor: pointer;
+    }
+    .sg-tog.on { color: #3fb950; border-color: rgba(63,185,80,.45); background: rgba(35,134,54,.15); }
+    .sg-actions { display: flex; gap: 6px; }
+    .sg-btn {
+      flex: 1; font-size: 10px; padding: 5px 0; border-radius: 6px; cursor: pointer;
+      border: 1px solid #30363d; background: #161b22; color: #c9d1d9;
+    }
+    .sg-btn:hover { border-color: #58a6ff; color: #58a6ff; }
+
+    /* modal */
+    .modal-mask {
+      display: none; position: fixed; inset: 0; z-index: 20;
+      background: rgba(1,4,9,.55); align-items: center; justify-content: center; padding: 16px;
+    }
+    .modal-mask.open { display: flex; }
+    .modal {
+      width: min(360px, 100%); max-height: min(70vh, 480px);
+      background: #161b22; border: 1px solid #30363d; border-radius: 12px;
+      display: flex; flex-direction: column; overflow: hidden;
+      box-shadow: 0 16px 48px rgba(0,0,0,.5);
+    }
+    .modal-hd {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 12px; border-bottom: 1px solid #21262d; font-size: 13px; color: #e6edf3;
+    }
+    .modal-x { background: none; border: none; color: #8b949e; font-size: 18px; cursor: pointer; line-height: 1; }
+    .modal-bd { overflow: auto; padding: 8px 12px; flex: 1; }
+    .log-item {
+      font-size: 11px; padding: 7px 0; border-bottom: 1px solid #21262d; line-height: 1.4;
+    }
+    .log-item .t { color: #6e7681; margin-right: 6px; }
+    .log-item.warn { color: #d29922; }
+    .log-item.err { color: #f85149; }
+    .modal-ft {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 8px 12px; border-top: 1px solid #21262d; font-size: 11px; color: #8b949e;
+    }
+    .modal-ft button {
+      font-size: 11px; padding: 4px 10px; border-radius: 6px; cursor: pointer;
+      border: 1px solid #30363d; background: #0d1117; color: #c9d1d9;
+    }
+    .modal-ft button:disabled { opacity: .4; cursor: not-allowed; }
+  </style>
+</head>
+<body>
+  <div class="page-hint">
+    <strong>方案 01 · 旧式整块</strong><br>
+    点标题条收起/展开；「日志」「配额明细」开弹窗翻页。
+    <a href="index.html">← 返回索引</a>
+  </div>
+  <div class="fake-x">X</div>
+
+  <div id="sg-panel">
+    <div class="sg-head" id="btn-toggle-collapse" title="收起/展开">
+      <span class="sg-dot"></span>
+      <div class="sg-head-main">
+        <div class="sg-title">智能调度 · @demo_acct</div>
+        <div class="sg-sub">运行中 · 关注 · Day3 · 12/47</div>
+      </div>
+      <button type="button" class="sg-run" id="btn-run" title="启停">停</button>
+      <span class="sg-chevron">▾</span>
+    </div>
+    <div class="sg-body">
+      <div class="sg-row"><span class="lbl">今日关注</span><span class="val">12 / 47</span></div>
+      <div class="sg-bar"><i></i></div>
+      <div class="sg-row"><span class="lbl">私信</span><span class="val">歇 · 交友池</span></div>
+      <div class="sg-row"><span class="lbl">转帖</span><span class="val">1 / 2 · 来源 3</span></div>
+      <div class="sg-toggles">
+        <button type="button" class="sg-tog on">养号</button>
+        <button type="button" class="sg-tog on">关注</button>
+        <button type="button" class="sg-tog on">私信</button>
+        <button type="button" class="sg-tog on">转帖</button>
+      </div>
+      <div class="sg-actions">
+        <button type="button" class="sg-btn" data-open="quota">配额明细</button>
+        <button type="button" class="sg-btn" data-open="logs">日志</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-mask" id="modal">
+    <div class="modal">
+      <div class="modal-hd">
+        <span id="modal-title">日志</span>
+        <button type="button" class="modal-x" id="modal-close">×</button>
+      </div>
+      <div class="modal-bd" id="modal-list"></div>
+      <div class="modal-ft">
+        <button type="button" id="pg-prev">上一页</button>
+        <span id="pg-info">1 / 1</span>
+        <button type="button" id="pg-next">下一页</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      var PAGE = 8;
+      var logs = [];
+      for (var i = 1; i <= 40; i++) {
+        var kind = i % 9 === 0 ? 'err' : (i % 5 === 0 ? 'warn' : '');
+        var msg = kind === 'err' ? '关注点击未确认 #' + i
+          : kind === 'warn' ? '轻总控短暂超时 #' + i
+          : '已关注目标 user_' + (1000 + i);
+        logs.push({ t: '00:' + String(60 - (i % 60)).padStart(2, '0'), msg: msg, kind: kind });
+      }
+      var quota = [
+        { t: '', msg: '关注 12 / 47（Day3）', kind: '' },
+        { t: '', msg: '私信：歇着 · 话术池 dating', kind: '' },
+        { t: '', msg: '养号点赞今日 28', kind: '' },
+        { t: '', msg: '转帖 1 / 2', kind: '' },
+        { t: '', msg: '来源：@src_a @src_b @src_c', kind: '' },
+        { t: '', msg: '引擎：coor · 阶段 S3', kind: '' },
+        { t: '', msg: '资料克隆：完成', kind: '' },
+        { t: '', msg: '新号就绪：是', kind: '' },
+        { t: '', msg: 'OPS：192.168.0.100:15680', kind: '' },
+        { t: '', msg: '号池：192.168.0.100:15678', kind: '' }
+      ];
+
+      var panel = document.getElementById('sg-panel');
+      document.getElementById('btn-toggle-collapse').addEventListener('click', function (e) {
+        if (e.target.closest('#btn-run')) return;
+        panel.classList.toggle('collapsed');
+      });
+      var runBtn = document.getElementById('btn-run');
+      runBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        var stopped = runBtn.classList.toggle('stopped');
+        runBtn.textContent = stopped ? '启' : '停';
+        document.querySelector('.sg-sub').textContent = stopped
+          ? '已暂停 · 关注 · Day3 · 12/47'
+          : '运行中 · 关注 · Day3 · 12/47';
+        document.querySelector('.sg-dot').style.background = stopped ? '#d29922' : '#3fb950';
+      });
+      document.querySelectorAll('.sg-tog').forEach(function (b) {
+        b.addEventListener('click', function () { b.classList.toggle('on'); });
+      });
+
+      var modal = document.getElementById('modal');
+      var listEl = document.getElementById('modal-list');
+      var titleEl = document.getElementById('modal-title');
+      var infoEl = document.getElementById('pg-info');
+      var prevBtn = document.getElementById('pg-prev');
+      var nextBtn = document.getElementById('pg-next');
+      var items = logs, page = 0, mode = 'logs';
+
+      function render() {
+        var total = Math.max(1, Math.ceil(items.length / PAGE));
+        if (page >= total) page = total - 1;
+        if (page < 0) page = 0;
+        var slice = items.slice(page * PAGE, page * PAGE + PAGE);
+        listEl.innerHTML = slice.map(function (it) {
+          return '<div class="log-item ' + (it.kind || '') + '">'
+            + (it.t ? '<span class="t">' + it.t + '</span>' : '')
+            + it.msg + '</div>';
+        }).join('') || '<div class="log-item">暂无</div>';
+        infoEl.textContent = (page + 1) + ' / ' + total;
+        prevBtn.disabled = page <= 0;
+        nextBtn.disabled = page >= total - 1;
+      }
+      function openModal(m) {
+        mode = m;
+        items = m === 'quota' ? quota : logs;
+        titleEl.textContent = m === 'quota' ? '配额明细' : '运行日志';
+        page = 0;
+        modal.classList.add('open');
+        render();
+      }
+      document.querySelectorAll('[data-open]').forEach(function (b) {
+        b.addEventListener('click', function () { openModal(b.getAttribute('data-open')); });
+      });
+      document.getElementById('modal-close').onclick = function () { modal.classList.remove('open'); };
+      modal.addEventListener('click', function (e) { if (e.target === modal) modal.classList.remove('open'); });
+      prevBtn.onclick = function () { page--; render(); };
+      nextBtn.onclick = function () { page++; render(); };
+    })();
+  </script>
+</body>
+</html>

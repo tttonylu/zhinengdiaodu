@@ -52,13 +52,23 @@
         };
         logs.push(entry);
         if (logs.length > MAX_LOGS) logs.shift();
-        renderLatestLogs();
-        renderStats();
+        // 4.6.119 CPU 优化：面板默认隐藏，隐藏时只留内存日志，打开时 togglePanel 补渲染
+        if (panelVisible) {
+            renderLatestLogs();
+            renderStats();
+        }
         persistStatus();
     }
 
     // ==================== 持久化状态 ====================
+    // 4.6.119 CPU 优化：stats 只是展示计数，防抖写盘（原每条日志一次同步 setItem）
+    var _persistTimer = null;
     function persistStatus() {
+        if (_persistTimer) return;
+        _persistTimer = setTimeout(flushPersist, 3000);
+    }
+    function flushPersist() {
+        if (_persistTimer) { clearTimeout(_persistTimer); _persistTimer = null; }
         try {
             localStorage.setItem(STATUS_KEY, JSON.stringify({
                 stats: stats,
@@ -66,6 +76,7 @@
             }));
         } catch (_) {}
     }
+    try { window.addEventListener('pagehide', flushPersist); } catch (_) {}
 
     function loadStatus() {
         try {
@@ -435,24 +446,32 @@
                 orig.apply(console, arguments);
             } catch (_) {}
             try {
+                var first = arguments[0];
+                // 4.6.119 CPU 优化：快路径——非字符串/非 '[' 开头的日志不可能命中前缀，
+                // 直接返回，避免对每条不相关日志做 Array.slice/map/JSON.stringify/join
+                if (typeof first !== 'string' || first.charAt(0) !== '[') return;
+
+                var isChatTag = first.indexOf('[Matrix-Chat]') === 0 ||
+                    first.indexOf('[私信]') === 0 || first.indexOf('[战报]') === 0 ||
+                    first.indexOf('[话术]') === 0 || first.indexOf('[推广链接]') === 0 ||
+                    first.indexOf('[年龄识别]') === 0 ||
+                    first.indexOf('[诊断]') === 0 || first.indexOf('[赶工]') === 0;
+                var isFollowTag = first.indexOf('[Follow]') === 0;
+                var isNurtureTag = first.indexOf('[养号]') === 0 || first.indexOf('[Nurture]') === 0;
+                if (!isChatTag && !isFollowTag && !isNurtureTag) return;
+
                 var args = Array.prototype.slice.call(arguments);
-                var first = args[0] || '';
                 var msg = args.slice(1).map(function(a) {
                     return typeof a === 'object' ? JSON.stringify(a) : String(a);
                 }).join(' ');
 
-                if (typeof first === 'string' && first.indexOf('[Matrix-Chat]') === 0) {
+                if (first.indexOf('[Matrix-Chat]') === 0) {
                     addLog('chat', level, msg || first.replace('[Matrix-Chat]', '').trim());
-                } else if (typeof first === 'string' && (
-                    first.indexOf('[私信]') === 0 || first.indexOf('[战报]') === 0 ||
-                    first.indexOf('[话术]') === 0 || first.indexOf('[推广链接]') === 0 ||
-                    first.indexOf('[年龄识别]') === 0 ||
-                    first.indexOf('[诊断]') === 0 || first.indexOf('[赶工]') === 0
-                )) {
+                } else if (isChatTag) {
                     addLog('chat', level, first + (msg ? ' ' + msg : ''));
-                } else if (typeof first === 'string' && first.indexOf('[Follow]') === 0) {
+                } else if (isFollowTag) {
                     addLog('follow', level, msg || first.replace('[Follow]', '').trim());
-                } else if (typeof first === 'string' && (first.indexOf('[养号]') === 0 || first.indexOf('[Nurture]') === 0)) {
+                } else {
                     addLog('nurture', level, msg || first.replace('[养号]', '').replace('[Nurture]', '').trim());
                 }
             } catch (_) {}

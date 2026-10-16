@@ -1,0 +1,8 @@
+{
+  "requireFollowBackBeforeDm": true,
+  "allowDuplicateFollow": false,
+  "defaultDailyFollowLimit": 200,
+  "defaultDailyDmLimit": 0,
+  "stalledHoursThreshold": 24,
+  "blockedHandles": []
+}

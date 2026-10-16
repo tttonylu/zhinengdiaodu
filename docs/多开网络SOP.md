@@ -16,8 +16,8 @@
 |----|------|
 | 定时 purge | 每档按 `bit_id` → handle → `installationId` 哈希，下次清缓存 **±12–20min** 抖动 |
 | 冷启动 | **已取消** 4 分钟 idle（4.3.9 起开跑即启引擎） |
-| S0 转帖 | 开跑点后 **+0–15min** 种子抖动，避免 06:00 齐跑 |
-| 导航间隔 | 默认 `nav_min_interval_ms=13000`（OPS 可调） |
+| S0 转帖 | 开跑点后 **+0–240min** 种子抖动（可配 `repost_start_jitter_max_min`），避免齐跑卡死 |
+| 导航间隔 | 默认 `nav_min_interval_ms=45000`（OPS 可调；残留 13s 旧默认会被抬到 45s） |
 | 延迟空壳 | `loading_shell` 宽限 ~105s；**首次只 soft reload、不 purge** |
 | 媒体 | **4.4.0 默认禁图**（`media_load_mode=off`；纯 DNR 拦 pbs/video/ton/pbs-mu.twimg.com，无 DOM 硬拦）；转帖/克隆走 fetch 不受影响 |
 | Aw Snap | SW 检测崩溃 title / `chrome-error`（含日文エラー）→ 熔断内 recreate |
@@ -27,7 +27,7 @@
 
 - `media_load_mode`：`off`（默认禁图，纯 DNR）| `on`（放行）— **系统配置 → 调度参数 → 媒体加载**（`auto` 已废弃，按 off 处理）
 - `chat_script_pool`：`dating`（交友）| `job`（兼职粉）— **系统配置 → 调度参数 → 话术池**
-- `nav_min_interval_ms`：多开建议 12000–15000
+- `nav_min_interval_ms`：多开建议 40000–60000（默认 45s）
 
 ## 禁图历史与踩坑记录
 

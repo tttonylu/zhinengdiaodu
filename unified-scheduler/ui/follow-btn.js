@@ -70,8 +70,9 @@
 
     document.body.appendChild(btn);
 
-    // 每 5 秒同步状态
+    // 每 10 秒同步状态（隐藏标签无意义，跳过）
     setInterval(function () {
+      if (document.hidden) return;
       try {
         chrome.runtime.sendMessage({ action: 'sg_scheduler_status' }, function (r) {
           if (!r) return;
@@ -80,6 +81,6 @@
           else { btn.classList.remove('running'); btn.querySelector('.tooltip').textContent = '启动关注'; }
         });
       } catch (e) {}
-    }, 5000);
+    }, 10000);
   }
 })();

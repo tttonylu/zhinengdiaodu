@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>{{ title }} - X 运营轻总控后台</title>
+  <link rel="stylesheet" href="/public/app.css">
+  <style>
+    .cp-tabs{display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap}
+    .cp-tabs a{padding:4px 12px;border:1px solid #30363d;border-radius:14px;font-size:12px;color:#8b949e;text-decoration:none}
+    .cp-tabs a.on{background:#1f6feb;color:#fff;border-color:#1f6feb}
+    .cp-card{border:1px solid #30363d;border-radius:8px;padding:12px;margin-bottom:10px;background:#0d1117}
+    .cp-meta{font-size:12px;color:#8b949e;margin-bottom:6px}
+    .cp-text{white-space:pre-wrap;font-size:14px;line-height:1.7;color:#c9d1d9;margin:6px 0}
+    .cp-imgs{display:flex;gap:8px;margin:8px 0}
+    .cp-imgs img{width:120px;height:120px;object-fit:cover;border-radius:6px;border:1px solid #30363d}
+    .cp-st{display:inline-block;padding:2px 10px;border-radius:10px;font-size:12px}
+    .cp-st-pending{background:#30363d;color:#d29922}
+    .cp-st-approved{background:#1f6feb;color:#fff}
+    .cp-st-claimed{background:#8957e5;color:#fff}
+    .cp-st-posted{background:#238636;color:#fff}
+    .cp-st-failed{background:#f85149;color:#fff}
+    .cp-st-rejected{background:#21262d;color:#8b949e}
+    .cp-unbound{display:inline-block;padding:2px 8px;border-radius:10px;font-size:12px;background:rgba(248,81,73,.15);border:1px solid #f85149;color:#f85149;font-weight:600}
+    .cp-bound{display:inline-block;padding:2px 8px;border-radius:10px;font-size:12px;background:rgba(35,134,54,.15);border:1px solid #238636;color:#3fb950;font-weight:600}
+    .cp-line-badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:12px;background:rgba(137,87,229,.18);border:1px solid #8957e5;color:#d2a8ff;font-weight:600}
+    .cp-persona{display:inline-block;padding:1px 6px;border-radius:8px;font-size:11px;background:#161b22;border:1px solid #30363d;color:#8b949e}
+    .cp-lines-title{font-size:13px;font-weight:700;color:#c9d1d9;margin:0 0 8px}
+    .cp-line-form{display:flex;gap:6px;align-items:center;margin-top:6px;flex-wrap:wrap}
+    .cp-line-form select{background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:4px 8px;border-radius:4px;font-size:12px;min-width:200px}
+    .cp-actions{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+    .cp-actions button,.cp-actions .btn{padding:4px 12px;font-size:12px;border-radius:4px;border:1px solid #30363d;background:#21262d;color:#c9d1d9;cursor:pointer}
+    .cp-actions .go{background:#238636;border-color:#238636;color:#fff}
+    .cp-actions .no{background:#21262d;color:#ff7b72;border-color:#f85149}
+    .cp-edit{width:100%;min-height:90px;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:8px;font-size:13px}
+    .flash-msg{margin:0 0 12px;padding:8px 14px;background:rgba(35,134,54,.15);border:1px solid #238636;border-radius:6px;color:#3fb950;font-size:13px}
+    details summary{cursor:pointer;font-size:12px;color:#8b949e;margin:6px 0}
+  </style>
+</head>
+<body>
+  <header class="shell-header">
+    <h1>X 运营轻总控后台</h1>
+    {% set navActive = 'content' %}
+    {% include 'partials/shell-nav.njk' %}
+  </header>
+  <main class="shell-main">
+    {% if msg %}<div class="flash-msg">{{ msg }}</div>{% endif %}
+
+    <!-- H11 线路绑定面板：模板线路 ↔ 台账发帖号 -->
+    <div class="cp-card" style="margin-bottom:16px">
+      <div class="cp-lines-title">线路绑定（文案模板 → 台账发帖号）</div>
+      {% for ln in lines %}
+      <div class="cp-card cp-line-row">
+        <div class="cp-meta">
+          <strong style="color:#c9d1d9">{{ ln.label }}</strong>
+          &nbsp;<span class="cp-persona">{{ ln.persona }}</span>&nbsp;
+          {% if ln.bound %}
+          <span class="cp-bound">已绑定发帖号</span>
+          {% else %}
+          <span class="cp-unbound">未绑定</span>
+          <span class="cp-meta">（去台账给账号勾「发帖号」标签后再绑定）</span>
+          {% endif %}
+        </div>
+        <div class="cp-meta">绑定账号：@{{ ln.account_handle or '（未设置）' }}</div>
+        <form method="post" action="/api/content/lines/bind" class="cp-line-form">
+          <input type="hidden" name="persona" value="{{ ln.persona }}">
+          <select name="account_handle">
+            {% for h in posterOptions %}
+            <option value="{{ h }}" {{ 'selected' if h|lower == ln.account_handle|lower else '' }}>@{{ h }}</option>
+            {% endfor %}
+          </select>
+          <button type="submit" class="btn-save">保存绑定</button>
+        </form>
+      </div>
+      {% endfor %}
+    </div>
+
+    <div class="cp-tabs">
+      <a href="/content{% if status %}?status={{ status }}{% endif %}" class="{{ 'on' if not lineFilter else '' }}">全部线路</a>
+      {% for ln in lines %}
+      <a href="/content?line={{ ln.persona }}{% if status %}&status={{ status }}{% endif %}" class="{{ 'on' if lineFilter == ln.persona else '' }}">{{ ln.label }}</a>
+      {% endfor %}
+    </div>
+
+    <div class="cp-tabs">
+      {% for s, label in STATUS %}
+      <a href="/content?status={{ s }}" class="{{ 'on' if status == s else '' }}">{{ label }} {{ counts[s] }}</a>
+      {% endfor %}
+      <a href="/content" class="{{ 'on' if not status else '' }}">全部</a>
+    </div>
+
+    <form method="get" action="/content" style="margin-bottom:14px;font-size:13px">
+      <input type="hidden" name="status" value="{{ status }}">
+      <label>日期 <input type="date" name="date" value="{{ date }}" style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:3px 6px;border-radius:4px"></label>
+      <label style="margin-left:8px">账号 <input type="text" name="handle" value="{{ handle }}" placeholder="handle" style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:3px 6px;border-radius:4px"></label>
+      <button type="submit" class="btn-save">筛选</button>
+    </form>
+
+    <!-- 批量批准：空表单放顶部，卡片内 checkbox 用 form 属性关联（禁止嵌套 form） -->
+    <form method="post" action="/content/approve" id="batchApproveForm">
+      {% if items.length and (status == '' or status == 'pending' or status == 'failed') %}
+      <p><button type="submit" class="btn-save">批准所有勾选内容</button>
+      <span class="cp-meta">（待审/失败卡片的勾选框默认选中，可取消）</span></p>
+      {% endif %}
+    </form>
+
+      {% for it in items %}
+      <div class="cp-card">
+        <div class="cp-meta">
+          <span class="cp-st cp-st-{{ it.status }}">{{ it.status_label }}</span>
+          {% if it.persona %}&nbsp;<span class="cp-line-badge">{{ lineLabelBy[it.persona] or it.persona }}</span>&nbsp;{% endif %}
+          @{{ it.account_handle }}（{{ it.persona }}）&nbsp;
+          {% if not it.poster_bound %}<span class="cp-unbound" title="该账号未在台账注册为发帖号（无 post_only 标签或已封禁），批准也不会被插件领取">未绑定发帖号</span>&nbsp;{% endif %}
+          JST {{ it.scheduled_jst_at }} · {{ it.source }} · #{{ it.id }}
+          {% if it.fail_reason %}&nbsp;<span style="color:#f85149">失败原因：{{ it.fail_reason }}</span>{% endif %}
+        </div>
+        <div class="cp-text">{{ it.text }}</div>
+        {% if it.media_urls.length %}
+        <div class="cp-imgs">{% for u in it.media_urls %}<img src="{{ u }}" alt="img">{% endfor %}</div>
+        {% endif %}
+        <div class="cp-actions">
+          {% if it.status in ['pending','failed'] %}
+          <label style="font-size:12px;color:#8b949e"><input type="checkbox" name="ids" value="{{ it.id }}" form="batchApproveForm" checked> 加入批量批准</label>
+          {% endif %}
+          {% if it.status == 'pending' %}
+          <button type="submit" form="batchEdit{{ it.id }}" class="go">批准</button>
+          <button type="submit" form="batchReject{{ it.id }}">拒绝</button>
+          {% endif %}
+          {% if it.status == 'failed' %}
+          <button type="submit" form="retry{{ it.id }}" class="go">重置待发</button>
+          {% endif %}
+          {% if it.status in ['approved','claimed'] %}
+          <button type="submit" form="reject{{ it.id }}">撤回拒绝</button>
+          {% endif %}
+          <button type="submit" form="del{{ it.id }}" class="no">删除</button>
+        </div>
+        <details>
+          <summary>编辑文案/时间</summary>
+          <form method="post" action="/content/{{ it.id }}/edit" id="edit{{ it.id }}">
+            <textarea name="text" class="cp-edit">{{ it.text }}</textarea>
+            <div style="margin-top:6px">
+              <input type="datetime-local" name="scheduled_jst_at" value="{{ it.scheduled_jst_at }}"
+                style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:3px 6px;border-radius:4px">
+              <span class="cp-meta">（日本时间）</span>
+              <button type="submit" class="btn-save">保存</button>
+            </div>
+          </form>
+        </details>
+      </div>
+      <!-- 单条隐藏表单 -->
+      <form id="batchEdit{{ it.id }}" method="post" action="/content/approve" style="display:none"><input type="hidden" name="ids" value="{{ it.id }}"></form>
+      <form id="batchReject{{ it.id }}" method="post" action="/content/{{ it.id }}/reject" style="display:none"></form>
+      <form id="retry{{ it.id }}" method="post" action="/content/{{ it.id }}/retry" style="display:none"></form>
+      <form id="reject{{ it.id }}" method="post" action="/content/{{ it.id }}/reject" style="display:none"></form>
+      <form id="del{{ it.id }}" method="post" action="/content/{{ it.id }}/delete" style="display:none"
+            onsubmit="return confirm('确定删除 #{{ it.id }}？')"></form>
+      {% else %}
+      <div class="cp-card muted" style="text-align:center;padding:24px">暂无内容</div>
+      {% endfor %}
+  </main>
+</body>
+</html>

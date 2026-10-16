@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>插件面板 UI 预览 · 三版对比</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: #0d1117; color: #c9d1d9; min-height: 100vh; padding: 32px 20px 48px;
+    }
+    h1 { font-size: 22px; margin: 0 0 8px; color: #e6edf3; }
+    .sub { color: #8b949e; font-size: 13px; margin-bottom: 28px; line-height: 1.5; }
+    .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); max-width: 960px; }
+    a.card {
+      display: block; text-decoration: none; color: inherit;
+      background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 18px 16px;
+      transition: border-color .15s, transform .15s;
+    }
+    a.card:hover { border-color: #58a6ff; transform: translateY(-2px); }
+    .tag { display: inline-block; font-size: 11px; color: #58a6ff; background: rgba(56,139,253,.12);
+      border: 1px solid rgba(56,139,253,.35); border-radius: 999px; padding: 2px 8px; margin-bottom: 10px; }
+    .card h2 { font-size: 16px; margin: 0 0 8px; color: #e6edf3; }
+    .card p { margin: 0; font-size: 13px; color: #8b949e; line-height: 1.5; }
+    .note { margin-top: 28px; max-width: 960px; font-size: 12px; color: #6e7681; line-height: 1.6; }
+  </style>
+</head>
+<body>
+  <h1>智能调度 · 插件面板 UI 预览</h1>
+  <p class="sub">三版均为静态假数据，可点收起/展开与弹窗翻页。选定一版后告诉我编号，再改真实 <code>panel.js</code>。</p>
+  <div class="grid">
+    <a class="card" href="01-old-panel.html">
+      <span class="tag">方案 01</span>
+      <h2>旧式整块面板</h2>
+      <p>右下角常驻整块；收起只留标题条；展开短分区；日志/配额进弹窗翻页。</p>
+    </a>
+    <a class="card" href="02-dock-strip.html">
+      <span class="tag">方案 02</span>
+      <h2>短状态条</h2>
+      <p>底部常驻一行状态；点展开出短抽屉；长列表只在弹窗里翻页。</p>
+    </a>
+    <a class="card" href="03-fab-short.html">
+      <span class="tag">方案 03</span>
+      <h2>双圆钮改短</h2>
+      <p>保留现网启停+齿轮；详情面板更矮；日志/配额仅弹窗翻页。</p>
+    </a>
+  </div>
+  <p class="note">路径：docs/panel-ui-preview/ · 用浏览器直接打开即可，无需服务器。</p>
+</body>
+</html>

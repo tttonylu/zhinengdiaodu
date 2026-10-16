@@ -129,7 +129,18 @@ var TimeUtil = (function () {
     }
   }
 
-  /** 读 sg_stage_policy.chatHours；产品默认 dating 08:00–18:00；job 池硬窗北京 10:00–19:00 */
+  /** 账号级上班/下班覆盖（H10）：OPS sg_account_config.work_hours 任一侧有值 = 有账号级私信窗 */
+  function hasAccountWorkHoursOverride() {
+    try {
+      var ac = JSON.parse(localStorage.getItem('sg_account_config') || '{}');
+      var wh = ac && ac.work_hours;
+      return !!(wh && (wh.work_start || wh.work_end));
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /** 读 sg_stage_policy.chatHours；产品默认 dating 08:00–18:00；job 池 OPS 下发优先（H10 账号级下班时间=私信停止），无下发兜底硬窗 10:00–19:00 */
   function readChatHours() {
     if (isTest24h()) return { startH: 0, startM: 0, endH: 24, endM: 0 };
     var out = { startH: 8, startM: 0, endH: 18, endM: 0 };
@@ -145,9 +156,9 @@ var TimeUtil = (function () {
         };
       }
     } catch (e) {}
-    // 兼职粉：北京时间（Asia/Shanghai）硬窗 10:00–19:00；19:00 起硬停，留到次日
-    // inRange 为 [start, end)，故 end=19:00 时 19:00 起不在窗内
-    if (isJobScriptPool()) {
+    // 兼职粉：北京时间（Asia/Shanghai）；有账号级上下班覆盖 → 信 OPS 下发（已按号覆盖 chatHours）；
+    // 无覆盖 → 兜底硬窗 10:00–19:00（19:00 起硬停，留到次日）；inRange 为 [start, end)
+    if (isJobScriptPool() && !hasAccountWorkHoursOverride()) {
       out.startH = 10;
       out.startM = 0;
       out.endH = 19;
@@ -180,10 +191,10 @@ var TimeUtil = (function () {
     return inRange(h.startH, h.startM, h.endH, h.endM);
   }
 
-  /** 定格点：上海时间；dating 17:00；job 对齐私信硬停 19:00（不停窗内破冰）；24h 测试永不定格 */
+  /** 定格点：上海时间；dating 17:00；job 对齐私信硬停点（H10 账号级下班时间，无覆盖时 19:00；不停窗内破冰）；24h 测试永不定格 */
   function chatFreezeMinutes() {
     if (isTest24h()) return 24 * 60;
-    if (isJobScriptPool()) return 19 * 60;
+    if (isJobScriptPool()) return chatStopMinutes();
     return 17 * 60;
   }
 
@@ -207,6 +218,57 @@ var TimeUtil = (function () {
     return !isWithinChatHours();
   }
 
+  /**
+   * 4.6.82：软窗「最后一次进」起点 = 私信下班点前 30 分（兼职 18:30；dating 17:30）。
+   * 该时刻后当天只允许再进一次带私信的软窗。
+   */
+  function softLastEntryStartMinutes() {
+    if (isTest24h()) return 24 * 60;
+    return Math.max(0, chatStopMinutes() - 30);
+  }
+
+  /**
+   * 4.6.82：软窗私信延伸硬停 = 私信下班点后 30 分（兼职 19:30；dating 18:30）。
+   * 已进窗的私信一轮可跑到此点；到点停 chat→只养号。
+   */
+  function softChatExtendEndMinutes() {
+    if (isTest24h()) return 24 * 60;
+    return Math.min(24 * 60, chatStopMinutes() + 30);
+  }
+
+  function isPastSoftLastEntryStart(optNow) {
+    if (isTest24h()) return false;
+    var p = shanghaiParts(optNow);
+    if (!p) return false;
+    return p.minutes >= softLastEntryStartMinutes();
+  }
+
+  function isPastSoftChatExtendEnd(optNow) {
+    if (isTest24h()) return false;
+    var p = shanghaiParts(optNow);
+    if (!p) return false;
+    return p.minutes >= softChatExtendEndMinutes();
+  }
+
+  /** 当前是否处于 [私信下班, 延伸硬停) —— 仅已进软窗续跑用 */
+  function isWithinSoftChatExtend(optNow) {
+    if (isTest24h()) return false;
+    var p = shanghaiParts(optNow);
+    if (!p) return false;
+    var stop = chatStopMinutes();
+    var ext = softChatExtendEndMinutes();
+    return p.minutes >= stop && p.minutes < ext;
+  }
+
+  /** 今日上海墙钟「延伸硬停」对应的 Date.now 时刻（跨日粗算：用分钟差） */
+  function softChatExtendEndMs(optNow) {
+    if (isTest24h()) return 0;
+    var p = shanghaiParts(optNow);
+    if (!p) return 0;
+    var now = optNow != null ? new Date(optNow).getTime() : Date.now();
+    return now + (softChatExtendEndMinutes() - p.minutes) * 60000;
+  }
+
   /** 赶工窗：已停用（产品改为软风控短扫，过点不赶债） */
   function isChatRushWindow() {
     return false;
@@ -228,6 +290,12 @@ var TimeUtil = (function () {
     chatStopMinutes: chatStopMinutes,
     isPastChatFreeze: isPastChatFreeze,
     isPastChatStop: isPastChatStop,
+    softLastEntryStartMinutes: softLastEntryStartMinutes,
+    softChatExtendEndMinutes: softChatExtendEndMinutes,
+    isPastSoftLastEntryStart: isPastSoftLastEntryStart,
+    isPastSoftChatExtendEnd: isPastSoftChatExtendEnd,
+    isWithinSoftChatExtend: isWithinSoftChatExtend,
+    softChatExtendEndMs: softChatExtendEndMs,
     isChatRushWindow: isChatRushWindow
   };
   if (typeof window !== 'undefined') window.TimeUtil = api;

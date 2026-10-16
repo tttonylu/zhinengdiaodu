@@ -298,54 +298,78 @@
     }
 
     // ==================== 注入按钮 ====================
+    // 4.6.119：抽出单条处理，供 MutationObserver 增量调用（避免每次全文档 querySelectorAll）
+    function injectArticle(article) {
+        if (!article || article.getAttribute(CONFIG.processedAttr)) return;
+        article.setAttribute(CONFIG.processedAttr, 'true');
+
+        let handle = null;
+        let targetElement = null;
+
+        const avatarLink = article.querySelector('a[href^="/"][role="link"][data-testid="Tweet-User-Avatar"]');
+        if (avatarLink) {
+            handle = extractHandleFromUrl(avatarLink.getAttribute('href'));
+            targetElement = avatarLink;
+        }
+
+        if (!handle) {
+            const userNameArea = article.querySelector('[data-testid="User-Name"]');
+            if (userNameArea) {
+                const nameLink = userNameArea.querySelector('a[href^="/"]');
+                if (nameLink) {
+                    handle = extractHandleFromUrl(nameLink.getAttribute('href'));
+                    targetElement = nameLink;
+                }
+            }
+        }
+
+        if (!handle) {
+            const allLinks = article.querySelectorAll('a[href^="/"]');
+            for (let link of allLinks) {
+                const href = link.getAttribute('href');
+                if (href && /^\/[a-zA-Z0-9_]+$/.test(href)) {
+                    const possibleHandle = extractHandleFromUrl(href);
+                    if (possibleHandle) {
+                        handle = possibleHandle;
+                        targetElement = link;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (handle && targetElement) {
+            const parent = targetElement.closest('[data-testid="User-Name"]') || targetElement.parentElement;
+            if (parent && !parent.querySelector(`.${CONFIG.buttonClass}`)) {
+                const btn = createPushButton(handle);
+                targetElement.insertAdjacentElement('afterend', btn);
+            }
+        }
+    }
+
+    function injectUserCell(cell) {
+        if (!cell || cell.getAttribute('data-matrix-push-processed')) return;
+        cell.setAttribute('data-matrix-push-processed', 'true');
+
+        const profileLink = cell.querySelector('a[href^="/"][role="link"]');
+        if (profileLink) {
+            const handle = extractHandleFromUrl(profileLink.getAttribute('href'));
+            if (handle) {
+                const userNameArea = cell.querySelector('[data-testid="User-Name"]');
+                if (userNameArea && !userNameArea.querySelector(`.${CONFIG.buttonClass}`)) {
+                    const btn = createPushButton(handle);
+                    userNameArea.appendChild(btn);
+                } else if (!cell.querySelector(`.${CONFIG.buttonClass}`)) {
+                    const btn = createPushButton(handle);
+                    cell.appendChild(btn);
+                }
+            }
+        }
+    }
+
     function injectButtonsToTweets() {
         const articles = document.querySelectorAll('article[data-testid="tweet"]:not([data-matrix-push-processed])');
-        articles.forEach(article => {
-            article.setAttribute(CONFIG.processedAttr, 'true');
-
-            let handle = null;
-            let targetElement = null;
-
-            const avatarLink = article.querySelector('a[href^="/"][role="link"][data-testid="Tweet-User-Avatar"]');
-            if (avatarLink) {
-                handle = extractHandleFromUrl(avatarLink.getAttribute('href'));
-                targetElement = avatarLink;
-            }
-
-            if (!handle) {
-                const userNameArea = article.querySelector('[data-testid="User-Name"]');
-                if (userNameArea) {
-                    const nameLink = userNameArea.querySelector('a[href^="/"]');
-                    if (nameLink) {
-                        handle = extractHandleFromUrl(nameLink.getAttribute('href'));
-                        targetElement = nameLink;
-                    }
-                }
-            }
-
-            if (!handle) {
-                const allLinks = article.querySelectorAll('a[href^="/"]');
-                for (let link of allLinks) {
-                    const href = link.getAttribute('href');
-                    if (href && /^\/[a-zA-Z0-9_]+$/.test(href)) {
-                        const possibleHandle = extractHandleFromUrl(href);
-                        if (possibleHandle) {
-                            handle = possibleHandle;
-                            targetElement = link;
-                            break;
-                        }
-                    }
-                }
-            }
-
-            if (handle && targetElement) {
-                const parent = targetElement.closest('[data-testid="User-Name"]') || targetElement.parentElement;
-                if (parent && !parent.querySelector(`.${CONFIG.buttonClass}`)) {
-                    const btn = createPushButton(handle);
-                    targetElement.insertAdjacentElement('afterend', btn);
-                }
-            }
-        });
+        articles.forEach(injectArticle);
     }
 
     function injectButtonToProfile() {
@@ -386,8 +410,65 @@
         });
     }
 
+    // ==================== MutationObserver 驱动扫描 ====================
+    function isRelevantNode(node) {
+        if (!(node instanceof Element)) return false;
+        if (node.matches('article[data-testid="tweet"], [data-testid="UserCell"], [data-testid="UserName"]')) return true;
+        return !!(node.querySelector('article[data-testid="tweet"], [data-testid="UserCell"], [data-testid="UserName"]'));
+    }
+
+    // 4.6.119 CPU 优化：observer 只收集新增节点，节流后做范围注入，
+    // 不再对整个 document 跑 querySelectorAll（X 时间线高频 DOM 变更时差异显著）
+    let _pushBloggerThrottleTimer = null;
+    let _pendingNodes = [];
+    function scheduleProcess(node) {
+        if (_pendingNodes.length < 200) _pendingNodes.push(node);
+        if (_pushBloggerThrottleTimer) return;
+        _pushBloggerThrottleTimer = setTimeout(() => {
+            _pushBloggerThrottleTimer = null;
+            const nodes = _pendingNodes;
+            _pendingNodes = [];
+            for (const node of nodes) {
+                try {
+                    if (!node || !node.isConnected) continue;
+                    if (node.matches && node.matches('article[data-testid="tweet"]')) injectArticle(node);
+                    if (node.matches && node.matches('[data-testid="UserCell"]')) injectUserCell(node);
+                    if (node.matches && node.matches('[data-testid="UserName"]')) injectButtonToProfile();
+                    const innerArticles = node.querySelectorAll ? node.querySelectorAll('article[data-testid="tweet"]:not([data-matrix-push-processed])') : [];
+                    innerArticles.forEach(injectArticle);
+                    const innerCells = node.querySelectorAll ? node.querySelectorAll('[data-testid="UserCell"]:not([data-matrix-push-processed])') : [];
+                    innerCells.forEach(injectUserCell);
+                } catch (e) {}
+            }
+            // 新增的 UserName 可能是资料页头部（全文档仅一个，函数自带 processed 早退，成本极低）
+            try { injectButtonToProfile(); } catch (e) {}
+        }, 800);
+    }
+
+    function onMutation(mutations) {
+        if (document.hidden) return;
+        for (const mutation of mutations) {
+            for (const node of mutation.addedNodes) {
+                if (isRelevantNode(node)) {
+                    scheduleProcess(node);
+                    return;
+                }
+            }
+        }
+    }
+
+    let _pushObserver = null;
+    function startPushObserver() {
+        if (_pushObserver) return;
+        const target = document.body || document.documentElement;
+        if (!target) return;
+        _pushObserver = new MutationObserver(onMutation);
+        _pushObserver.observe(target, { childList: true, subtree: true });
+    }
+
     // ==================== 主循环 ====================
     function main() {
+        if (document.hidden) return;
         injectButtonsToTweets();
         if (window.location.pathname.match(/^\/[a-zA-Z0-9_]+$/)) {
             injectButtonToProfile();
@@ -397,8 +478,9 @@
         }
     }
 
-    setInterval(main, 1500);
-    setTimeout(main, 1000);
+    // 首次初始化 + DOM 增量监听；fallback 每 10s 兜底，后台标签暂停
+    setTimeout(() => { startPushObserver(); main(); }, 1000);
+    setInterval(() => { if (!document.hidden) main(); }, 10000);
 
     // 页面卸载时 flush 一次（防止数据丢失）
     window.addEventListener('beforeunload', () => {

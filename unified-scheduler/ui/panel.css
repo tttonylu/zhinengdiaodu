@@ -125,12 +125,12 @@
   color: #f85149;
 }
 
-/* ==================== 详情浮动面板 ==================== */
+/* ==================== 详情浮动面板（短面板） ==================== */
 .sg-detail-panel {
   position: fixed;
   z-index: 2147483639;
-  width: 280px;
-  max-height: 70vh;
+  width: 220px;
+  max-height: 50vh;
   background: rgba(13, 17, 23, 0.94);
   border: 1px solid rgba(48, 54, 61, 0.9);
   border-radius: 10px;
@@ -147,6 +147,121 @@
 .sg-detail-panel.sg-show {
   display: flex;
   animation: sgPanelFadeIn 0.2s ease-out;
+}
+.sg-detail-short .sg-short-body {
+  padding: 8px 10px 10px;
+  overflow: visible;
+}
+.sg-short-hint {
+  font-size: 10px;
+  color: #6e7681;
+  margin: 4px 0 8px;
+  line-height: 1.4;
+}
+.sg-follow-msg {
+  font-size: 10px;
+  color: #8b949e;
+  line-height: 1.35;
+  max-height: 2.8em;
+  overflow: hidden;
+  margin: 2px 0 6px;
+  word-break: break-all;
+}
+.sg-follow-msg-warn {
+  color: #d29922;
+}
+.sg-short-actions {
+  display: flex;
+  gap: 4px;
+}
+
+/* 配额/日志/设置弹窗 */
+.sg-panel-modal {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 2147483645;
+  background: rgba(1, 4, 9, 0.55);
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+.sg-panel-modal.sg-show {
+  display: flex;
+}
+.sg-modal-card {
+  width: min(360px, 100%);
+  max-height: min(70vh, 520px);
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+  color: #c9d1d9;
+  font-size: 11px;
+}
+.sg-modal-hd {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid #21262d;
+  font-size: 13px;
+  color: #e6edf3;
+  flex-shrink: 0;
+}
+.sg-modal-x {
+  background: none;
+  border: none;
+  color: #8b949e;
+  font-size: 18px;
+  cursor: pointer;
+  line-height: 1;
+  padding: 0 4px;
+}
+.sg-modal-x:hover { color: #e6edf3; }
+.sg-modal-bd {
+  overflow-y: auto;
+  padding: 8px 12px;
+  flex: 1;
+}
+.sg-modal-bd::-webkit-scrollbar { width: 5px; }
+.sg-modal-bd::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
+.sg-modal-ft {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-top: 1px solid #21262d;
+  font-size: 11px;
+  color: #8b949e;
+  flex-shrink: 0;
+}
+.sg-modal-ft button {
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid #30363d;
+  background: #0d1117;
+  color: #c9d1d9;
+}
+.sg-modal-ft button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.sg-tel-recent {
+  font-size: 9px;
+  color: #8b949e;
+  line-height: 1.5;
+  margin-top: 4px;
+}
+.sg-tel-line {
+  padding: 4px 0;
+  border-bottom: 1px solid #21262d;
 }
 
 @keyframes sgPanelFadeIn {
@@ -266,14 +381,16 @@
 }
 
 /* 进度条 */
-.sg-detail-panel .sg-progress {
+.sg-detail-panel .sg-progress,
+.sg-panel-modal .sg-progress {
   height: 3px;
   background: #21262d;
   border-radius: 2px;
   margin: 3px 0 4px;
   overflow: hidden;
 }
-.sg-detail-panel .sg-progress .sg-fill {
+.sg-detail-panel .sg-progress .sg-fill,
+.sg-panel-modal .sg-progress .sg-fill {
   height: 100%;
   background: linear-gradient(90deg, #1d9bf0, #3fb950);
   border-radius: 2px;
@@ -315,32 +432,39 @@
 }
 
 /* 通用按钮 */
-.sg-detail-panel .sg-btns {
+.sg-detail-panel .sg-btns,
+.sg-panel-modal .sg-btns {
   display: flex; gap: 3px; flex-wrap: wrap;
 }
-.sg-detail-panel .sg-btns button {
+.sg-detail-panel .sg-btns button,
+.sg-panel-modal .sg-btns button {
   flex: 1; min-width: 50px; padding: 3px 6px;
   border: none; border-radius: 4px;
   font-size: 9px; font-weight: 600; cursor: pointer;
   transition: all 0.15s;
   font-family: inherit;
 }
-.sg-detail-panel .sg-outline {
+.sg-detail-panel .sg-outline,
+.sg-panel-modal .sg-outline {
   background: transparent;
   border: 1px solid #30363d !important;
   color: #8b949e;
 }
-.sg-detail-panel .sg-outline:hover {
+.sg-detail-panel .sg-outline:hover,
+.sg-panel-modal .sg-outline:hover {
   background: rgba(33, 38, 45, 0.8) !important;
   border-color: #484f58 !important;
 }
 
 /* 通用行 */
-.sg-detail-panel .sg-row {
+.sg-detail-panel .sg-row,
+.sg-panel-modal .sg-row {
   display: flex; justify-content: space-between; padding: 1px 0;
 }
-.sg-detail-panel .sg-row .lbl { color: #8b949e; font-size: 9px; }
-.sg-detail-panel .sg-row .val { font-weight: 600; font-size: 10px; color: #c9d1d9; }
+.sg-detail-panel .sg-row .lbl,
+.sg-panel-modal .sg-row .lbl { color: #8b949e; font-size: 9px; }
+.sg-detail-panel .sg-row .val,
+.sg-panel-modal .sg-row .val { font-weight: 600; font-size: 10px; color: #c9d1d9; }
 
 /* 命令提示 */
 .sg-cmd-msg {
@@ -376,7 +500,10 @@
 /* 响应式：小屏幕 */
 @media (max-width: 480px) {
   .sg-detail-panel {
-    width: 240px;
-    max-height: 60vh;
+    width: 200px;
+    max-height: 55vh;
+  }
+  .sg-modal-card {
+    max-height: 75vh;
   }
 }

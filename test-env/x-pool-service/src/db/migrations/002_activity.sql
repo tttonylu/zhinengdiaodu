@@ -1,0 +1,2 @@
+ALTER TABLE pool_tasks ADD COLUMN tweet_count INTEGER DEFAULT NULL;
+ALTER TABLE pool_tasks ADD COLUMN last_checked_at TEXT DEFAULT NULL;

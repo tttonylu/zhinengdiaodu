@@ -156,7 +156,16 @@
       sessionStorage.setItem(K.SK_PAUSED_TILL, String(Date.now() + stallSec * 1000));
       return false;
     }
+    // 4.6.102：一律走 Gate 节流/排队，禁止裸 href
     try {
+      if (typeof SchedulerGate !== 'undefined' && SchedulerGate.goRaw) {
+        return !!SchedulerGate.goRaw(targetUrl, { force: true });
+      }
+      if (typeof SchedulerGate !== 'undefined' && SchedulerGate.go) {
+        var mod = fromUrl(targetUrl);
+        if (!mod || mod === 'none') mod = 'nurture';
+        return !!SchedulerGate.go(mod === 'profile_clone' ? 'repost' : mod, targetUrl, { force: true });
+      }
       if (typeof SchedulerGate !== 'undefined' && SchedulerGate.prepareLeave) SchedulerGate.prepareLeave();
     } catch (ePrep) {}
     window.location.href = targetUrl;

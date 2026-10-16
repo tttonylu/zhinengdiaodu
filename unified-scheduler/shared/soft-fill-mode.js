@@ -49,10 +49,32 @@
     return true;
   }
 
+  /** 4.6.82：已进软窗且未过延伸硬停 → 私信下班后仍可续跑 chat */
+  function softChatExtendOk(opts) {
+    opts = opts || {};
+    if (String(opts.softRiskMode || '') === 'nurture') return false;
+    if (opts.softRiskChatDone) return false;
+    if (!(Number(opts.softRiskUntil) > Date.now())) return false;
+    var ph = String(opts.softRiskPhase || '');
+    var mode = String(opts.softRiskMode || '');
+    if (ph !== 'chat1' && ph !== 'chat2' && mode !== 'chat_nurture_chat') return false;
+    try {
+      if (typeof TimeUtil === 'undefined') return false;
+      if (TimeUtil.isTest24h && TimeUtil.isTest24h()) return false;
+      if (TimeUtil.isPastSoftChatExtendEnd && TimeUtil.isPastSoftChatExtendEnd()) return false;
+      // 仅 [下班, 延伸硬停) 需要放行；仍在私信时段内走正常 chatTimeOk
+      if (TimeUtil.isWithinSoftChatExtend && TimeUtil.isWithinSoftChatExtend()) return true;
+    } catch (e) {}
+    return false;
+  }
+
   /**
    * @param {object} [opts]
    * @param {number} [opts.day]
    * @param {string} [opts.softRiskMode] 已写入的 sticky nurture
+   * @param {number} [opts.softRiskUntil]
+   * @param {boolean} [opts.softRiskChatDone]
+   * @param {string} [opts.softRiskPhase]
    * @returns {{ mode: 'off'|'nurture_only'|'chat_fill', allowChat: boolean, reason: string, day: number }}
    */
   function resolve(opts) {
@@ -68,6 +90,9 @@
     }
     // 4.3.32：取消私信天数限制，Day1 即可私信（原 day < 3 限制已移除）
     if (!chatTimeOk()) {
+      if (softChatExtendOk(opts)) {
+        return { mode: 'chat_fill', allowChat: true, reason: 'soft_chat_extend', day: day };
+      }
       return { mode: 'nurture_only', allowChat: false, reason: 'outside_chat_hours', day: day };
     }
     return { mode: 'chat_fill', allowChat: true, reason: '', day: day };
@@ -75,7 +100,12 @@
 
   /** 软窗内应走只养号（含 modules.chat=off） */
   function isNurtureOnlyPath(sg) {
-    var r = resolve({ softRiskMode: sg && sg.softRiskMode });
+    var r = resolve({
+      softRiskMode: sg && sg.softRiskMode,
+      softRiskUntil: sg && sg.softRiskUntil,
+      softRiskChatDone: sg && sg.softRiskChatDone,
+      softRiskPhase: sg && sg.softRiskPhase
+    });
     return r.mode !== 'chat_fill';
   }
 

@@ -121,7 +121,7 @@ var RemoteSettings = (function () {
   function onlyJapanese() {
     var t = thresholds();
     if (!t || t.follow_only_japanese === undefined || t.follow_only_japanese === null || t.follow_only_japanese === '') return null;
-    return truthy(t.follow_only_japanese, true);
+    return truthy(t.follow_only_japanese, false);
   }
 
   function antiBanEnabled() {

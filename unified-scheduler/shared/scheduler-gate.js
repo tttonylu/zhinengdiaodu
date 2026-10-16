@@ -138,9 +138,11 @@ var SchedulerGate = (function () {
     try {
       var t = JSON.parse(localStorage.getItem('sg_config_thresholds') || '{}');
       var n = parseInt(t.nav_min_interval_ms, 10);
+      // 4.6.101：残留 13s 旧默认当无效，抬到 45s
+      if (isFinite(n) && n === 13000) return 45000;
       if (isFinite(n) && n >= 2000 && n <= 120000) return n;
     } catch (e) {}
-    return 30000; // 4.6.23：13s→30s，减少连环跳转/握手数
+    return 45000; // 4.6.101：30s→45s，给比特/慢网足够加载再跳
   }
 
   var _lastNavAt = 0;
@@ -148,11 +150,73 @@ var SchedulerGate = (function () {
     _lastNavAt = parseInt(sessionStorage.getItem('sg_last_nav_at') || '0', 10) || 0;
   } catch (e0) { _lastNavAt = 0; }
 
+  var _queuedTimer = null;
+  var _queuedNav = null;
+
   function lastNavAt() { return _lastNavAt || 0; }
 
   function markNav() {
     _lastNavAt = Date.now();
     try { sessionStorage.setItem('sg_last_nav_at', String(_lastNavAt)); } catch (e) {}
+  }
+
+  /** 跳页落地后引擎应等待的截止时间（防未加载完就动作） */
+  function markArriveSettle(ms) {
+    var wait = (typeof ms === 'number' && ms > 0) ? ms : 5000;
+    try {
+      sessionStorage.setItem('sg_nav_settle_until', String(Date.now() + wait));
+    } catch (e) {}
+  }
+
+  function arriveSettleLeftMs() {
+    try {
+      var until = parseInt(sessionStorage.getItem('sg_nav_settle_until') || '0', 10) || 0;
+      return Math.max(0, until - Date.now());
+    } catch (e2) { return 0; }
+  }
+
+  function remainGapMs() {
+    var minGap = navMinIntervalMs();
+    if (!_lastNavAt) return 0;
+    var since = Date.now() - _lastNavAt;
+    return since < minGap ? (minGap - since) : 0;
+  }
+
+  function clearQueuedNav() {
+    if (_queuedTimer) {
+      try { clearTimeout(_queuedTimer); } catch (eC) {}
+    }
+    _queuedTimer = null;
+    _queuedNav = null;
+  }
+
+  function queueNav(name, url, opts, delayMs) {
+    clearQueuedNav();
+    _queuedNav = { name: name || null, url: url, opts: opts || {} };
+    var wait = Math.max(500, delayMs || 0);
+    // 4.6.102：排队期间也占 settle，防止引擎在旧页继续跑
+    markArriveSettle(wait + ((opts && opts.settleMs) || 5000));
+    try {
+      if (typeof Logger !== 'undefined' && Logger.info) {
+        Logger.info('Gate', (name || 'raw') + ' 排队跳页 ' + Math.ceil(wait / 1000) + 's → ' + url);
+      }
+    } catch (eLog) {}
+    _queuedTimer = setTimeout(function () {
+      _queuedTimer = null;
+      var q = _queuedNav;
+      _queuedNav = null;
+      if (!q || !q.url) return;
+      var o = {};
+      try {
+        var src = q.opts || {};
+        for (var k in src) {
+          if (Object.prototype.hasOwnProperty.call(src, k)) o[k] = src[k];
+        }
+      } catch (eCp) {}
+      o.skipThrottle = true;
+      if (q.name) go(q.name, q.url, o);
+      else goRaw(q.url, o);
+    }, wait);
   }
 
   function urlsRoughlySame(a, b) {
@@ -163,9 +227,57 @@ var SchedulerGate = (function () {
     } catch (e) { return false; }
   }
 
+  function executeHref(url, opts) {
+    prepareLeave();
+    markNav();
+    markArriveSettle((opts && opts.settleMs) || (5000 + Math.floor(Math.random() * 2000)));
+    if (opts && opts.replace) window.location.replace(url);
+    else window.location.href = url;
+    return true;
+  }
+
+  /**
+   * 无模块鉴权的节流跳页（PageRouter / 资料克隆等）。
+   * force=true 且撞间隔 → 排队延后跳，返回 true（已受理）。
+   */
+  function goRaw(url, opts) {
+    opts = opts || {};
+    if (!url) return false;
+    try {
+      if (urlsRoughlySame(location.href, url)) {
+        markNav();
+        return true;
+      }
+    } catch (eSame) {}
+    if (!opts.skipThrottle) {
+      var rem = remainGapMs();
+      if (rem > 0) {
+        if (opts.force) {
+          queueNav(null, url, opts, rem);
+          return true;
+        }
+        try {
+          if (typeof Logger !== 'undefined' && Logger.info) {
+            Logger.info('Gate', 'raw 跳页节流 ' + Math.ceil(rem / 1000) + 's → ' + url);
+          }
+        } catch (eL) {}
+        return false;
+      }
+    }
+    try {
+      return executeHref(url, opts);
+    } catch (e2) {
+      return false;
+    }
+  }
+
   function go(name, url, opts) {
     opts = opts || {};
     if (!url) return false;
+    // #region agent log
+    var __dbgMinGap = navMinIntervalMs();
+    var __dbgSince = (_lastNavAt > 0) ? (Date.now() - _lastNavAt) : -1;
+    // #endregion
     if (!canNavigate(name)) {
       try {
         if (typeof Logger !== 'undefined' && Logger.warn) {
@@ -174,6 +286,9 @@ var SchedulerGate = (function () {
           console.warn('[SchedulerGate] blocked nav', name, url);
         }
       } catch (e) {}
+      // #region agent log
+      fetch('http://127.0.0.1:7924/ingest/779b7217-8303-4852-a4fb-c13d7a13aca7',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b0fa6d'},body:JSON.stringify({sessionId:'b0fa6d',runId:'pre-fix',hypothesisId:'H1_H4_H5',location:'scheduler-gate.js:go',message:'nav_blocked_auth',data:{name:String(name||''),url:String(url||'').slice(0,120),force:!!opts.force,minGap:__dbgMinGap,since:__dbgSince},timestamp:Date.now()})}).catch(function(){});
+      // #endregion
       return false;
     }
     try {
@@ -182,25 +297,30 @@ var SchedulerGate = (function () {
         return true;
       }
     } catch (eSame) {}
-    // 慢网多号：整页跳最小间隔，避免 SPA 未就绪连环跳
-    if (!opts.force && isAutoMode()) {
-      var minGap = navMinIntervalMs();
-      var since = Date.now() - (_lastNavAt || 0);
-      if (_lastNavAt > 0 && since < minGap) {
+    // 4.6.102：force 也吃间隔（排队延后），禁止瞬间硬跳压 CPU
+    if (!opts.skipThrottle) {
+      var rem = remainGapMs();
+      if (rem > 0) {
         try {
           if (typeof Logger !== 'undefined' && Logger.info) {
-            Logger.info('Gate', name + ' 跳页节流 ' + Math.ceil((minGap - since) / 1000) + 's → ' + url);
+            Logger.info('Gate', name + (opts.force ? ' Force排队 ' : ' 跳页节流 ') + Math.ceil(rem / 1000) + 's → ' + url);
           }
         } catch (eLog) {}
+        // #region agent log
+        fetch('http://127.0.0.1:7924/ingest/779b7217-8303-4852-a4fb-c13d7a13aca7',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b0fa6d'},body:JSON.stringify({sessionId:'b0fa6d',runId:'pre-fix',hypothesisId:'H1_H4',location:'scheduler-gate.js:go',message:opts.force ? 'nav_force_queued' : 'nav_throttled',data:{name:String(name||''),url:String(url||'').slice(0,120),force:!!opts.force,minGap:__dbgMinGap,since:__dbgSince,remain:rem},timestamp:Date.now()})}).catch(function(){});
+        // #endregion
+        if (opts.force) {
+          queueNav(name, url, opts, rem);
+          return true;
+        }
         return false;
       }
     }
     try {
-      prepareLeave();
-      markNav();
-      if (opts.replace) window.location.replace(url);
-      else window.location.href = url;
-      return true;
+      // #region agent log
+      fetch('http://127.0.0.1:7924/ingest/779b7217-8303-4852-a4fb-c13d7a13aca7',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b0fa6d'},body:JSON.stringify({sessionId:'b0fa6d',runId:'pre-fix',hypothesisId:'H1_H4_H5',location:'scheduler-gate.js:go',message:'nav_execute',data:{name:String(name||''),url:String(url||'').slice(0,120),force:!!opts.force,minGap:__dbgMinGap,since:__dbgSince,path:(function(){try{return location.pathname;}catch(e){return'';}})()},timestamp:Date.now()})}).catch(function(){});
+      // #endregion
+      return executeHref(url, opts);
     } catch (e2) {
       return false;
     }
@@ -222,10 +342,14 @@ var SchedulerGate = (function () {
     canNavigate: canNavigate,
     prepareLeave: prepareLeave,
     go: go,
+    goRaw: goRaw,
     blockReloadInAuto: blockReloadInAuto,
     lastNavAt: lastNavAt,
     navMinIntervalMs: navMinIntervalMs,
-    markNav: markNav
+    markNav: markNav,
+    markArriveSettle: markArriveSettle,
+    arriveSettleLeftMs: arriveSettleLeftMs,
+    remainGapMs: remainGapMs
   };
 
   if (typeof window !== 'undefined') window.SchedulerGate = api;
