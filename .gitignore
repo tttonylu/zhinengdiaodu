@@ -22,6 +22,10 @@ lark-auth-qr.png
 test-env/_*
 test-env/**/_*
 test-env/**/nas_*.sh
+test-env/nas-docker-recover.sh
+test-env/x-ops-console/deploy_ssh.sh
+test-env/x-ops-console/fix_deploy.sh
+test-env/x-ops-console/find_*.sh
 
 # 历史快照与缓存（现网插件只看 unified-scheduler/）
 _archive/
