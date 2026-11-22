@@ -1,0 +1,5 @@
+artifacts/
+node_modules/
+*.log
+mcp-bridge/bridge-config.json
+extension/bridge-config.js

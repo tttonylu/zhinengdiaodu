@@ -34,7 +34,13 @@ const { contentPageRoutes } = require('./routes/pages/content');
 const { mediaDirFromApp } = require('./services/content-media');
 
 function buildApp(options) {
-  const app = Fastify({ logger: false });
+  // 4.6.171 限制并发连接数：Chrome 扩展多进程会开几十条短连接
+  // 直接用 Fastify 原生，listen 后在 server.js 里设置 maxConnections
+  const app = Fastify({
+    logger: false,
+    keepAliveTimeout: 60000,
+    forceCloseConnections: false,
+  });
   const db = createDb(options.dbPath);
   // H11 内容池配图目录：显式配置 > 环境变量 > services/content-media.js 默认值
   const contentMediaDir = mediaDirFromApp({

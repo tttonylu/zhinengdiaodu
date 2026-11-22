@@ -274,10 +274,6 @@ var SchedulerGate = (function () {
   function go(name, url, opts) {
     opts = opts || {};
     if (!url) return false;
-    // #region agent log
-    var __dbgMinGap = navMinIntervalMs();
-    var __dbgSince = (_lastNavAt > 0) ? (Date.now() - _lastNavAt) : -1;
-    // #endregion
     if (!canNavigate(name)) {
       try {
         if (typeof Logger !== 'undefined' && Logger.warn) {
@@ -286,9 +282,6 @@ var SchedulerGate = (function () {
           console.warn('[SchedulerGate] blocked nav', name, url);
         }
       } catch (e) {}
-      // #region agent log
-      fetch('http://127.0.0.1:7924/ingest/779b7217-8303-4852-a4fb-c13d7a13aca7',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b0fa6d'},body:JSON.stringify({sessionId:'b0fa6d',runId:'pre-fix',hypothesisId:'H1_H4_H5',location:'scheduler-gate.js:go',message:'nav_blocked_auth',data:{name:String(name||''),url:String(url||'').slice(0,120),force:!!opts.force,minGap:__dbgMinGap,since:__dbgSince},timestamp:Date.now()})}).catch(function(){});
-      // #endregion
       return false;
     }
     try {
@@ -306,9 +299,6 @@ var SchedulerGate = (function () {
             Logger.info('Gate', name + (opts.force ? ' Force排队 ' : ' 跳页节流 ') + Math.ceil(rem / 1000) + 's → ' + url);
           }
         } catch (eLog) {}
-        // #region agent log
-        fetch('http://127.0.0.1:7924/ingest/779b7217-8303-4852-a4fb-c13d7a13aca7',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b0fa6d'},body:JSON.stringify({sessionId:'b0fa6d',runId:'pre-fix',hypothesisId:'H1_H4',location:'scheduler-gate.js:go',message:opts.force ? 'nav_force_queued' : 'nav_throttled',data:{name:String(name||''),url:String(url||'').slice(0,120),force:!!opts.force,minGap:__dbgMinGap,since:__dbgSince,remain:rem},timestamp:Date.now()})}).catch(function(){});
-        // #endregion
         if (opts.force) {
           queueNav(name, url, opts, rem);
           return true;
@@ -317,9 +307,6 @@ var SchedulerGate = (function () {
       }
     }
     try {
-      // #region agent log
-      fetch('http://127.0.0.1:7924/ingest/779b7217-8303-4852-a4fb-c13d7a13aca7',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b0fa6d'},body:JSON.stringify({sessionId:'b0fa6d',runId:'pre-fix',hypothesisId:'H1_H4_H5',location:'scheduler-gate.js:go',message:'nav_execute',data:{name:String(name||''),url:String(url||'').slice(0,120),force:!!opts.force,minGap:__dbgMinGap,since:__dbgSince,path:(function(){try{return location.pathname;}catch(e){return'';}})()},timestamp:Date.now()})}).catch(function(){});
-      // #endregion
       return executeHref(url, opts);
     } catch (e2) {
       return false;

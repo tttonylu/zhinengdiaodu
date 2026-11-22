@@ -1,4 +1,4 @@
-const { shanghaiNowTs } = require('../utils/shanghai-date');
+const { shanghaiNowTs, shanghaiDateKey } = require('../utils/shanghai-date');
 
 const EXT_KEYS = [
   'engine',
@@ -6,6 +6,7 @@ const EXT_KEYS = [
   'running_module',
   'why_idle',
   'followed_today',
+  'followed_today_date',
   'follow_limit',
   'auto_mode',
   'detail_json',
@@ -145,6 +146,7 @@ function createRuntimeStatusRepo(db) {
         running_module: existing ? (existing.running_module || '') : '',
         why_idle: existing ? (existing.why_idle || '') : '',
         followed_today: existing ? (existing.followed_today || 0) : 0,
+        followed_today_date: existing ? (existing.followed_today_date || null) : null,
         follow_limit: existing ? (existing.follow_limit || 0) : 0,
         auto_mode: existing ? (existing.auto_mode || 0) : 0,
         detail_json: existing ? existing.detail_json : null,
@@ -173,6 +175,16 @@ function createRuntimeStatusRepo(db) {
         const n = parseInt(v, 10);
         return Number.isFinite(n) ? n : 0;
       });
+      setIf('followed_today_date', (v) => {
+        const s = String(v || '').trim();
+        if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+        return shanghaiDateKey();
+      });
+      // 带了 followed_today 但没带 date → 视为上海今日（插件旧版兼容）
+      if (Object.prototype.hasOwnProperty.call(body, 'followed_today')
+        && !Object.prototype.hasOwnProperty.call(body, 'followed_today_date')) {
+        next.followed_today_date = shanghaiDateKey();
+      }
       setIf('follow_limit', (v) => {
         const n = parseInt(v, 10);
         return Number.isFinite(n) ? n : 0;
@@ -205,11 +217,11 @@ function createRuntimeStatusRepo(db) {
       db.prepare(`
         INSERT INTO account_runtime_status (
           x_handle, bot_id, engine, stage, running_module, why_idle,
-          followed_today, follow_limit, auto_mode, detail_json,
+          followed_today, followed_today_date, follow_limit, auto_mode, detail_json,
           last_seen_at, updated_at
         ) VALUES (
           @h, @bot_id, @engine, @stage, @running_module, @why_idle,
-          @followed_today, @follow_limit, @auto_mode, @detail_json,
+          @followed_today, @followed_today_date, @follow_limit, @auto_mode, @detail_json,
           @seen, @seen
         )
         ON CONFLICT(x_handle) DO UPDATE SET
@@ -219,6 +231,7 @@ function createRuntimeStatusRepo(db) {
           running_module = excluded.running_module,
           why_idle = excluded.why_idle,
           followed_today = excluded.followed_today,
+          followed_today_date = excluded.followed_today_date,
           follow_limit = excluded.follow_limit,
           auto_mode = excluded.auto_mode,
           detail_json = excluded.detail_json,
@@ -232,6 +245,7 @@ function createRuntimeStatusRepo(db) {
         running_module: next.running_module,
         why_idle: next.why_idle,
         followed_today: next.followed_today,
+        followed_today_date: next.followed_today_date || shanghaiDateKey(),
         follow_limit: next.follow_limit,
         auto_mode: next.auto_mode,
         detail_json: next.detail_json,

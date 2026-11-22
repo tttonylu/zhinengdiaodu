@@ -140,16 +140,16 @@ var TimeUtil = (function () {
     }
   }
 
-  /** 读 sg_stage_policy.chatHours；产品默认 dating 08:00–18:00；job 池 OPS 下发优先（H10 账号级下班时间=私信停止），无下发兜底硬窗 10:00–19:00 */
+  /** 读 sg_stage_policy.chatHours；产品默认 dating 09:00–18:00；job 池 OPS 下发优先（H10 账号级下班时间=私信停止），无下发兜底硬窗 10:00–19:00 */
   function readChatHours() {
     if (isTest24h()) return { startH: 0, startM: 0, endH: 24, endM: 0 };
-    var out = { startH: 8, startM: 0, endH: 18, endM: 0 };
+    var out = { startH: 9, startM: 0, endH: 18, endM: 0 };
     try {
       var p = JSON.parse(localStorage.getItem('sg_stage_policy') || '{}');
       var ch = (p.chatHours && p.chatHours.start) ? p.chatHours : null;
       if (ch && Array.isArray(ch.start) && Array.isArray(ch.end)) {
         out = {
-          startH: parseInt(ch.start[0], 10) || 8,
+          startH: parseInt(ch.start[0], 10) || 9,
           startM: parseInt(ch.start[1], 10) || 0,
           endH: parseInt(ch.end[0], 10) || 18,
           endM: parseInt(ch.end[1], 10) || 0
@@ -212,7 +212,7 @@ var TimeUtil = (function () {
     return p.minutes >= chatFreezeMinutes();
   }
 
-  /** 是否已过私信硬停：不在私信窗内（跟 chatHours，默认 08–18） */
+  /** 是否已过私信硬停：不在私信窗内（跟 chatHours，默认 09–18） */
   function isPastChatStop() {
     if (isTest24h()) return false;
     return !isWithinChatHours();

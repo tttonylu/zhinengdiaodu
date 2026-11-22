@@ -1,18 +1,20 @@
 ﻿const { createScriptsRepo } = require('../../repositories/scripts-repo');
 
-const TEMPLATE_TYPES = ['icebreaker', 'ad_template', 'kick_message', 'reject_message', 'foreigner_reject'];
+const TEMPLATE_TYPES = ['icebreaker', 'ad_template', 'kick_message', 'final_kick_message', 'reject_message', 'foreigner_reject'];
 
 async function scriptsApiRoutes(app) {
   // Extension-facing: get full script pool payload
-  app.get('/api/scripts/pool', async () => {
+  app.get('/api/scripts/pool', async (request) => {
     const repo = createScriptsRepo(app.db);
-    return repo.getPoolPayload();
+    const pool = request.query.pool || 'dating';
+    return repo.getPoolPayload(pool);
   });
 
   // List all script sets
-  app.get('/api/scripts', async () => {
+  app.get('/api/scripts', async (request) => {
     const repo = createScriptsRepo(app.db);
-    return { ok: true, sets: repo.listFullSets() };
+    const pool = request.query.pool || 'dating';
+    return { ok: true, sets: repo.listFullSets(pool) };
   });
 
   // Get one script set
@@ -26,10 +28,10 @@ async function scriptsApiRoutes(app) {
   // Create or update a script set
   app.post('/api/scripts', async (request) => {
     const repo = createScriptsRepo(app.db);
-    const { set_id, name, description, templates, enabled } = request.body || {};
+    const { set_id, name, description, templates, enabled, pool } = request.body || {};
     if (!set_id) return { ok: false, msg: 'set_id required' };
 
-    repo.upsertSet(set_id, { name, description, enabled });
+    repo.upsertSet(set_id, { name, description, enabled, pool });
     if (templates) {
       for (const [type, content] of Object.entries(templates)) {
         if (TEMPLATE_TYPES.includes(type)) {

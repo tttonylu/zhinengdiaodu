@@ -103,28 +103,29 @@
             warmupLikeMax: 3                                 // 养号每轮最多点赞
         },
 
-        // 养号配置
+        // 养号配置（与 nurture-config / OPS 稀默认对齐）
         nurture: {
             dailyBudget: {
-                likes:     { min: 40, max: 80 },
-                comments:  { min:  3, max:  8 },
-                reposts:   { min:  1, max:  5 },
+                likes:     { min: 12, max: 12 },
+                comments:  { min:  2, max:  2 },
+                reposts:   { min:  0, max:  0 },
                 trends:    { min:  5, max: 10 },
                 profiles:  { min:  2, max:  5 },
-                enters:    { min:  8, max: 12 },
+                enters:    { min:  5, max:  8 },
             },
             hourlyBudget: {
-                likes:     { min:  5, max: 15 },
-                comments:  { min:  0, max:  3 },
-                reposts:   { min:  0, max:  2 },
+                likes:     { min:  2, max:  2 },
+                comments:  { min:  1, max:  1 },
+                reposts:   { min:  0, max:  0 },
                 trends:    { min:  1, max:  2 },
                 profiles:  { min:  0, max:  1 },
                 enters:    { min:  1, max:  2 },
             },
-            actionGapSec:   { min: 10, max: 20 },
-            actionWeights:  { like: 0.55, comment: 0.04, repost: 0.03, trend: 0.04, profile: 0.02, enter: 0.10 },
+            actionGapSec:   { min: 45, max: 90 },
+            actionWeights:  { like: 0.55, comment: 0.015, repost: 0, trend: 0.04, profile: 0.02, enter: 0.10 },
             activeHours:    { start: { hour: 7, minute: 0 }, end: { hour: 21, minute: 0 } },
-            likeCooldownMin: 3,
+            likeCooldownMin: 8,
+            commentCooldownMin: 45,
             segmentMinutes: 15,
         },
 

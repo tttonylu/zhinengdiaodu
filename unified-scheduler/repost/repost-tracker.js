@@ -160,6 +160,10 @@
       if (h && out.indexOf(h) < 0) out.push(h);
     });
     saveJson(TARGETS_KEY, out);
+    try {
+      var cur = getCurrent();
+      if (cur && out.indexOf(cur) < 0) setCurrent('');
+    } catch (eCur) {}
     try { chrome.storage.local.set({ matrix_repost_targets: out }); } catch (e) {}
     // 默认不回写 OPS（后台为准）；仅显式 forcePush 时上传
     if (opts && opts.forcePush) pushTargetsToOps(out);
@@ -321,17 +325,12 @@
   }
 
   /**
-   * 业务日限额（优先于 OPS dailyQuota）：
-   * Day 1–4 → 2 条/天；Day ≥5 → 1 条/天。去重靠 posted/skip ids。
+   * 业务日限额（4.6.167 起）：自动场固定 0 条/天（不拉夜场独占）。
+   * OPS 配额键与账号 daily_repost_limit 仍下发但不再读取。
+   * 用户手动（面板「启动」）发帖不占此配额，走 isManualNoQuota。
    */
   function getDailyQuota() {
-    var cfg = getConfig();
-    var day = getAccountDayCount();
-    var early = Number(cfg.day14Quota);
-    var late = Number(cfg.day5Quota);
-    if (!isFinite(early) || early < 0) early = 2;
-    if (!isFinite(late) || late < 0) late = 1;
-    return day >= 5 ? late : early;
+    return 0;
   }
 
   /** 当日有效上限：日龄配额与 dailyCap（>0）取更严 */
@@ -634,7 +633,17 @@
     return false;
   }
 
+  /** 4.6.168：面板手动启动 → 日程/配额/私信钟全旁路 */
+  function isManualOpen() {
+    try {
+      if (sessionStorage.getItem('sg_repost_manual_slot') === '1') return true;
+      if (sessionStorage.getItem('sg_repost_manual_no_quota') === '1') return true;
+    } catch (e) {}
+    return false;
+  }
+
   function getActiveWindow() {
+    if (isManualOpen()) return { name: 'manual', endH: WINDOW_END_H, endM: WINDOW_END_M };
     // 硬闸：私信时段绝不转帖
     if (isChatTimeNowRt()) return null;
     var st = getAutoStatus();
@@ -689,6 +698,9 @@
       localStorage.setItem(AUTO_STARTED_KEY, String(Date.now()));
     }
     try { sessionStorage.setItem('sg_repost_auto_slot', '1'); } catch (e) {}
+    // 4.6.159：自动场开跑时清掉手动场残旗，防上一轮手动 no_quota 泄漏进自动场
+    try { sessionStorage.removeItem('sg_repost_manual_slot'); } catch (eM) {}
+    try { sessionStorage.removeItem('sg_repost_manual_no_quota'); } catch (eNq) {}
   }
 
   function markAutoDone() {
@@ -767,6 +779,7 @@
     isPastStartClock: isPastStartClock,
     getEveEndHm: getEveEndHm,
     getMornWindow: getMornWindow,
+    isManualOpen: isManualOpen,
     getActiveWindow: getActiveWindow,
     isInRepostWindowNow: isInRepostWindowNow,
     isPastStartTime: isPastStartTime,

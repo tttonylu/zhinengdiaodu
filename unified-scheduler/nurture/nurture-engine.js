@@ -129,7 +129,7 @@
   // ==================== 工具 ====================
   function gapMs() {
     var cfg = NurtureConfig ? NurtureConfig.getCfg() : {};
-    var g = cfg.actionGapSec || { min: 10, max: 20 };
+    var g = cfg.actionGapSec || { min: 45, max: 90 };
     return (g.min + Math.random() * (g.max - g.min)) * 1000;
   }
 
@@ -761,11 +761,11 @@
   }
 
   async function _nr_browseDetailReplies() {
-    var scrolls = _nr_rand(3, 6);
+    var scrolls = _nr_rand(1, 2);
     for (var i = 0; i < scrolls; i++) {
-      window.scrollBy({ top: _nr_rand(300, 700), behavior: 'smooth' });
+      window.scrollBy(0, _nr_rand(120, 280));
       EngineUtils.ping(NAME);
-      await sleep(_nr_rand(1500, 3500));
+      await sleep(_nr_rand(4000, 7000));
     }
   }
 
@@ -826,9 +826,15 @@
   }
 
   function scrollRandomly() {
-    var dir = Math.random() > 0.3 ? 1 : -0.5;
-    var amount = Math.floor(150 + Math.random() * 400) * dir;
-    window.scrollBy({ top: amount, behavior: 'smooth' });
+    var now = Date.now();
+    var last = 0;
+    try { last = parseInt(sessionStorage.getItem('sg_nurture_scroll_at') || '0', 10) || 0; } catch (eLast) {}
+    // 4.6.191：首页虚拟列表不要跟着每个动作平滑滚动。90 秒内最多瞬时挪一小段。
+    if (now - last < 90000) return;
+    try { sessionStorage.setItem('sg_nurture_scroll_at', String(now)); } catch (eSet) {}
+    var dir = Math.random() > 0.3 ? 1 : -0.4;
+    var amount = Math.floor(80 + Math.random() * 160) * dir;
+    window.scrollBy(0, amount);
     EngineUtils.ping(NAME);
   }
 
@@ -1072,6 +1078,11 @@
       // 非活跃时段延长间隔
       var ms = gapMs();
       if (!isInActiveHours()) ms = ms * 2;
+      // 4.6.191：首页养号两拍之间至少 90–150 秒。配置更短时也不要跟着刷时间线。
+      var homePath = window.location.pathname || '';
+      if ((homePath === '/home' || homePath.indexOf('/home/') === 0) && ms < 90000) {
+        ms = 90000 + Math.floor(Math.random() * 60000);
+      }
       tickTimer = EngineUtils.createTimeout(tick, ms);
     }, 800);
   }

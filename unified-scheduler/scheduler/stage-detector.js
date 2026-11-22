@@ -6,8 +6,8 @@
   var DEFAULT_POLICY = {
     // 北京时间 Asia/Shanghai；区间左闭右开；兼职默认 10:00–19:00
     workHours: { start: [10, 0], end: [19, 0] },
-    chatHours:  { start: [8, 0], end: [18, 0] },
-    // 早间渐进：与上班点相同=一上班就可关注（私信仍 08–18）
+    chatHours:  { start: [9, 0], end: [18, 0] },
+    // 早间渐进：与上班点相同=一上班就可关注（私信仍 09–18）
     morningNurtureUntil: [10, 0],
     stages: {
       S0: { priority: [] },
@@ -15,8 +15,8 @@
       S1: { dayMax: 1, priority: ['follow', 'nurture'] },
       // Day≥2 非私信时段：关注+养号（转帖由 A2 非私信独占，不进白天混排）
       S2: { dayMin: 2, priority: ['follow', 'nurture'] },
-      // 4.6.31：取消 S3 日龄门，私信时段即全开（Day1 即可私信）
-      S3: { dayMin: 1, priority: ['chat', 'follow', 'nurture'] },
+      // 4.6.162：Day≥2 才开私信（Day1 禁 chat，仍可关注+养号）
+      S3: { dayMin: 2, priority: ['chat', 'follow', 'nurture'] },
       // S4 已停用，保留字段仅兼容旧配置
       S4: { maxOccupyMin: 30, priority: ['chat'], disabled: true }
     },
@@ -310,13 +310,25 @@
     var s2 = policy.stages.S2 || {};
     var s3 = policy.stages.S3 || {};
     var s1DayMax = (s1.dayMax != null) ? Number(s1.dayMax) : 1;
-    // 4.6.31：S3 不再设日龄门（Day1 即可私信）；忽略 s3.dayMin，防 OPS 旧配置复活闸门
+    // 4.6.162：S3 日龄门；默认 2，且至少 2（防 OPS 旧 dayMin:1 放行 Day1 私信）
+    var s3DayMin = 2;
+    try {
+      var rawMin = (s3.dayMin != null) ? Number(s3.dayMin) : 2;
+      if (!isNaN(rawMin) && rawMin > 0) s3DayMin = Math.max(2, rawMin);
+    } catch (eS3m) { s3DayMin = 2; }
 
     if (!g_isWorkTime) {
       // 4.3.23：关注/养号全天可跑；不再因下班进空 priority 的 S0 静默。
       // 转帖由 A2 在「非私信时段」独占拉起，不依赖空 S0。
       if (inRetreat) {
         return { stage: 'S1', priority: ['nurture'] };
+      }
+      // 4.6.169：私信钟独立于上班钟。交友 09:00 开私信，不必等 workHours 10:00。
+      if (g_isChatTime && dayCount >= s3DayMin) {
+        var pChatOff = (s3.priority || ['chat', 'follow', 'nurture']).concat();
+        if (quotaFull) pChatOff = dropFollow(pChatOff);
+        if (!isNewAccountReady()) pChatOff = dropFollow(pChatOff);
+        return { stage: 'S3', priority: pChatOff };
       }
       if (dayCount <= s1DayMax) {
         var pOff = preferNurtureBeforeFollow(['nurture', 'follow']);
@@ -345,9 +357,8 @@
     var stage;
     var priority;
 
-    // 4.3.32/4.6.31：私信时段直接 S3 全开（Day1 即可私信，不再判日龄）
-    if (g_isChatTime) {
-      // 私信时段：全开；不再进入 S4 独占
+    // 4.6.162：私信时段且 Day≥s3DayMin 才进 S3；Day1 即使在私信时段也走 S1（无 chat）
+    if (g_isChatTime && dayCount >= s3DayMin) {
       stage = 'S3';
       priority = (s3.priority || ['chat', 'follow', 'nurture']).concat();
     } else if (dayCount <= s1DayMax) {
@@ -356,7 +367,7 @@
       // Day1：养号优先排序（软），不再硬挡关注——养号空转会导致整天 0 粉
       priority = preferNurtureBeforeFollow(priority);
     } else {
-      // Day≥2 非私信时段（18:00 后 / 08:00 前）
+      // Day≥2 非私信时段，或未达 S3 日龄的私信时段兜底（无 chat）
       stage = 'S2';
       priority = (s2.priority || ['follow', 'nurture']).concat();
     }

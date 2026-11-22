@@ -80,8 +80,8 @@
           </div>
           <div class="cfg-row">
             <span class="lbl">每日转帖上限</span>
-            <input type="number" name="daily_repost_limit" min="0" max="100" placeholder="留空=全局" value="{{ account.daily_repost_limit or '' }}">
-            <span class="hint">留空=全局配额（Day1-4:{{ effective.thresholds.repost_day14_quota or 2 }}，Day5+:{{ effective.thresholds.repost_day5_quota or 1 }}）；填数字则该号每天发这么多帖</span>
+            <input type="number" name="daily_repost_limit" min="0" max="100" placeholder="留空=全局" value="{{ account.daily_repost_limit or '' }}" disabled>
+            <span class="hint">已锁定：4.6.167 起自动转帖 0 条/天，单号覆盖不再生效；面板手动发帖不占配额</span>
           </div>
           <div class="cfg-row">
             <span class="lbl">上班 / 下班</span>

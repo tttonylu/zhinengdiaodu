@@ -510,10 +510,11 @@
         }
     }
 
-    async function fetchScriptsFromServer() {
+    async function fetchScriptsFromServer(pool) {
+        pool = pool || 'dating';
         try {
             const data = await new Promise((resolve, reject) => {
-                chrome.runtime.sendMessage({ action: "scripts_pool" }, (response) => {
+                chrome.runtime.sendMessage({ action: "scripts_pool", pool: pool }, (response) => {
                     if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
                     else resolve(response);
                 });
@@ -532,21 +533,29 @@
         return ice.indexOf('大人') >= 0 || ice.indexOf('おいくつ') >= 0;
     }
 
-    function applyServerScripts(poolData) {
+    function applyServerScripts(poolData, pool) {
         if (!poolData || !poolData.scripts) return false;
+        pool = pool || 'dating';
+        const lsKey = pool === 'job' ? SCRIPTS_LS_KEY_JOB : SCRIPTS_LS_KEY_DATING;
         try {
-            const raw = localStorage.getItem('dan_scripts');
+            const raw = localStorage.getItem(lsKey);
             let existing = raw ? JSON.parse(raw) : {};
             if (!existing.scripts) existing.scripts = {};
 
-            var localVer = String(existing.version || '0');
-            var serverVer = String(poolData.version || '0');
-            // 本地 JSON bootstrap 2.1+ 时，禁止 OPS 旧池回滚
-            if (existing.imported_from_json && localVer >= '2.1' && serverVer < localVer) {
+            var localVer = parseFloat(existing.version || '0') || 0;
+            var serverVer = parseFloat(poolData.version || '0') || 0;
+            if (pool === 'job') {
+                // job：OPS 整数计数器版本，服务器不新于本地则跳过
+                if (serverVer <= localVer) {
+                    console.log('[话术同步] 跳过(job)：服务器 v' + serverVer + ' <= 本地 v' + localVer);
+                    return false;
+                }
+            } else if (existing.imported_from_json && localVer >= 2.1 && serverVer < localVer) {
+                // 本地 JSON bootstrap 2.1+ 时，禁止 OPS 旧池回滚（数值比较，OPS 版本为整数计数器）
                 console.log('[话术同步] 跳过：服务器 v' + serverVer + ' < 本地 v' + localVer);
                 return false;
             }
-            if (localScriptsHasSoftIce(existing) && !localScriptsHasSoftIce({ scripts: poolData.scripts, templates: poolData.templates })) {
+            if (pool !== 'job' && localScriptsHasSoftIce(existing) && !localScriptsHasSoftIce({ scripts: poolData.scripts, templates: poolData.templates })) {
                 console.log('[话术同步] 跳过：本地已是大人余裕话术，服务器仍为旧版');
                 return false;
             }
@@ -568,10 +577,14 @@
             existing.updated_at = Date.now();
             existing.source = 'server';
 
-            localStorage.setItem('dan_scripts', JSON.stringify(existing));
+            localStorage.setItem(lsKey, JSON.stringify(existing));
             localStorage.setItem(SCRIPTS_SYNC_KEY, String(Date.now()));
+            // 4.6.194：记录已应用版本，供 30min 轮询版本短路（避免无条件重写）
+            try {
+                localStorage.setItem(pool === 'job' ? 'dan_scripts_version_job' : 'dan_scripts_version_dating', String(poolData.version));
+            } catch (eVer) {}
             loadScripts();
-            console.log('[话术同步] ✅ 已从服务器同步 ' + poolData.random_pool.length + ' 套话术');
+            console.log('[话术同步] ✅ 已从服务器同步 ' + (poolData.random_pool ? poolData.random_pool.length : Object.keys(existing.scripts).length) + ' 套话术(' + pool + ')');
             return true;
         } catch (e) {
             console.warn('[话术同步] 应用失败:', e);
@@ -580,9 +593,12 @@
     }
 
     async function syncScriptsFromServer(silent) {
-        const poolData = await fetchScriptsFromServer();
-        if (poolData) {
-            applyServerScripts(poolData);
+        let anyOk = false;
+        const datingData = await fetchScriptsFromServer('dating');
+        if (datingData) { applyServerScripts(datingData, 'dating'); anyOk = true; }
+        const jobData = await fetchScriptsFromServer('job');
+        if (jobData) { applyServerScripts(jobData, 'job'); anyOk = true; }
+        if (anyOk) {
             if (!silent) showToast('✅ 话术已从服务器同步', '#00ba7c');
             return true;
         }
@@ -592,8 +608,23 @@
 
     function startScriptSync() {
         setInterval(async () => {
-            const poolData = await fetchScriptsFromServer();
-            if (poolData) applyServerScripts(poolData);
+            // 4.6.194：版本短路——服务端版本未变时跳过写盘，避免每 30min 无条件覆盖 localStorage
+            const datingData = await fetchScriptsFromServer('dating');
+            if (datingData) {
+                const cachedVer = localStorage.getItem('dan_scripts_version_dating');
+                if (!cachedVer || cachedVer !== String(datingData.version)) {
+                    applyServerScripts(datingData, 'dating');
+                    try { localStorage.setItem('dan_scripts_version_dating', String(datingData.version)); } catch (e) {}
+                }
+            }
+            const jobData = await fetchScriptsFromServer('job');
+            if (jobData) {
+                const cachedVerJob = localStorage.getItem('dan_scripts_version_job');
+                if (!cachedVerJob || cachedVerJob !== String(jobData.version)) {
+                    applyServerScripts(jobData, 'job');
+                    try { localStorage.setItem('dan_scripts_version_job', String(jobData.version)); } catch (e) {}
+                }
+            }
         }, SCRIPTS_SYNC_INTERVAL);
     }
 
@@ -3288,6 +3319,27 @@
             return true;
         }
         try { sessionStorage.removeItem('dan_ice_seek_scroll'); } catch (eSk3) {}
+        // 4.6.155 §C3-11：同目标当日 URL 兜底熔断，禁止「列表找不到→跳资料页→空壳→再找」死循环
+        var fbKey = 'dan_ice_fb_' + String(new Date().toISOString().slice(0, 10));
+        var fbN = 0;
+        try {
+            var fbMap = JSON.parse(sessionStorage.getItem(fbKey) || '{}') || {};
+            fbN = (parseInt(fbMap[handle], 10) || 0) + 1;
+            fbMap[handle] = fbN;
+            sessionStorage.setItem(fbKey, JSON.stringify(fbMap));
+        } catch (eFb) { fbN = 1; }
+        if (fbN > 2) {
+            try {
+                if (typeof SgTelemetry !== 'undefined') {
+                    SgTelemetry.emit('chat.ice_fallback_breaker', { target: handle, count: fbN });
+                }
+            } catch (eFbTel) {}
+            console.warn('[粉丝队列] @' + handle + ' 当日 URL 兜底 ' + fbN + ' 次，熔断跳过');
+            try { iceQueueMark(handle, 'skipped', 'fallback_storm', 'ice'); } catch (eFbMark) {}
+            try { sessionStorage.removeItem('current_target'); } catch (eFbCt) {}
+            try { sessionStorage.removeItem('dan_auto_step'); } catch (eFbSt) {}
+            return false;
+        }
         try {
             if (typeof SgTelemetry !== 'undefined') {
                 SgTelemetry.emit('chat.ice_open_url_fallback', { target: handle, seek: seek });
@@ -4376,7 +4428,27 @@
         });
     }
 
-    /** 滚动并等待会话消息 DOM 数量稳定（虚拟列表加载） */
+    /** 4.6.155 §C3-10：会话面核验——把「没扫到」与「扫到没回复」分开统计 */
+    function auditChatSurface(targetHandle, phase, quiet) {
+        var out = {
+            target: normalizeChatHandle(targetHandle || '') || '',
+            phase: phase || '',
+            path: '',
+            on_conv: false,
+            nodes: 0,
+            composer: false
+        };
+        try { out.path = String(window.location.pathname || '').slice(0, 80); } catch (eP) {}
+        try { out.nodes = countVisibleDmMessageNodes(); } catch (eN) { out.nodes = 0; }
+        try { out.composer = !!findBottomAwakeningTarget(); } catch (eF) {}
+        var pathOk = false;
+        try { pathOk = isDmConversationPage(); } catch (eC) {}
+        // 路径命中或能读到消息节点 → 视为真会话（X 路径变体时以 DOM 为准）
+        out.on_conv = !!(pathOk || out.nodes > 0);
+        try { if (!quiet) reportChatMetric('chat.scan_surface', out); } catch (eR) {}
+        return out;
+    }
+
     function countVisibleDmMessageNodes(root) {
         root = root || getDmMessageScanRoot();
         try {
@@ -5600,6 +5672,9 @@
             __pushCorpusEntry(list, FINAL_KICK_MESSAGE);
             __pushCorpusEntry(list, REJECT_MESSAGE);
             __pushCorpusEntry(list, FOREIGNER_REJECT_MESSAGE);
+            // 两段式固定文案（不在话术池轮播，须进 DNA 防自聊气泡当 peer）
+            if (typeof TWO_SEG_ICE === 'string') __pushCorpusEntry(list, TWO_SEG_ICE);
+            if (typeof TWO_SEG_AD === 'string') __pushCorpusEntry(list, TWO_SEG_AD);
         } catch (eLive) {}
         try {
             var links = (typeof getDefaultLinks === 'function' ? getDefaultLinks() : []) || [];
@@ -6218,11 +6293,54 @@
             || 'ごめんね😭 25歳以上で探してて💦 また機会があれば！';
     }
 
+    /** 交友两段式固定文案（C7；开关 chat_two_seg_mode，dating 默认开） */
+    var TWO_SEG_ICE =
+        'よろしくお願いします\n' +
+        '普段、お一人で過ごす時間が多いですか？';
+    var TWO_SEG_AD =
+        '近隣にお住まいの独身女性と知り合いになりたいですか？\n' +
+        'セフレ、結婚相手、または気軽に話せるお友達など、ご希望に沿った相手探しをお手伝い可能です。\n' +
+        'ご興味がございましたら、LINEにてお気軽にお問い合わせください。\n' +
+        'LINE ID：{LINK}';
+
+    function isTwoSegChatMode() {
+        try {
+            if (isJobScriptPool()) {
+                // job 仅显式开启时走两段
+                var tJ = JSON.parse(localStorage.getItem('sg_config_thresholds') || '{}') || {};
+                var vJ = String(tJ.chat_two_seg_mode || '').toLowerCase().trim();
+                return vJ === '1' || vJ === 'on' || vJ === 'true' || vJ === 'yes' || vJ === 'two_seg';
+            }
+        } catch (eJ) {}
+        if (window.SgChatGates && typeof window.SgChatGates.isTwoSegMode === 'function') {
+            return !!window.SgChatGates.isTwoSegMode();
+        }
+        return true;
+    }
+
+    function formatTwoSegLineId(link) {
+        var s = String(link || '').trim();
+        if (!s) return '';
+        var m = s.match(/line\.me\/R\/ti\/p\/@?([A-Za-z0-9._-]+)/i)
+            || s.match(/line\.me\/[^?\s]*@([A-Za-z0-9._-]+)/i)
+            || s.match(/^@?([A-Za-z0-9._-]{2,})$/);
+        if (m && m[1]) return '@' + String(m[1]).replace(/^@/, '');
+        return s;
+    }
+
     function getRoundMessage(myHandle, userHandle) {
         var round = getUserRound(userHandle);
         switch(round) {
-            case 0: return getPoolMessage('icebreaker') || ICEBREAKER_MESSAGE;
+            case 0:
+                if (isTwoSegChatMode()) return TWO_SEG_ICE;
+                return getPoolMessage('icebreaker') || ICEBREAKER_MESSAGE;
             case 1: {
+                if (isTwoSegChatMode()) {
+                    var link2 = getLiveLink();
+                    if (!link2) return null;
+                    var lineId = formatTwoSegLineId(link2);
+                    return TWO_SEG_AD.replace('{LINK}', lineId || link2);
+                }
                 var link = getLiveLink();
                 if (!link) return null;
                 var adMsg = getPoolMessage('ad') || AD_MESSAGE_TEMPLATE;
@@ -7911,9 +8029,9 @@
             }
         } catch (eQ) {}
         try {
-            var all = root.querySelectorAll ? root.querySelectorAll('*') : [];
-            for (var j = 0; j < all.length; j++) {
-                var n = all[j];
+            var walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+            var n;
+            while ((n = walker.nextNode())) {
                 if (n && n.shadowRoot) __dmQueryAllDeep(n.shadowRoot, selector, out, depth + 1);
             }
         } catch (eS) {}
@@ -7939,9 +8057,9 @@
             }
         } catch (eW) {}
         try {
-            var all = root.querySelectorAll ? root.querySelectorAll('*') : [];
-            for (var i = 0; i < all.length; i++) {
-                var n = all[i];
+            var walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+            var n;
+            while ((n = walker.nextNode())) {
                 if (n && n.shadowRoot) {
                     out += __dmCollectTextDeep(n.shadowRoot, maxLen - out.length, depth + 1);
                     if (out.length >= maxLen) return out.slice(0, maxLen);
@@ -8957,6 +9075,9 @@
         maxPerRun = Number(maxPerRun) || 200;
         var now = Date.now();
         var pruned = 0;
+        var deferred = 0;
+        var examined = 0;
+        var deferredHandles = [];
         var db;
         try {
             db = loadTargetDB();
@@ -8968,6 +9089,7 @@
                 var h = handles[i];
                 var entry = db[h];
                 if (!entry || typeof entry !== 'object') continue;
+                examined++;
                 if (entry.done) continue;
                 if (entry.blockedAt) continue;
                 var r = Number(entry.round) || 0;
@@ -8975,6 +9097,24 @@
                 if (r >= 3) continue; // 已到最高轮次的也不处理
                 var lastDm = Number(entry.lastDM) || Number(entry.iceSentAt) || 0;
                 if (!lastDm) continue;
+                // 最近一次我方消息之后有入站 → 不是「未回复」，禁止清理
+                if (entry.lastInboundAt && entry.lastInboundAt >= lastDm) continue;
+                if (entry.replySeenAt && entry.replySeenAt >= lastDm) continue;
+                if (entry.unreadSeenAt && entry.unreadSeenAt >= lastDm) continue;
+                if (entry.lastNonTextInboundAt && entry.lastNonTextInboundAt >= lastDm) continue;
+                // 没有“我方最后一条之后真正读过会话”的证据 → 不能证明对方没回。
+                // 只延后，绝不永久拉黑；否则解析失败会被误判成 48h 未回复。
+                var watchedAt = Math.max(
+                    Number(entry.inboxWatchedAt) || 0,
+                    Number(entry.conversationScannedAt) || 0
+                );
+                if (!watchedAt || watchedAt < lastDm) {
+                    entry.staleDeferredAt = now;
+                    entry.staleDeferredReason = 'scan_evidence_missing';
+                    deferred++;
+                    deferredHandles.push(h);
+                    continue;
+                }
                 if (now - lastDm < staleMs) continue;
                 // 超过 48h 未回复 → 拉黑（台账 reason 固定便于 OPS 对账）
                 markPeerBlocked(h, 'stale_48h_no_reply');
@@ -8986,6 +9126,33 @@
             console.log('[私信] 清理 ' + pruned + ' 个 ' + Math.round(staleMs / 3600000) + 'h 未回复目标');
             try { showToast('🧹 清理 ' + pruned + ' 个超时未回复目标', '#1d9bf0', 2000); } catch (eT) {}
         }
+        if (deferred > 0) {
+            try {
+                var latestDb = loadTargetDB();
+                for (var di = 0; di < deferredHandles.length; di++) {
+                    var dh = deferredHandles[di];
+                    if (!latestDb[dh] || latestDb[dh].blockedAt) continue;
+                    latestDb[dh].staleDeferredAt = now;
+                    latestDb[dh].staleDeferredReason = 'scan_evidence_missing';
+                }
+                saveTargetDB(latestDb);
+            } catch (eSaveDeferred) {}
+        }
+        try {
+            reportChatMetric('chat.stale_prune', {
+                pruned: pruned,
+                deferred: deferred,
+                examined: examined,
+                stale_hours: Math.round(staleMs / 3600000),
+                deferred_reason: deferred > 0 ? 'scan_evidence_missing' : '',
+                deferred_handles: deferredHandles.slice(0, 10),
+                reason_zh: pruned > 0
+                    ? ('清理 ' + pruned + ' 个超时未回复；' + deferred + ' 个缺少扫描证据只延后')
+                    : (deferred > 0
+                        ? ('没有可清理目标；' + deferred + ' 个缺少扫描证据只延后，不拉黑')
+                        : '没有可清理目标')
+            });
+        } catch (eStaleMetric) {}
         return pruned;
     }
 
@@ -10100,6 +10267,8 @@
                 } catch (ePaceLegacy) {}
                 if (Date.now() < paceUntil) {
                     var leftSec = Math.ceil((paceUntil - Date.now()) / 1000);
+                    // 4.6.152：人间间隔是有意等待（普通 25–40s / rush 70–120s 必超 45s 判定线），每拍续心跳防误杀假活
+                    try { noteChatProgress('outbound_pace_wait'); } catch (ePaceProg) {}
                     if (leftSec % 10 === 0 || leftSec <= 3) {
                         showToast((isChatRushMode() ? '赶工匀速中' : '匀速中') + '，下一人 ' + leftSec + 's…', '#faad14', 1200);
                     }
@@ -10217,6 +10386,8 @@
                 // 浅扫：先回顶（X 新粉在上），再只收上面屏
                 if (baselineOk && sessionStorage.getItem('dan_ice_shallow_topped') !== pulseSeed) {
                     sessionStorage.setItem('dan_ice_shallow_topped', pulseSeed);
+                    // 4.6.152：回顶滚动是有意等待，按拍续心跳
+                    try { noteChatProgress('outbound_fan_scan_top'); } catch (eScanTop) {}
                     try { window.scrollTo({ top: 0, behavior: 'instant' }); } catch (eTop) {
                         try { window.scrollTo(0, 0); } catch (eTop2) {}
                     }
@@ -10238,6 +10409,8 @@
             var cellCount = document.querySelectorAll('[data-testid="UserCell"]').length;
 
             if (cellCount === 0 && !isFollowersListAtBottom()) {
+                // 4.6.152：列表加载等待（20s 守卫/软愈期间连续多拍走此分支），按拍续心跳防误杀
+                try { noteChatProgress('outbound_fan_scan_wait'); } catch (eScanWait) {}
                 showToast('⏳ 等待粉丝列表…', '#faad14', 1200);
                 return;
             }
@@ -10286,6 +10459,8 @@
                     sessionStorage.removeItem('dan_need_scroll_down_count');
                 } else {
                     sessionStorage.setItem('dan_need_scroll_down_count', String(gapScrollN + 1));
+                    // 4.6.152：缺口补登滚动等待，按拍续心跳
+                    try { noteChatProgress('outbound_gap_scroll_down'); } catch (eGapProg) {}
                     try { window.scrollBy({ top: 600, behavior: 'smooth' }); } catch (eSd) { try { window.scrollBy(0, 600); } catch (eSd2) {} }
                     try { showToast('📋 关注者缺口：下滚补登 ' + cellGap + (fGapT > 0 ? ('/' + fGapT) : '') + '（' + (gapScrollN + 1) + '/8）', '#faad14', 1200); } catch (eTsd) {}
                     noteSoftOutboundResidual(stNow.pending, 'gap_scroll_down');
@@ -10523,6 +10698,19 @@
             function finishTargetVisit(opts) {
                 opts = opts || {};
                 var th = normalizeChatHandle(targetHandleEarly || sessionStorage.getItem('current_target') || '');
+                // 4.6.155 §C3-10：离场兜底审计——没进过真会话的目标必须留痕，禁止静默当「无回复」
+                try {
+                    var surfEnd = auditChatSurface(th, getChatPhase() + ':' + (opts.queueStatus || 'done'), true);
+                    if (!surfEnd.on_conv && th) {
+                        reportChatMetric('chat.visit_surface_miss', {
+                            target: th,
+                            phase: surfEnd.phase,
+                            path: surfEnd.path,
+                            nodes: surfEnd.nodes,
+                            composer: surfEnd.composer
+                        });
+                    }
+                } catch (eSurfEnd) {}
                 // deferred/skipped 软离：未真正发出，禁止写 dan_sent_ 占坑
                 if (th && opts.queueStatus !== 'deferred' && opts.queueStatus !== 'skipped' && opts.queueStatus !== 'failed') {
                     sessionStorage.setItem('dan_sent_' + th, 'true');
@@ -11117,6 +11305,23 @@
                             sessionStorage.removeItem('dan_pending_greeting_ad');
                             sessionStorage.removeItem('dan_pending_peer_hash');
                         } catch (eHashAd) {}
+                        // 两段式：第 2 段含 LINE 后锁死，禁止踢/追问
+                        if (isTwoSegChatMode()) {
+                            try {
+                                setUserRound(targetHandle, 3);
+                                var dbLock = loadTargetDB();
+                                if (dbLock[targetHandle]) {
+                                    dbLock[targetHandle].done = true;
+                                    dbLock[targetHandle].chatClosedAt = dbLock[targetHandle].chatClosedAt || Date.now();
+                                    dbLock[targetHandle].twoSegAdDoneAt = Date.now();
+                                    saveTargetDB(dbLock);
+                                }
+                            } catch (eLock2) {}
+                            try { iceQueueMark(targetHandle, 'done', 'two_seg_ad_done'); } catch (eIq2) {}
+                            try {
+                                reportChatMetric('chat.two_seg_locked', { target: targetHandle, ops_ok: opsOk });
+                            } catch (eMet2) {}
+                        }
                     }
                     if (userRound === 2) {
                         var kcNow = bumpKickCountAndMaybeClose(targetHandle);
@@ -11486,7 +11691,8 @@
                         finishTargetVisit({ skipInboxDone: true });
                         return;
                     }
-                    var iceMsgOb = getPoolMessage('icebreaker') || ICEBREAKER_MESSAGE || getRoundMessage(myHandle, targetHandle);
+                    var iceMsgOb = getRoundMessage(myHandle, targetHandle)
+                        || getPoolMessage('icebreaker') || ICEBREAKER_MESSAGE;
                     if (!iceMsgOb) {
                         reportSessionVerdict('gate_blocked', { target: targetHandle, round: 0, gate_reason: 'no_script' });
                         finishTargetVisit({ skipInboxDone: true });
@@ -11692,6 +11898,34 @@
                         return;
                     }
                     var replyState = await readReplyStateAfterScroll(targetHandle);
+                    // 4.6.155 §C3-10：先核验是否真进了会话页，空壳/列表页 0 节点禁止判 no_reply
+                    var surfAudit = auditChatSurface(targetHandle, 'followup');
+                    if (!surfAudit.on_conv) {
+                        reportSessionVerdict('gate_blocked', {
+                            target: targetHandle,
+                            round: 1,
+                            gate_reason: 'surface_miss',
+                            decision: 'not_scanned',
+                            peer_count: 0,
+                            nodes: surfAudit.nodes,
+                            path: surfAudit.path
+                        });
+                        console.warn('[私信] 未进入真会话（path=' + surfAudit.path + ' nodes=' + surfAudit.nodes
+                            + ' composer=' + surfAudit.composer + '），本趟不判无回复 @' + targetHandle);
+                        finishTargetVisit({
+                            skipInboxDone: true,
+                            queueStatus: 'deferred',
+                            queueReason: 'surface_miss'
+                        });
+                        return;
+                    }
+                    try {
+                        var scanDb = loadTargetDB();
+                        if (scanDb[targetHandle]) {
+                            scanDb[targetHandle].conversationScannedAt = Date.now();
+                            saveTargetDB(scanDb);
+                        }
+                    } catch (eScanStamp) {}
                     // 4.6.34：查回横幅已在 readReplyStateAfterScroll 内统一弹出（全轮次）
                     var dbEntry = loadTargetDB()[targetHandle] || {};
                     try {
@@ -11784,6 +12018,12 @@
                             sendGate = canSendAdNow(targetHandle, peerTexts, dbEntry);
                             // 落入下方 hasReply / sendGate / 年龄分流
                         } else if (fanAdMode) {
+                            // 两段式：满等待或闸门已放行 → 无对方文本也可发第 2 段（禁止连发由 canSendAdNow 负责）
+                            if (isTwoSegChatMode() && sendGate && sendGate.ok) {
+                                console.log('[私信] 两段式无 peer 但闸门放行，继续 AD @' + targetHandle + ' reason=' + (sendGate.reason || ''));
+                                try { captureDmPeerId(targetHandle); } catch (eCapTs) {}
+                                // 落入下方 sendGate / 发送
+                            } else {
                             console.warn('[私信] 粉丝队列 target_mismatch 且无对方文本 → deferred @' + targetHandle);
                             reportSessionVerdict('gate_blocked', {
                                 target: targetHandle,
@@ -11797,6 +12037,7 @@
                                 queueReason: 'stale_dm_surface'
                             });
                             return;
+                            }
                         } else {
                             reportSessionVerdict('gate_blocked', {
                                 target: targetHandle,
@@ -11836,6 +12077,16 @@
                                 decision: replyState.decision || '',
                                 peer_count: peerTexts.length
                             });
+                        }
+                        // 看到未读但正文还没解析出来，也要落「有入站信号」，
+                        // 否则 48h 清理会把技术解析失败误判成对方没回复。
+                        if (replyState.unreadSeen && peerTexts.length === 0) {
+                            try {
+                                var uDb = loadTargetDB();
+                                if (!uDb[targetHandle]) uDb[targetHandle] = { round: 1, firstSeen: Date.now() };
+                                uDb[targetHandle].unreadSeenAt = Date.now();
+                                saveTargetDB(uDb);
+                            } catch (eUnreadDb) {}
                         }
                         if (peerTexts.length > 0 || replyState.unreadSeen) {
                             var waitLeftMin = Math.max(0, Math.ceil((getAdMinWaitMs() - (Date.now() - (dbEntry.iceSentAt || Date.now()))) / 60000));
@@ -12370,6 +12621,8 @@
             try {
                 // 4.6.113：未运行时跳过 tick（函数内部已有同样检查，这里提前拦截省函数调用）
                 if (sessionStorage.getItem('dan_auto_run') !== 'true') return;
+                // 4.6.173：深度空闲 park 时跳过主巡航（调度仍可醒）
+                if (sessionStorage.getItem('sg_idle_park') === '1') return;
                 if (typeof window.__sgChatMainEngineTick === 'function') window.__sgChatMainEngineTick();
             } catch (eTick) {
                 console.warn('[chat] mainEngine tick', eTick);
@@ -12377,7 +12630,8 @@
         }, 5000 + Math.floor(Math.random() * 2000));
         return true;
     }
-    ensureChatMainEngine();
+    // 4.6.190：私信没在跑就不要挂 5–7s 主循环。刷新后若仍在跑，再挂上。start 命令里原有 ensureChatMainEngine。
+    if (sessionStorage.getItem('dan_auto_run') === 'true') ensureChatMainEngine();
     var mainEngine = window._sgChatMainEngineId;
 
     // ==============================================================================
@@ -12411,6 +12665,8 @@
             const domCount = document.getElementsByTagName('*').length;
             sessionStorage.setItem('dan_memory_mb', usedMB.toString());
             sessionStorage.setItem('dan_dom_count', domCount.toString());
+            // 4.6.194：写时间戳，供调度侧 coProbeMemoryPurge 复用，省去重复全树枚举
+            sessionStorage.setItem('dan_dom_count_at', String(Date.now()));
 
             // 约 300MB / DOM≥6000：只清媒体缓存（不掉登录、不重建 tab）
             if ((usedMB >= 300 || domCount >= 6000) && !(usedMB > 400 || domCount > 8000)) {

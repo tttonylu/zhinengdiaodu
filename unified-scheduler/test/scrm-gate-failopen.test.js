@@ -103,9 +103,9 @@ describe('A5 · scrmAllowsChat fail-open 策略（4.4.1）', () => {
   });
 });
 
-describe('A5 · 日龄闸已全面移除（4.3.32 策略层移除 / 4.6.31 stage 层 S3.dayMin 一并移除）', () => {
+describe('A5 · 日龄仍不由策略层拦截（4.6.162 日龄归 A1/SoftFill）', () => {
 
-  it('resolveChatPolicy 不再返回 day_lt_3（日龄由 stage-detector 承担）', () => {
+  it('resolveChatPolicy 不返回 day_lt_*（日龄由 stage-detector / SoftFill 承担）', () => {
     global.getScrmGateSync = () => ({ allow_chat: true });
     global.window.__sgGetMyHandle = () => 'newuser';
     global.localStorage._data['matrix_stats_newuser'] = JSON.stringify({ day_count: 1, follows_today: 0 });
@@ -115,7 +115,8 @@ describe('A5 · 日龄闸已全面移除（4.3.32 策略层移除 / 4.6.31 stage
       debt: 5,
       replyPending: 0
     });
-    assert.notEqual(result.reason, 'day_lt_3', 'A5 策略层已不管日龄（4.3.32 移除）');
+    assert.notEqual(result.reason, 'day_lt_3', 'A5 策略层不管日龄');
+    assert.notEqual(result.reason, 'day_lt_2', 'A5 策略层不管日龄');
 
     delete global.getScrmGateSync;
     delete global.window.__sgGetMyHandle;

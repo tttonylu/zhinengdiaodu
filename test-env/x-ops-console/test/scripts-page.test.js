@@ -38,7 +38,7 @@ test('GET /api/scripts/pool returns the extension-ready payload', async () => {
 
   assert.equal(response.statusCode, 200);
   const data = response.json();
-  assert.equal(data.version, '2.0');
+  assert.match(data.version, /^\d+$/);
   assert.ok(Array.isArray(data.random_pool));
   assert.ok(data.random_pool.length >= 3);
   assert.ok(data.scripts.v1);

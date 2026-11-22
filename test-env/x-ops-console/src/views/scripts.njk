@@ -17,6 +17,11 @@
           <h2>话术中心 & 链接管理</h2>
         </div>
 
+        <div class="pool-tabs" style="margin-bottom:16px;display:flex;gap:8px;">
+          <a href="/scripts?pool=job" style="padding:6px 14px;border-radius:6px;text-decoration:none;font-size:13px;{% if pool == 'job' %}background:#1f6feb;color:#fff;font-weight:600;{% else %}background:#21262d;color:#8b949e;border:1px solid #30363d;{% endif %}">兼职话术</a>
+          <a href="/scripts?pool=dating" style="padding:6px 14px;border-radius:6px;text-decoration:none;font-size:13px;{% if pool == 'dating' %}background:#1f6feb;color:#fff;font-weight:600;{% else %}background:#21262d;color:#8b949e;border:1px solid #30363d;{% endif %}">约会话术</a>
+        </div>
+
         <div class="add-form" style="margin-bottom:24px;">
           <h3>🌐 推广链接管理</h3>
           <label>链接（每行一个）
@@ -88,8 +93,8 @@
         </div>
 
         <div class="panel-heading">
-          <h2>话术方案</h2>
-          <span class="muted">{{ sets.length }} 套方案</span>
+          <h2>话术方案{% if pool == 'job' %}（兼职池）{% else %}（约会池）{% endif %}</h2>
+          <span class="muted">{{ sets.length }} 套方案 · 版本 v{{ poolVersion }}</span>
         </div>
 
         <form class="shuffle-bar" id="shuffle-form">
@@ -195,7 +200,7 @@
       fetch('/api/scripts', {
         method: 'POST',
         headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ set_id: setId, name: name || setId, description: desc, templates: {} })
+        body: JSON.stringify({ set_id: setId, name: name || setId, description: desc, templates: {}, pool: '{{ pool }}' })
       }).then(function() { location.reload(); });
     });
     document.getElementById('save-links-btn').addEventListener('click', function() {

@@ -5,3 +5,13 @@ html.sg-media-blocked [data-testid="videoComponent"],
 html.sg-media-blocked [data-testid="previewCard"] img {
   display: none !important;
 }
+
+/* K3 页面瘦身·第一针：sg-page-slim 下压掉全部 CSS 动画/过渡/平滑滚动（降主线程样式重算开销） */
+html.sg-page-slim *,
+html.sg-page-slim *::before,
+html.sg-page-slim *::after {
+  animation-duration: 0.01s !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01s !important;
+  scroll-behavior: auto !important;
+}

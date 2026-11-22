@@ -2,10 +2,11 @@
 // 智能调度 — CPU 仪表（obs 观测板块）
 // 必须作为隔离世界第一个脚本加载（manifest 本块首位）：
 // 包裹 setInterval / setTimeout / MutationObserver，按来源文件归因回调耗时。
-// - 常驻包裹，零配置；仅累计，开销=每次回调一次 performance.now() 差值
-// - 4.6.128 起默认开启（不必手动置 1）：每 60s 把当分钟桶写入
-//   sg_cpu_profile_last（最近一分钟）并累计进 sg_cpu_profile_day（当天合计），
-//   并 emit cpu.profile_minute 走遥测上传 OPS；置 localStorage sg_cpu_profile=0 可关闭
+// - 4.6.190 起默认不包裹。每次 setTimeout/setInterval 都会 new Error().stack，
+//   关注等待全走 setTimeout，五十个号会一直付这笔账。
+//   诊断时刷新前设 localStorage sg_cpu_profile=1 才安装包裹。
+// - 开启后每 60s 把当分钟桶写入 sg_cpu_profile_last，并累计进 sg_cpu_profile_day，
+//   emit cpu.profile_minute 上传 OPS。
 // - 4.6.138：①tagFromStack 穿透 safeSetInterval 等包装器帧，归因直达业务注册行；
 //   ②新增 window.__sgCpuMark(name, ms) 分段 API（tag 前缀 §），供 coTick 等黑盒函数
 //   内部拆段上报，与定时器回调桶合并排序输出
@@ -17,6 +18,15 @@
   'use strict';
 
   if (window.__sgCpuProfilerInstalled) return;
+
+  var profileOn = false;
+  try { profileOn = localStorage.getItem('sg_cpu_profile') === '1'; } catch (eOn) {}
+  if (!profileOn) {
+    window.__sgCpuMark = function () {};
+    window.__sgCpuProfile = function () { return []; };
+    window.__sgCpuProfilerInstalled = 'off';
+    return;
+  }
 
   var buckets = Object.create(null);
   var segBuckets = Object.create(null);

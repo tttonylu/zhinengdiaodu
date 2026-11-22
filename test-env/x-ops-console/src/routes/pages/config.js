@@ -42,6 +42,21 @@ async function configPageRoutes(app) {
       sourcePool = createSourcesRepo(db).list();
     } catch (eSrc) {}
 
+    // K3 页面瘦身灰度：账号勾选列表 + 已选集合（page_slim_handles CSV）
+    var allHandles = [];
+    var slimSelected = [];
+    try {
+      allHandles = db.prepare("SELECT x_handle FROM accounts WHERE x_handle IS NOT NULL AND TRIM(x_handle) != '' ORDER BY sort_order, id").all()
+        .map(function (r) { return String(r.x_handle || '').replace(/^@/, '').trim(); })
+        .filter(Boolean);
+    } catch (eH) {}
+    try {
+      slimSelected = String(thresholds.page_slim_handles || '')
+        .split(/[,\s;；，]+/)
+        .map(function (s) { return s.replace(/^@/, '').toLowerCase().trim(); })
+        .filter(Boolean);
+    } catch (eS) {}
+
     return reply.view('config', {
       title: '系统配置',
       thresholds: thresholds,
@@ -49,6 +64,8 @@ async function configPageRoutes(app) {
       modules: modules,
       repost_selected: repostSelected,
       source_pool: sourcePool,
+      all_handles: allHandles,
+      slim_selected: slimSelected,
       stagePolicyJSON: JSON.stringify(stagePolicy, null, 2),
       thresholdsJSON: JSON.stringify(thresholds, null, 2),
       modulesJSON: JSON.stringify(modules)

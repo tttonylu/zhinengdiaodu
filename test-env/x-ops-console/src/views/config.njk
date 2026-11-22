@@ -118,21 +118,21 @@
   </div>
   <div class="cfg-sect">
     <h4>养号参数</h4>
-    <div class="cfg-row"><span class="lbl">每日点赞</span><input type="number" id="nu-dlikes" value="{{ thresholds.nurture_daily_likes or '30' }}"><span class="unit">次</span><span class="sub">每天点赞上限</span></div>
-    <div class="cfg-row"><span class="lbl">每日评论</span><input type="number" id="nu-dcomms" value="{{ thresholds.nurture_daily_comments or '10' }}"><span class="unit">条</span></div>
+    <div class="cfg-row"><span class="lbl">每日点赞</span><input type="number" id="nu-dlikes" value="{{ thresholds.nurture_daily_likes or '12' }}"><span class="unit">次</span><span class="sub">每天点赞上限</span></div>
+    <div class="cfg-row"><span class="lbl">每日评论</span><input type="number" id="nu-dcomms" value="{{ thresholds.nurture_daily_comments or '2' }}"><span class="unit">条</span></div>
     <!-- 已停用：养号转帖由转帖引擎(E)接管，前端 buildNurtureRemote 硬编码 reposts=0，此输入框不生效（如需恢复取消注释） -->
     <!-- <div class="cfg-row"><span class="lbl">每日转帖</span><input type="number" id="nu-dreposts-min" value="{{ thresholds.nurture_daily_reposts_min or '1' }}" min="0" max="50"> ~ <input type="number" id="nu-dreposts-max" value="{{ thresholds.nurture_daily_reposts_max or '2' }}" min="0" max="50"><span class="unit">次</span><span class="sub">每天随机区间（含端点；均 0=不转）</span></div> -->
-    <div class="cfg-row"><span class="lbl">每日进主页</span><input type="number" id="nu-denters" value="{{ thresholds.nurture_daily_enters or '10' }}" min="0" max="100"><span class="unit">次</span><span class="sub">与插件 enters 对齐</span></div>
+    <div class="cfg-row"><span class="lbl">每日进主页</span><input type="number" id="nu-denters" value="{{ thresholds.nurture_daily_enters or '5' }}" min="0" max="100"><span class="unit">次</span><span class="sub">与插件 enters 对齐</span></div>
     <div class="cfg-row"><span class="lbl">每日看趋势</span><input type="number" id="nu-dtrends-min" value="{{ thresholds.nurture_daily_trends_min or '5' }}" min="0"> ~ <input type="number" id="nu-dtrends-max" value="{{ thresholds.nurture_daily_trends_max or '10' }}" min="0"><span class="unit">次</span></div>
     <div class="cfg-row"><span class="lbl">每日看主页</span><input type="number" id="nu-dprofiles-min" value="{{ thresholds.nurture_daily_profiles_min or '2' }}" min="0"> ~ <input type="number" id="nu-dprofiles-max" value="{{ thresholds.nurture_daily_profiles_max or '5' }}" min="0"><span class="unit">次</span><span class="sub">profile 浏览</span></div>
-    <div class="cfg-row"><span class="lbl">每小时点赞</span><input type="number" id="nu-hlikes" value="{{ thresholds.nurture_hourly_likes or '5' }}"><span class="unit">次</span></div>
-    <div class="cfg-row"><span class="lbl">每小时评论</span><input type="number" id="nu-hcomms" value="{{ thresholds.nurture_hourly_comments or '2' }}"><span class="unit">条</span></div>
+    <div class="cfg-row"><span class="lbl">每小时点赞</span><input type="number" id="nu-hlikes" value="{{ thresholds.nurture_hourly_likes or '2' }}"><span class="unit">次</span></div>
+    <div class="cfg-row"><span class="lbl">每小时评论</span><input type="number" id="nu-hcomms" value="{{ thresholds.nurture_hourly_comments or '1' }}"><span class="unit">条</span></div>
     <!-- <div class="cfg-row"><span class="lbl">每小时转帖</span><input type="number" id="nu-hreposts" value="{{ thresholds.nurture_hourly_reposts or '1' }}" min="0" max="20"><span class="unit">次</span></div> -->
     <div class="cfg-row"><span class="lbl">每小时进主页</span><input type="number" id="nu-henters" value="{{ thresholds.nurture_hourly_enters or '2' }}" min="0" max="50"><span class="unit">次</span></div>
     <div class="cfg-row"><span class="lbl">每小时看趋势</span><input type="number" id="nu-htrends-min" value="{{ thresholds.nurture_hourly_trends_min or '1' }}" min="0"> ~ <input type="number" id="nu-htrends-max" value="{{ thresholds.nurture_hourly_trends_max or '2' }}" min="0"><span class="unit">次</span></div>
     <div class="cfg-row"><span class="lbl">每小时看主页</span><input type="number" id="nu-hprofiles-min" value="{{ thresholds.nurture_hourly_profiles_min or '0' }}" min="0"> ~ <input type="number" id="nu-hprofiles-max" value="{{ thresholds.nurture_hourly_profiles_max or '1' }}" min="0"><span class="unit">次</span></div>
-    <div class="cfg-row"><span class="lbl">动作间隔</span><input type="number" id="nu-gap-min" value="{{ thresholds.nurture_action_gap_min_sec or '10' }}"> ~ <input type="number" id="nu-gap-max" value="{{ thresholds.nurture_action_gap_max_sec or '20' }}"><span class="unit">秒</span></div>
-    <div class="cfg-row"><span class="lbl">点赞冷却</span><input type="number" id="nu-cool" value="{{ thresholds.nurture_like_cooldown_min or '3' }}"><span class="unit">分钟</span><span class="sub">两次点赞间隔</span></div>
+    <div class="cfg-row"><span class="lbl">动作间隔</span><input type="number" id="nu-gap-min" value="{{ thresholds.nurture_action_gap_min_sec or '45' }}"> ~ <input type="number" id="nu-gap-max" value="{{ thresholds.nurture_action_gap_max_sec or '90' }}"><span class="unit">秒</span></div>
+    <div class="cfg-row"><span class="lbl">点赞冷却</span><input type="number" id="nu-cool" value="{{ thresholds.nurture_like_cooldown_min or '8' }}"><span class="unit">分钟</span><span class="sub">两次点赞间隔</span></div>
   </div>
   <div class="cfg-sect">
     <h4>评论模板</h4>
@@ -147,19 +147,26 @@
 <!-- ============ 私信 ============ -->
 <div id="panel-chat" class="cfg-panel">
   <div class="cfg-header">
-    <div><div class="sw-label">私信模块</div><div class="sw-desc">每粉 3 条话术：破冰 → 广告 → 盾牌（非每日次数）</div></div>
+    <div><div class="sw-label">私信模块</div><div class="sw-desc">交友两段式：破冰 →（1h 或有回复）→ LINE 广告；发完禁止追问</div></div>
     <label class="cfg-switch"><input type="checkbox" id="sw-chat" {{ 'checked' if modules.chat else '' }}><span class="cfg-slider"></span></label>
   </div>
   <div class="cfg-sect">
     <h4>私信参数</h4>
     <p style="font-size:12px;color:#8b949e;margin:0 0 10px;line-height:1.55;">
-      <b style="color:#c9d1d9">已取消「每日会话次数」上限</b>——不再用「每天几轮」限制开私信。<br>
-      真正控节奏的是下方<strong>会话冷却</strong>（两段私信之间隔多久）。<br>
-      每个粉固定发 <b style="color:#c9d1d9">破冰 → 广告 → 盾牌</b> 共 3 条话术（漏斗轮次，与「每天开几次私信」无关）。
+      <b style="color:#c9d1d9">交友两段式（4.6.177）</b>：先发第 1 段；满「AD最短等待」或有任意回复再发第 2 段（含统一 LINE）；第 2 段后禁止踢/追问。<br>
+      开关 <code>chat_two_seg_mode</code>：on=两段式（dating 默认），classic=旧三轮。job 池默认不走两段。
     </p>
     <div class="cfg-row"><span class="lbl">会话冷却</span><input type="number" id="ch-cd-min" value="{{ thresholds.chat_cooldown_min_min or '25' }}" min="3" max="180"> ~ <input type="number" id="ch-cd-max" value="{{ thresholds.chat_cooldown_max_min or '35' }}" min="3" max="180"><span class="unit">分钟</span><span class="sub">无债 outbound 段间隔（随机）</span></div>
     <div class="cfg-row"><span class="lbl">有债冷却</span><input type="number" id="ch-debt-min" value="{{ thresholds.chat_debt_cooldown_min_min or '8' }}" min="3" max="60"> ~ <input type="number" id="ch-debt-max" value="{{ thresholds.chat_debt_cooldown_max_min or '12' }}" min="3" max="60"><span class="unit">分钟</span><span class="sub">inbox 清债段间隔</span></div>
-    <div class="cfg-row"><span class="lbl">AD最短等待</span><input type="number" id="ch-ad-wait" value="{{ thresholds.chat_ad_min_wait_min or '20' }}" min="5" max="120"><span class="unit">分钟</span><span class="sub">破冰后无新回复时最短等待</span></div>
+    <div class="cfg-row"><span class="lbl">AD最短等待</span><input type="number" id="ch-ad-wait" value="{{ thresholds.chat_ad_min_wait_min or '60' }}" min="5" max="120"><span class="unit">分钟</span><span class="sub">两段式：无回复时破冰后满此时长可发第 2 段（默认 60）</span></div>
+    <div class="cfg-row">
+      <span class="lbl">两段式模式</span>
+      <select id="ch-two-seg">
+        <option value="on" {% if (thresholds.chat_two_seg_mode or 'on') != 'classic' and (thresholds.chat_two_seg_mode or 'on') != 'off' %}selected{% endif %}>on（交友两段）</option>
+        <option value="classic" {% if thresholds.chat_two_seg_mode == 'classic' or thresholds.chat_two_seg_mode == 'off' %}selected{% endif %}>classic（旧破冰/广告/踢）</option>
+      </select>
+      <span class="sub">dating 推荐 on；改完约 1 分钟同步到插件</span>
+    </div>
     <!-- 已停用：守箱(收件箱扫箱)在 4.1.21/4.6.0 已终止，单次守箱时长不再生效（如需恢复取消注释） -->
     <!-- <div class="cfg-row"><span class="lbl">单次守箱时长</span><input type="number" id="ch-vc-sec" value="{{ thresholds.chat_inbox_visit_cap_sec or '150' }}" min="30" max="600" step="10"><span class="unit">秒</span><span class="sub">每次进收件箱扫新消息的时长上限，到点交回调度短冷却后回查</span></div> -->
     <!-- <div class="cfg-row"><span class="lbl">催加间隔</span><input type="number" id="ch-kick-hours" value="{{ thresholds.chat_kick_min_hours or '0' }}" min="0" max="168"><span class="unit">小时</span><span class="sub">已废：插件按轮次下一窗发盾牌/催加（填 0）；保留字段仅兼容旧配置</span></div> -->
@@ -199,9 +206,9 @@
   </div>
   <div class="cfg-sect">
     <h4>参数</h4>
-    <div class="cfg-row"><span class="lbl">Day1–4</span><input type="number" id="rp-quota-early" value="{{ thresholds.repost_day14_quota or '2' }}" min="0" max="50"><span class="unit">条/天</span><span class="sub">新号前 4 天每日转帖条数</span></div>
-    <div class="cfg-row"><span class="lbl">Day5+</span><input type="number" id="rp-quota-late" value="{{ thresholds.repost_day5_quota or '1' }}" min="0" max="50"><span class="unit">条/天</span><span class="sub">第 5 天起每日转帖条数（已发 ID 不重复）</span></div>
-    <div class="cfg-row"><span class="lbl">日上限</span><input type="number" id="rp-daily" value="{{ thresholds.repost_daily_cap or '50' }}" min="1" max="100"><span class="unit">条/天</span><span class="sub">安全帽；与每日条数取更严</span></div>
+    <div class="cfg-row"><span class="lbl">Day1–4</span><input type="number" id="rp-quota-early" value="{{ thresholds.repost_day14_quota or '2' }}" min="0" max="50" disabled><span class="unit">条/天</span><span class="sub">已锁定：4.6.167 起自动转帖 0 条/天，此项不再生效；要发用面板手动启动</span></div>
+    <div class="cfg-row"><span class="lbl">Day5+</span><input type="number" id="rp-quota-late" value="{{ thresholds.repost_day5_quota or '1' }}" min="0" max="50" disabled><span class="unit">条/天</span><span class="sub">已锁定：自动场 0 条/天；面板手动发帖不占配额</span></div>
+    <div class="cfg-row"><span class="lbl">日上限</span><input type="number" id="rp-daily" value="{{ thresholds.repost_daily_cap or '50' }}" min="1" max="100" disabled><span class="unit">条/天</span><span class="sub">已锁定：自动配额为 0，安全帽不再生效</span></div>
     <div class="cfg-row"><span class="lbl">超时</span><input type="number" id="rp-maxmin" value="{{ thresholds.repost_max_minutes or '60' }}" min="10" max="180"><span class="unit">分钟</span><span class="sub">自动场硬超时</span></div>
     <div class="cfg-row">
       <span class="lbl">开跑时刻</span>
@@ -260,7 +267,7 @@
     </div>
     <input type="hidden" id="s-work24h" value="0">
     <div class="cfg-row"><span class="lbl">早间只养号至</span><input type="number" id="s-mnh" value="10" min="0" max="23"> : <input type="number" id="s-mnm" value="0" min="0" max="59"><span class="unit">北京时间</span><span class="sub">工作开始～此时点只养号；与上班点相同=一上班就可关注；全天实测时用 0:00</span></div>
-    <div class="cfg-row"><span class="lbl">私信时段</span><input type="number" id="s-ch" value="8" min="0" max="23"> : <input type="number" id="s-cm" value="0" min="0" max="59"> ~ <input type="number" id="s-ceh" value="18" min="0" max="23"> : <input type="number" id="s-cem" value="0" min="0" max="59"><span class="unit">北京时间</span><span class="sub">默认 08:00–18:00；过点不开私信/不加债</span></div>
+    <div class="cfg-row"><span class="lbl">私信时段</span><input type="number" id="s-ch" value="9" min="0" max="23"> : <input type="number" id="s-cm" value="0" min="0" max="59"> ~ <input type="number" id="s-ceh" value="18" min="0" max="23"> : <input type="number" id="s-cem" value="0" min="0" max="59"><span class="unit">北京时间</span><span class="sub">默认 09:00–18:00；过点不开私信/不加债</span></div>
   </div>
 
   <div class="cfg-sect">
@@ -307,6 +314,9 @@
   <div class="cfg-sect">
     <h4>调度参数</h4>
     <div class="cfg-row"><span class="lbl">调度间隔</span><input type="number" id="s-tick" value="{{ thresholds.stage_tick_interval_ms or '10000' }}"><span class="unit">ms</span><span class="sub">插件默认 10000</span></div>
+    <div class="cfg-row"><span class="lbl">私信错峰槽数</span><input type="number" id="s-chat-stagger-slots" value="{{ thresholds.chat_stagger_slots or '1' }}" min="1" max="8"><span class="unit">槽</span><span class="sub">≤1 关闭（4.6.172 默认关）；2≈一半号同时新开私信（按 handle 哈希+上海墙钟）</span></div>
+    <div class="cfg-row"><span class="lbl">错峰槽时长</span><input type="number" id="s-chat-stagger-min" value="{{ thresholds.chat_stagger_slot_min or '30' }}" min="5" max="180"><span class="unit">分</span><span class="sub">每槽占用墙钟分钟；软风控/已在跑旁路</span></div>
+    <div class="cfg-row"><span class="lbl">舰队重活并发</span><input type="number" id="s-fleet-heavy-slots" value="{{ thresholds.fleet_heavy_slots or '8' }}" min="0" max="64"><span class="unit">槽</span><span class="sub">4.6.173：同时新开 follow/chat 上限；0=关；软风控旁路；OPS 不可达 fail-open</span></div>
     <div class="cfg-row"><span class="lbl">跳页最小间隔</span><input type="number" id="s-navmin" value="{{ thresholds.nav_min_interval_ms or '10000' }}"><span class="unit">ms</span><span class="sub">自动模式整页跳节流；慢网多号建议 10000–15000</span></div>
     <div class="cfg-row">
       <span class="lbl">媒体加载</span>
@@ -326,6 +336,24 @@
     </div>
     <div class="cfg-row"><span class="lbl">看门狗</span><input type="number" id="s-wdog" value="{{ thresholds.stage_watchdog_ms or '30000' }}"><span class="unit">ms</span><span class="sub">插件默认 30000</span></div>
     <div class="cfg-row"><span class="lbl">卡死冷却</span><input type="number" id="s-stall" value="{{ thresholds.stage_stall_cooldown_sec or '180' }}"><span class="unit">秒</span><span class="sub">连续跳页冷却，插件默认 180</span></div>
+    <div class="cfg-row">
+      <span class="lbl">页面瘦身</span>
+      <select id="s-page-slim" style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:5px 8px;border-radius:4px;font-size:13px">
+        <option value="off" {{ 'selected' if (not thresholds.page_slim_mode or thresholds.page_slim_mode == 'off') else '' }}>off（全关，默认）</option>
+        <option value="gray" {{ 'selected' if thresholds.page_slim_mode == 'gray' else '' }}>gray（仅下方勾选账号生效）</option>
+        <option value="on" {{ 'selected' if thresholds.page_slim_mode == 'on' else '' }}>on（全量开启）</option>
+      </select>
+      <span class="sub">K3 四针：CSS禁动效+页面限频+拦X遥测+评论跳逐键；需插件 4.6.147+，重载扩展并刷新 x.com 后约 1 分钟生效；回退=改回 off</span>
+    </div>
+    <div class="cfg-row" style="align-items:flex-start">
+      <span class="lbl">灰度账号</span>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:4px 10px;max-width:640px;max-height:180px;overflow-y:auto;border:1px solid #30363d;border-radius:6px;padding:8px;text-align:left">
+        {% for h in all_handles %}
+        <label style="font-weight:normal;font-size:12px;white-space:nowrap"><input type="checkbox" class="slim-h" value="{{ h }}" {{ 'checked' if (h | lower) in slim_selected else '' }}> {{ h }}</label>
+        {% endfor %}
+      </div>
+      <span class="sub">仅 gray 模式生效；勾选后点下方「保存调度设置」</span>
+    </div>
   </div>
   <div class="cfg-sect">
     <h4>运行观测 / 告警</h4>
@@ -444,7 +472,8 @@ function saveChat(){
     chat_cooldown_max_min:val('ch-cd-max')||35,
     chat_debt_cooldown_min_min:val('ch-debt-min')||8,
     chat_debt_cooldown_max_min:val('ch-debt-max')||12,
-    chat_ad_min_wait_min:val('ch-ad-wait')||20,
+    chat_ad_min_wait_min:val('ch-ad-wait')||60,
+    chat_two_seg_mode:(document.getElementById('ch-two-seg') && document.getElementById('ch-two-seg').value) || 'on',
     chat_dry_run_enabled: document.getElementById('ch-dry-run') && document.getElementById('ch-dry-run').checked ? 'true' : 'false'
   })}).then(function(r){return r.json()}).then(function(d){flash('chat-msg',d.ok?'已保存':d.msg)});
   saveSwitch('chat',document.getElementById('sw-chat').checked);
@@ -482,10 +511,21 @@ function saveRepost(){
 // ========== 调度 ==========
 function saveScheduler(){
   // 阈值
+  var slimHandles = [];
+  try {
+    Array.prototype.forEach.call(document.querySelectorAll('input.slim-h:checked'), function (el) {
+      if (el.value) slimHandles.push(el.value);
+    });
+  } catch (eSlim) {}
   fetch('/api/config/thresholds',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
     stage_tick_interval_ms:val('s-tick'),stage_watchdog_ms:val('s-wdog'),stage_stall_cooldown_sec:val('s-stall'),
+    chat_stagger_slots: val('s-chat-stagger-slots') || 1,
+    chat_stagger_slot_min: val('s-chat-stagger-min') || 30,
+    fleet_heavy_slots: val('s-fleet-heavy-slots') || 8,
     nav_min_interval_ms:val('s-navmin') || 10000,
     media_load_mode: (document.getElementById('s-media-mode')||{}).value || 'off',
+    page_slim_mode: (document.getElementById('s-page-slim')||{}).value || 'off',
+    page_slim_handles: slimHandles.join(','),
     chat_script_pool: (document.getElementById('s-script-pool')||{}).value || 'dating',
     telemetry_upload_min_level: (document.getElementById('tel-min-level')||{}).value || 'info',
     push_alerts_enabled: document.getElementById('tel-push') && document.getElementById('tel-push').checked ? '1' : '0',
@@ -535,7 +575,7 @@ function saveScheduler(){
     var cs = policy.chatHours.start[0] * 60 + policy.chatHours.start[1];
     var ce = policy.chatHours.end[0] * 60 + policy.chatHours.end[1];
     if (ce === cs) {
-      policy.chatHours = { start: [8, 0], end: [18, 0] };
+      policy.chatHours = { start: [9, 0], end: [18, 0] };
     }
   }
   fetch('/api/config/stage-policy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(policy)})

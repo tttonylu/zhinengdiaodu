@@ -135,6 +135,7 @@
                 {% elif r.display_round == 'marker' %}<span class="engine-tag" style="background:#21262d;color:#8b949e;">完结标记</span>
                 {% elif r.round_number == 1 %}<span class="engine-tag nurture">破冰</span>
                 {% elif r.round_number == 2 %}<span class="engine-tag follow">广告</span>
+                {% elif r.round_number == 4 %}<span class="engine-tag chat">终催</span>
                 {% else %}<span class="engine-tag chat">催加</span>{% endif %}
               </td>
               <td style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;">{{ r.message_content or '--' }}</td>

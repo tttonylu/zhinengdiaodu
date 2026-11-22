@@ -1,4 +1,4 @@
-// =============================================================================
+﻿// =============================================================================
 // 智能调度 — 调度核心 V3.3
 // 改动：
 //   1. Logger + SKeys 替换硬编码
@@ -13,7 +13,6 @@
   var S = {};
   var prev = { followActive: false, nurturing: false, chatRunning: false };
   var g_stage = 'S0';
-  var _lastCoorNurtureStart = 0;
 
   // ==================== 工具 ====================
   function inRange(hS, mS, hE, mE) {
@@ -256,7 +255,7 @@
     // 3) session 引擎旗标 / 模块态
     try {
       var skKill = [
-        K.SK_REPOST_RUNNING, K.SK_REPOST_AUTO_SLOT, 'sg_repost_manual_slot', 'sg_repost_pending_content',
+        K.SK_REPOST_RUNNING, K.SK_REPOST_AUTO_SLOT, 'sg_repost_manual_slot', 'sg_repost_manual_no_quota', 'sg_repost_pending_content',
         K.SK_NURTURE_RUNNING, K.SK_NURTURE_PAUSED, K.SK_CHAT_AUTO_RUN, K.SK_CHAT_STEP, K.SK_CHAT_TARGET,
         K.SK_ICE_TASK_QUEUE, K.SK_CURRENT_TARGET, K.SK_TAB_RUNNING, K.SK_ONBOARDING_ACTIVE,
         K.SK_PROFILE_CLONE_JOB, K.SK_PROFILE_CLONE_RUNNING, 'sg_scheduler_booted',
@@ -443,6 +442,8 @@
   var _healRequestAt = 0;
   var _healPauseLogAt = 0;
   var _memPurgeAt = 0;
+  var _lastPanelSig = '';
+  var _lastPanelDispatchAt = 0;
 
   /** 调度在跑时堆≈300MB / DOM≥6000 → 仅清媒体缓存（15min 防抖在 SW） */
   function coProbeMemoryPurge() {
@@ -451,7 +452,15 @@
     try {
       if (!window.performance || !window.performance.memory) return;
       var usedMB = Math.round(window.performance.memory.usedJSHeapSize / 1024 / 1024);
-      var domCount = document.getElementsByTagName('*').length;
+      // 4.6.194：优先复用 chat 侧 dan_dom_count 缓存（5min 一次全树枚举），避免调度侧重复计数
+      var domCount = 0;
+      try {
+        var _domCachedAt = parseInt(sessionStorage.getItem('dan_dom_count_at') || '0', 10) || 0;
+        if (_domCachedAt && Date.now() - _domCachedAt < 10 * 60 * 1000) {
+          domCount = parseInt(sessionStorage.getItem('dan_dom_count') || '0', 10) || 0;
+        }
+      } catch (eDomCache) {}
+      if (!domCount) domCount = document.getElementsByTagName('*').length;
       if (usedMB < 300 && domCount < 6000) return;
       if (usedMB > 400 || domCount > 8000) return; // 交给 heal recreate，避免双通道
       _memPurgeAt = Date.now();
@@ -666,9 +675,10 @@
       var lastDate = toShanghaiDayKey(st.date);
       if (!lastDate || lastDate === today) return false;
 
-      // 跨日：清零今日关注数、解除旧配额锁
+      // 跨日：清零今日关注数、解除旧配额锁；打闩挡 OPS 昨日 runtime 回灌（4.6.185）
       st.follows_today = 0;
       delete st.daily_limit;
+      st.follows_reset_day = today;
       st.date = today;
       localStorage.setItem(key, JSON.stringify(st));
 
@@ -821,8 +831,341 @@
   /** 资料克隆完成后由 ProfileClone 回调，跳过前置闸 */
   try { window.__sgStartNurtureDirect = startNurtureDirect; } catch (eHook) {}
 
+  /** 4.6.164：关注满额停养号（软风控除外） */
+  function evaluateNurtureQuotaGateCo(sg, nowMs) {
+    try {
+      if (typeof SgNurtureQuotaGate === 'undefined' || !SgNurtureQuotaGate.evaluate) {
+        return { allow: true, reason: 'no_module' };
+      }
+      var soft = false;
+      try { soft = softRiskActive(sg || coLoadSg(), nowMs != null ? nowMs : Date.now()); } catch (eS) {}
+      return SgNurtureQuotaGate.evaluate({
+        followedToday: getFollowedToday(),
+        followLimit: getLimit(),
+        softRiskActive: soft,
+        moduleOn: moduleSwitchOn('nurture')
+      });
+    } catch (e) {
+      return { allow: true, reason: 'gate_err' };
+    }
+  }
+
+  /** 4.6.172/173：关注满额且无引擎真活 → 空闲降频；173 起 deep=整拍早退 */
+  function evaluateIdleParkGateCo(sg, nowMs) {
+    try {
+      if (typeof SgIdleParkGate === 'undefined' || !SgIdleParkGate.evaluate) {
+        return { park: false, deep: false, reason: 'no_module' };
+      }
+      try {
+        if (localStorage.getItem('sg_idle_park_off') === '1') {
+          return { park: false, deep: false, reason: 'kill_switch' };
+        }
+      } catch (eK) {}
+      var soft = false;
+      try { soft = softRiskActive(sg || coLoadSg(), nowMs != null ? nowMs : Date.now()); } catch (eS) {}
+      function engBusy(n) {
+        try { return !!(coIsRunning(n) || coEngineAlive(n)); } catch (eB) { return false; }
+      }
+      var debtUrgent = false;
+      try { debtUrgent = !!hasDaytimeChatWork(); } catch (eD) { debtUrgent = false; }
+      // 4.6.179：转帖到期/手动场不得被满额 park 整拍早退掐死
+      var repostDue = false;
+      try {
+        repostDue = !!nightRepostShouldRun() || !!isManualRepostOpenCo();
+      } catch (eRp) { repostDue = false; }
+      return SgIdleParkGate.evaluate({
+        followedToday: getFollowedToday(),
+        followLimit: getLimit(),
+        softRiskActive: soft,
+        followRunning: engBusy('follow'),
+        chatRunning: engBusy('chat'),
+        nurtureRunning: engBusy('nurture'),
+        repostRunning: engBusy('repost'),
+        chatDebtUrgent: debtUrgent,
+        repostDue: repostDue
+      });
+    } catch (e) {
+      return { park: false, deep: false, reason: 'gate_err' };
+    }
+  }
+
+  var _coIdleParkActive = false;
+  var _claimRemoteFn = null;
+  function reinstallClaimRemoteTimer() {
+    try {
+      if (typeof _claimRemoteFn !== 'function') return;
+      if (window._sgRemoteCmdTimer) {
+        clearInterval(window._sgRemoteCmdTimer);
+        window._sgRemoteCmdTimer = null;
+      }
+      var interval = 10000;
+      if (_coIdleParkActive) interval = 45000;
+      else if (!isAutoMode()) interval = 15000;
+      window._sgRemoteCmdTimer = setInterval(_claimRemoteFn, interval);
+    } catch (eRi) {}
+  }
+  function applyIdleParkMode(on, reason) {
+    var next = !!on;
+    if (next === _coIdleParkActive) return;
+    _coIdleParkActive = next;
+    try { sessionStorage.setItem('sg_idle_park', next ? '1' : '0'); } catch (eS) {}
+    try {
+      window.dispatchEvent(new CustomEvent('sg-idle-park-change', {
+        detail: { park: next, reason: reason || '' }
+      }));
+    } catch (eEv) {}
+    try { reinstallClaimRemoteTimer(); } catch (eCl) {}
+    if (next) {
+      Logger.info('Coor', '进入深度空闲 park reason=' + (reason || ''));
+    } else {
+      Logger.info('Coor', '退出深度空闲 park reason=' + (reason || ''));
+    }
+  }
+
+  function coShouldThrottleFullTick() {
+    try {
+      if (coInLowPower()) return { throttle: true, gapMs: CO_LOW_POWER_TICK_MS, reason: 'low_power' };
+    } catch (eLp) {}
+    try {
+      var park = evaluateIdleParkGateCo();
+      if (park && park.park) {
+        return { throttle: true, gapMs: CO_IDLE_PARK_TICK_MS, reason: park.reason || 'idle_park' };
+      }
+    } catch (eIp) {}
+    return { throttle: false, gapMs: 0, reason: '' };
+  }
+
+  /** 4.6.173：舰队重活槽；≤0 关；OPS 不可达 fail-open */
+  function readFleetHeavySlotsCo() {
+    try {
+      var t = JSON.parse(localStorage.getItem('sg_config_thresholds') || '{}');
+      if (typeof SgFleetLease !== 'undefined' && SgFleetLease.readSlots) {
+        return SgFleetLease.readSlots(t);
+      }
+      var s = parseInt(t.fleet_heavy_slots, 10);
+      return isNaN(s) ? 8 : s;
+    } catch (e) { return 8; }
+  }
+
+  function requestFleetLeaseCo(kind, cb) {
+    cb = typeof cb === 'function' ? cb : function () {};
+    var slots = readFleetHeavySlotsCo();
+    if (slots <= 0) { cb(true, 'lease_off'); return; }
+    try {
+      if (softRiskActive(coLoadSg())) { cb(true, 'soft_risk_bypass'); return; }
+    } catch (eS) {}
+    try {
+      if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.sendMessage) {
+        cb(true, 'no_chrome_failopen');
+        return;
+      }
+      chrome.runtime.sendMessage({
+        action: 'ops_fleet_lease',
+        bot_id: getWorkerId(),
+        kind: kind || 'chat',
+        ttl_ms: 180000
+      }, function (r) {
+        if (chrome.runtime.lastError) { cb(true, 'ops_err_failopen'); return; }
+        if (r && r.granted) { cb(true, r.reason || 'ok'); return; }
+        cb(false, (r && (r.reason || r.msg)) || 'denied');
+      });
+    } catch (e2) { cb(true, 'send_err_failopen'); }
+  }
+
+  function fleetLeaseDenyShouldShed(why) {
+    var w = String(why || '');
+    if (!w || w.indexOf('failopen') >= 0) return false;
+    if (w === 'lease_off' || w === 'soft_risk_bypass') return false;
+    return true;
+  }
+
+  function chatSendInFlightCo() {
+    try {
+      if (sessionStorage.getItem('dan_dm_inflight') === '1') return true;
+      var st = sessionStorage.getItem('dan_auto_step') || '';
+      if (st.indexOf('2_') === 0) return true;
+    } catch (e) {}
+    return false;
+  }
+
+  /** 4.6.191：已在跑的关注/私信也要占槽。OPS 明确满员才停；网络失败保持原样。 */
+  function maybeRenewFleetLeaseCo(kind) {
+    if (kind !== 'follow' && kind !== 'chat') return;
+    if (readFleetHeavySlotsCo() <= 0) return;
+    try { if (softRiskActive(coLoadSg())) return; } catch (eS) {}
+    var key = 'sg_fleet_lease_check_' + kind;
+    var last = 0;
+    try { last = parseInt(sessionStorage.getItem(key) || '0', 10) || 0; } catch (eLast) {}
+    if (Date.now() - last < 60000) return;
+    try { sessionStorage.setItem(key, String(Date.now())); } catch (eSet) {}
+    var shed = !(kind === 'chat' && chatSendInFlightCo());
+    requestFleetLeaseCo(kind, function (ok, why) {
+      if (ok || !shed || !fleetLeaseDenyShouldShed(why)) return;
+      if (!coIsRunning(kind)) return;
+      Logger.info('Coor', '舰队槽满，停下已在跑的 ' + kind + ' reason=' + (why || ''));
+      try {
+        if (typeof SgTelemetry !== 'undefined') {
+          SgTelemetry.emit('scheduler.fleet_lease_wait', { kind: kind, reason: 'shed:' + (why || '') });
+        }
+      } catch (eT) {}
+      if (kind === 'follow') {
+        try { stopFollow(); } catch (eSf) {}
+        coGentleStopFollow();
+        try {
+          var sgHold = coLoadSg();
+          var until = Date.now() + 60000;
+          if (!(sgHold.followNextDelayUntil > until)) {
+            sgHold.followNextDelayUntil = until;
+            coSaveSg(sgHold);
+          }
+        } catch (eH) {}
+        return;
+      }
+      coStop('chat');
+    });
+  }
+
+  function releaseFleetLeaseCo(kind) {
+    try {
+      if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.sendMessage) return;
+      chrome.runtime.sendMessage({
+        action: 'ops_fleet_release',
+        bot_id: getWorkerId(),
+        kind: kind || ''
+      }, function () { void chrome.runtime.lastError; });
+    } catch (e) {}
+  }
+
+  var FLEET_LEASE_RETRY_MS = 15000;
+  var FLEET_LEASE_PENDING_TIMEOUT_MS = 20000;
+
+  /** 租约申请态：只占内存 pending，不写 running；已有 token 时复用。 */
+  function coLeaseMarkPending(n, url, token) {
+    var m = coModules[n];
+    if (!m || typeof SgFleetLease === 'undefined' || !SgFleetLease.markStartPending) return token;
+    if (token != null) return SgFleetLease.isStartPending(m, token) ? token : null;
+    var r = SgFleetLease.markStartPending(m, url, Date.now());
+    coWrite(n, r.state);
+    return r.token;
+  }
+
+  function coLeaseCancel(n, token, backoffMs) {
+    var m = coModules[n];
+    if (!m || typeof SgFleetLease === 'undefined' || !SgFleetLease.cancelStart) return false;
+    var st = SgFleetLease.cancelStart(m, token, Date.now(), backoffMs || 0);
+    if (!st) return false;
+    coWrite(n, st);
+    return true;
+  }
+
+  function coLeaseAbort(n, token, reason, backoffMs, leaseHeld) {
+    var cancelled = coLeaseCancel(n, token, backoffMs);
+    if (leaseHeld) releaseFleetLeaseCo(n);
+    if (cancelled || reason) {
+      Logger.info('Coor', '租约启动取消 ' + n + ' reason=' + (reason || 'stale') + (leaseHeld ? '（已释放槽）' : ''));
+    }
+    return cancelled;
+  }
+
+  /** 租约已回包但启动过程抛错：pending 取消；已 begin running 则 coStop 释放。 */
+  function coLeaseFailAfterStart(n, token, reason, backoffMs) {
+    var m = coModules[n];
+    if (m && typeof SgFleetLease !== 'undefined') {
+      if (SgFleetLease.isStartPending && SgFleetLease.isStartPending(m, token)) {
+        coLeaseAbort(n, token, reason, backoffMs || 0, true);
+        return;
+      }
+      if (SgFleetLease.isCurrentRun && SgFleetLease.isCurrentRun(m, token)) {
+        try { coStop(n); } catch (eStopFail) {}
+        return;
+      }
+    }
+    releaseFleetLeaseCo(n);
+  }
+
+  /** 20s 内未收到租约回调：作废 token 并释放可能已落库的槽，交回下一拍。 */
+  function coLeaseReapPending() {
+    if (typeof SgFleetLease === 'undefined' || !SgFleetLease.expireStart) return;
+    ['follow', 'chat'].forEach(function (n) {
+      var m = coModules[n];
+      if (!m || !m._leasePending) return;
+      var st = SgFleetLease.expireStart(m, Date.now(), FLEET_LEASE_PENDING_TIMEOUT_MS, FLEET_LEASE_RETRY_MS);
+      if (!st) return;
+      coWrite(n, st);
+      releaseFleetLeaseCo(n);
+      Logger.warn('Coor', n + ' 租约申请超时，已释放并交回调度');
+    });
+  }
+
+  /** 租约拿到后的唯一 running 写入口；token 不匹配说明已停止/已被新请求替换。 */
+  function coBeginLeasedRun(n, url, token) {
+    var m = coModules[n];
+    if (!m || typeof SgFleetLease === 'undefined' || !SgFleetLease.beginStart) return false;
+    var at = Date.now();
+    var st = SgFleetLease.beginStart(m, url, token, at);
+    if (!st) return false;
+    coWrite(n, st);
+    if (n === 'follow') {
+      try {
+        var sgF = coLoadSg();
+        sgF.followRoundStartedAt = at;
+        sgF.followRoundPlanMs = followMaxRunMs();
+        coSaveSg(sgF);
+      } catch (eFr) {}
+    }
+    if (n === 'chat') {
+      try {
+        var sgC = coLoadSg();
+        var uChat = String(url || '').toLowerCase();
+        var isInboxUrl = uChat.indexOf('/i/chat') >= 0 || uChat.indexOf('/messages') >= 0;
+        var lease = {
+          pulseId: 'lease_' + Date.now().toString(36),
+          intent: isInboxUrl ? 'inbox' : 'outbound',
+          startedAt: Date.now(),
+          url: url || ''
+        };
+        writeChatLeaseCo(lease);
+        noteChatProgressCo('co_start');
+        try {
+          if (typeof SgTelemetry !== 'undefined' && SgTelemetry.emitRoundStart) {
+            SgTelemetry.emitRoundStart({
+              module: 'chat',
+              intent: lease.intent,
+              pulseId: lease.pulseId,
+              url: lease.url,
+              via: 'coStart'
+            });
+          } else if (typeof SgTelemetry !== 'undefined') {
+            SgTelemetry.emit('scheduler.round_start', {
+              module: 'chat',
+              intent: lease.intent,
+              pulseId: lease.pulseId,
+              url: lease.url
+            });
+          }
+        } catch (eRs) {}
+        if (softRiskActive(sgC, Date.now())) {
+          clearChatSessionCaps();
+        } else if (isInboxUrl) {
+          clearChatSessionCaps();
+        } else {
+          clearChatSessionCaps();
+        }
+      } catch (eCs) {}
+    }
+    Logger.info('Coor', '启动: ' + n);
+    return true;
+  }
+
   function startNurture(targetUrl) {
     var url = targetUrl || 'https://x.com/home';
+    try {
+      var nqStart = evaluateNurtureQuotaGateCo();
+      if (!nqStart.allow) {
+        Logger.info('调度', '跳过养号 (' + nqStart.reason + ')');
+        return;
+      }
+    } catch (eNqS) {}
     try {
       if (typeof ProfileClone !== 'undefined' && ProfileClone.ensureBeforeNurture) {
         if (ProfileClone.isRunning && ProfileClone.isRunning()) {
@@ -1265,7 +1608,7 @@
     } catch (eG) { return false; }
   }
 
-  function startFollow(targetUrl) {
+  function startFollowAfterLease(targetUrl, token) {
     stopChat();
     try {
       if (sessionStorage.getItem(K.SK_TAB_RUNNING) === 'stopped_by_user') {
@@ -1277,7 +1620,8 @@
       if (softRiskActive(sgBlock, Date.now())) {
         Logger.warn('调度', '软风控窗口内拒绝领号');
         clearFollowPopFlight();
-        try { coStop('follow'); } catch (eB) {}
+        try { localStorage.removeItem(K.LK_FOLLOW_RUNNING); } catch (eLrSoft) {}
+        coLeaseAbort('follow', token, 'soft_risk', 0, true);
         return;
       }
     } catch (eSoft) {}
@@ -1297,6 +1641,10 @@
       lockedId = null;
     }
     if (lockedId && lockedCreator) {
+      if (!coBeginLeasedRun('follow', targetUrl, token)) {
+        releaseFleetLeaseCo('follow');
+        return;
+      }
       clearFollowPopFlight();
       S.currentBlogger = lockedCreator;
       S.followPhase = 'active';
@@ -1314,10 +1662,15 @@
     // 单飞：上一趟 pool_pop 未结案则禁止再 pop（防双 assigned）
     if (isFollowPopFlight()) {
       Logger.warn('调度', '领号进行中，跳过重复 pool_pop');
+      coLeaseAbort('follow', token, 'pop_flight', FLEET_LEASE_RETRY_MS, true);
       return;
     }
 
     // 领号窗内保持 LK + phase=popping，避免 coStart 写 running 后下一 tick 幽灵清标
+    if (!coBeginLeasedRun('follow', targetUrl, token)) {
+      releaseFleetLeaseCo('follow');
+      return;
+    }
     markFollowPopFlight();
     try {
       localStorage.setItem(K.LK_FOLLOW_RUNNING, 'true');
@@ -1357,6 +1710,19 @@
             try {
               chrome.runtime.sendMessage({ action: 'pool_fail', id: r.id }, function () {});
             } catch (eLate) {}
+          }
+          return;
+        }
+        if (typeof SgFleetLease !== 'undefined' && SgFleetLease.isCurrentRun
+          && !SgFleetLease.isCurrentRun(coModules.follow, token)) {
+          popSettled = true;
+          clearTimeout(popTimer);
+          clearFollowPopFlight();
+          if (r && r.id && !(r.ok === false && r.error)) {
+            Logger.warn('调度', '停止后晚到领号成功 #' + r.id + '，pool_fail 防占坑');
+            try {
+              chrome.runtime.sendMessage({ action: 'pool_fail', id: r.id }, function () {});
+            } catch (eStale) {}
           }
           return;
         }
@@ -1436,6 +1802,40 @@
     }
   }
 
+  /** 4.6.173：新开关注前占舰队槽 */
+  function startFollow(targetUrl, leaseToken) {
+    if (isFollowPopFlight()) {
+      coLeaseCancel('follow', leaseToken, FLEET_LEASE_RETRY_MS);
+      Logger.info('调度', '领号进行中，暂缓新开关注');
+      return;
+    }
+    var token = coLeaseMarkPending('follow', targetUrl, leaseToken);
+    if (token == null) return;
+    requestFleetLeaseCo('follow', function (ok, why) {
+      var m = coModules.follow;
+      if (!m || typeof SgFleetLease === 'undefined' || !SgFleetLease.isStartPending(m, token)) {
+        if (ok) releaseFleetLeaseCo('follow');
+        return;
+      }
+      if (!ok) {
+        Logger.info('调度', '舰队关注槽满，暂缓领号 reason=' + (why || ''));
+        coLeaseCancel('follow', token, FLEET_LEASE_RETRY_MS);
+        try {
+          if (typeof SgTelemetry !== 'undefined') {
+            SgTelemetry.emit('scheduler.fleet_lease_wait', { kind: 'follow', reason: why || '' });
+          }
+        } catch (eT) {}
+        return;
+      }
+      try {
+        startFollowAfterLease(targetUrl, token);
+      } catch (eStartAfter) {
+        Logger.warn('调度', '关注租约后启动异常: ' + (eStartAfter && eStartAfter.message ? eStartAfter.message : eStartAfter));
+        coLeaseFailAfterStart('follow', token, 'start_exception', FLEET_LEASE_RETRY_MS);
+      }
+    });
+  }
+
   /**
    * SCRM 闸门缓存：只认客服在线，进线数字不参与。
    * 有效期与 OPS 快照过期一致（45 分钟），避免 75s 过期返回 null 导致私信中途被跳过。
@@ -1498,45 +1898,146 @@
     }
   } catch (eT) {}
 
-  function startChat(targetUrl) {
+  /** 4.6.163：私信时间片错峰（未轮到则禁止新开；已在跑/软风控/强制测旁路） */
+  function evaluateChatStaggerGateCo(opts) {
+    opts = opts || {};
+    try {
+      if (typeof SgChatStagger === 'undefined' || !SgChatStagger.evaluate) {
+        return { allow: true, reason: 'no_module' };
+      }
+      var thr = {};
+      try { thr = JSON.parse(localStorage.getItem('sg_config_thresholds') || '{}'); } catch (eT) {}
+      var already = !!opts.alreadyRunning;
+      if (!already) {
+        try {
+          already = sessionStorage.getItem(K.SK_CHAT_AUTO_RUN) === 'true'
+            && coIsRunning('chat') && coEngineAlive('chat');
+        } catch (eA) {}
+      }
+      var soft = !!opts.softRiskActive;
+      if (!soft) {
+        try { soft = softRiskActive(coLoadSg(), Date.now()); } catch (eS) {}
+      }
+      var force = !!opts.force;
+      if (!force) {
+        try { force = sessionStorage.getItem('sg_chat_force_inbox') === 'true'; } catch (eF) {}
+      }
+      return SgChatStagger.evaluate({
+        handle: getMyHandle() || getWorkerId() || '',
+        thresholds: thr,
+        alreadyRunning: already,
+        softRiskActive: soft,
+        force: force,
+        nowMs: Date.now()
+      });
+    } catch (e) {
+      return { allow: true, reason: 'stagger_err' };
+    }
+  }
+
+  function startChatAfterLease(targetUrl, forceInbox, token, leaseHeld) {
     stopFollow();
+    var h = getMyHandle();
+    if (!h || h === 'unknown') {
+      coLeaseAbort('chat', token, 'no_handle', 0, leaseHeld);
+      return;
+    }
+    if (!forceInbox) {
+      var stg0 = evaluateChatStaggerGateCo({ alreadyRunning: false, force: false });
+      if (!stg0.allow) {
+        Logger.info('调度', '私信错峰等待 my=' + stg0.mySlot + ' active=' + stg0.activeSlot
+          + ' slots=' + stg0.slots);
+        try {
+          if (typeof SgTelemetry !== 'undefined') {
+            SgTelemetry.emit('scheduler.chat_blocked', {
+              reason: 'chat_stagger_wait',
+              my_slot: stg0.mySlot,
+              active_slot: stg0.activeSlot,
+              slots: stg0.slots
+            });
+          }
+        } catch (eStg) {}
+        coLeaseAbort('chat', token, 'chat_stagger_wait', 0, leaseHeld);
+        return;
+      }
+      var gate = getScrmGateSync();
+      if (gate && !gate.allow_chat) {
+        Logger.info('调度', 'SCRM闸门拦截私信: ' + (gate.reason || '未放行'));
+        refreshScrmGate();
+        coLeaseAbort('chat', token, 'scrm_blocked', 0, leaseHeld);
+        return;
+      }
+      if (!gate) refreshScrmGate();
+    }
+    var dest = resolveChatStartUrl(targetUrl);
+    if (!dest) {
+      Logger.info('调度', '私信日帽已满，跳过启动');
+      coLeaseAbort('chat', token, 'daily_cap_or_no_url', 0, leaseHeld);
+      return;
+    }
+    if (!coBeginLeasedRun('chat', dest, token)) {
+      if (leaseHeld) releaseFleetLeaseCo('chat');
+      return;
+    }
+    sessionStorage.setItem(K.SK_CHAT_AUTO_RUN, 'true');
+    localStorage.setItem(K.LK_CHAT_STATUS, 'running');
+    localStorage.setItem(K.LK_CHAT_RECOVERY, 'true');
+    S.chatPhase = 'running';
+    Logger.info('调度', (forceInbox ? '私信测试' : '启动私信') + ' → ' + dest);
+    window.dispatchEvent(new CustomEvent('sg-chat-command', { detail: { command: 'start', targetUrl: dest } }));
+  }
+
+  function startChat(targetUrl, leaseToken) {
     var forceInbox = false;
     try { forceInbox = sessionStorage.getItem('sg_chat_force_inbox') === 'true'; } catch (eF) {}
     var h = getMyHandle();
-    if (h && h !== 'unknown') {
-      var already = !forceInbox
-        && sessionStorage.getItem(K.SK_CHAT_AUTO_RUN) === 'true'
-        && coIsRunning('chat')
-        && coEngineAlive('chat');
-      if (already) {
-        Logger.info('调度', '私信已在运行，跳过重复 start');
-        return;
-      }
-      // SCRM 门禁：常规模式执行；强制测试模式本地放行
-      if (!forceInbox) {
-        var gate = getScrmGateSync();
-        if (gate && !gate.allow_chat) {
-          Logger.info('调度', 'SCRM闸门拦截私信: ' + (gate.reason || '未放行'));
-          refreshScrmGate();
-          return;
-        }
-        // 4.4.1：fail-open —— 闸门未就绪不拦截，直接放行
-        if (!gate) {
-          refreshScrmGate(); // 后台异步刷新，不阻塞
-        }
-      }
-      sessionStorage.setItem(K.SK_CHAT_AUTO_RUN, 'true');
-      localStorage.setItem(K.LK_CHAT_STATUS, 'running');
-      localStorage.setItem(K.LK_CHAT_RECOVERY, 'true');
-      S.chatPhase = 'running';
-      var dest = resolveChatStartUrl(targetUrl);
-      if (!dest) {
-        Logger.info('调度', '私信日帽已满，跳过启动');
-        return;
-      }
-      Logger.info('调度', (forceInbox ? '私信测试' : '启动私信') + ' → ' + dest);
-      window.dispatchEvent(new CustomEvent('sg-chat-command', { detail: { command: 'start', targetUrl: dest } }));
+    if (!h || h === 'unknown') {
+      coLeaseCancel('chat', leaseToken, 0);
+      return;
     }
+    var already = !forceInbox
+      && sessionStorage.getItem(K.SK_CHAT_AUTO_RUN) === 'true'
+      && coIsRunning('chat')
+      && coEngineAlive('chat');
+    if (already) {
+      Logger.info('调度', '私信已在运行，跳过重复 start');
+      coLeaseCancel('chat', leaseToken, 0);
+      return;
+    }
+    var token = coLeaseMarkPending('chat', targetUrl, leaseToken);
+    if (token == null) return;
+    if (forceInbox) {
+      try {
+        startChatAfterLease(targetUrl, true, token, false);
+      } catch (eForceStart) {
+        Logger.warn('调度', '强制私信启动异常: ' + (eForceStart && eForceStart.message ? eForceStart.message : eForceStart));
+        coLeaseFailAfterStart('chat', token, 'force_start_exception', 0);
+      }
+      return;
+    }
+    requestFleetLeaseCo('chat', function (ok, why) {
+      var m = coModules.chat;
+      if (!m || typeof SgFleetLease === 'undefined' || !SgFleetLease.isStartPending(m, token)) {
+        if (ok) releaseFleetLeaseCo('chat');
+        return;
+      }
+      if (!ok) {
+        Logger.info('调度', '舰队私信槽满，暂缓开聊 reason=' + (why || ''));
+        coLeaseCancel('chat', token, FLEET_LEASE_RETRY_MS);
+        try {
+          if (typeof SgTelemetry !== 'undefined') {
+            SgTelemetry.emit('scheduler.fleet_lease_wait', { kind: 'chat', reason: why || '' });
+          }
+        } catch (eT) {}
+        return;
+      }
+      try {
+        startChatAfterLease(targetUrl, false, token, true);
+      } catch (eStartAfter) {
+        Logger.warn('调度', '私信租约后启动异常: ' + (eStartAfter && eStartAfter.message ? eStartAfter.message : eStartAfter));
+        coLeaseFailAfterStart('chat', token, 'start_exception', 0);
+      }
+    });
   }
 
   // ==================== 主循环 ====================
@@ -1561,6 +2062,13 @@
   }
 
   function buildRuntimeHeartbeatPayload(kind) {
+    // 4.6.186：组包前先跨日清零，避免把昨日已用写回 OPS
+    try { ensureFollowDailyRollover(); } catch (eRollHb) {}
+    try {
+      if (typeof ConfigSync !== 'undefined' && ConfigSync.ensureLocalFollowQuotaRollover) {
+        ConfigSync.ensureLocalFollowQuotaRollover(getMyHandle());
+      }
+    } catch (eCs) {}
     var autoOn = !!(S.running || coRunning);
     var rn = resolveRunningModule();
     var st = coPrev.stage || 'S0';
@@ -1570,6 +2078,14 @@
       if (!rn) why = computeWhyIdle({ autoMode: autoOn, stage: st, runningModule: rn });
     } catch (eWhy) {}
     var engine = rn || (autoOn ? 'coor' : 'idle');
+    var followed = getFollowedToday();
+    // 有跨日闩且本地应为 0 起步时，禁止脏缓存上报
+    try {
+      var stQ = JSON.parse(localStorage.getItem('matrix_stats_' + getMyHandle()) || '{}') || {};
+      var rd = toShanghaiDayKey(stQ.follows_reset_day);
+      var td = shanghaiDayKey();
+      if (rd && rd === td && (parseInt(stQ.follows_today, 10) || 0) === 0) followed = 0;
+    } catch (eLatch) {}
     return {
       bot_id: getWorkerId(),
       heartbeat_kind: kind || 'full',
@@ -1577,7 +2093,8 @@
       stage: st,
       running_module: rn,
       why_idle: why || '',
-      followed_today: getFollowedToday(),
+      followed_today: followed,
+      followed_today_date: shanghaiDayKey(),
       follow_limit: getLimit(),
       auto_mode: autoOn,
       url: (typeof location !== 'undefined' ? location.href : '') || '',
@@ -1699,40 +2216,30 @@
             ConfigSync.applyRemoteDayCount(
               r.account.day_count,
               r.account.x_handle || getWorkerId(),
-              r.account.today_follow_count != null ? r.account.today_follow_count : r.today_follow_count
+              r.account.today_follow_count != null ? r.account.today_follow_count : r.today_follow_count,
+              r.account.today_follow_count_date || r.today_follow_count_date
             );
           } else if (r.account && r.account.day_count != null) {
-            // ConfigSync 未暴露时直接写本地（跨日必须清零配额）
+            // ConfigSync 未暴露时直接写本地——必须与 F1 applyRemoteDayCount 同语义（4.6.197）
             var h = String(r.account.x_handle || getMyHandle() || '').replace(/^@/, '').replace(/#guard$/i, '').toLowerCase();
             if (h) {
               var key = 'matrix_stats_' + h;
               var stats = {};
               try { stats = JSON.parse(localStorage.getItem(key) || '{}') || {}; } catch (eS) {}
-              var todayKey = '';
-              try { todayKey = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' }); } catch (eD) {}
-              var prevD = String(stats.date || '');
-              var prevKey = '';
-              var mD = prevD.match(/^(\d{4})[/-](\d{1,2})[/-](\d{1,2})/);
-              if (mD) prevKey = mD[1] + '-' + String(mD[2]).padStart(2, '0') + '-' + String(mD[3]).padStart(2, '0');
+              var todayKey = shanghaiDayKey();
+              var prevKey = toShanghaiDayKey(stats.date);
               var rolledLocal = !prevKey || prevKey !== todayKey;
               if (rolledLocal) {
                 stats.follows_today = 0;
                 delete stats.daily_limit;
+                stats.follows_reset_day = todayKey; // 禁止删闩
               }
               var ft = r.account.today_follow_count != null ? r.account.today_follow_count : r.today_follow_count;
               var localF = parseInt(stats.follows_today, 10) || 0;
-              var resetDayHb = '';
-              try {
-                var rdRaw = String(stats.follows_reset_day || '');
-                var mRd = rdRaw.match(/^(\d{4})[/-](\d{1,2})[/-](\d{1,2})/);
-                if (mRd) resetDayHb = mRd[1] + '-' + String(mRd[2]).padStart(2, '0') + '-' + String(mRd[3]).padStart(2, '0');
-              } catch (eRd) {}
-              var skipBoostHb = !!(resetDayHb && todayKey && resetDayHb === todayKey && !rolledLocal);
-              if (ft != null) {
+              var opsDayHb = toShanghaiDayKey(r.account.today_follow_count_date || r.today_follow_count_date);
+              if (opsDayHb && opsDayHb === todayKey && ft != null) {
                 var remoteF = parseInt(ft, 10) || 0;
-                if (rolledLocal) {
-                  try { delete stats.follows_reset_day; } catch (eDelHb) {}
-                } else if (remoteF > localF && !skipBoostHb) {
+                if (remoteF > localF) {
                   stats.follows_today = remoteF;
                 }
               }
@@ -1848,6 +2355,8 @@
           }
         } catch (eSt) {}
         sessionStorage.setItem('sg_repost_manual_slot', '1');
+        // 4.6.159：用户手动场标记——发帖不计当日配额、不封本日自动（新号上路不写此键，仍计配额）
+        try { sessionStorage.setItem('sg_repost_manual_no_quota', '1'); } catch (eNq) {}
       }
     } catch (e) {}
     startRepost('', { autoSlot: false, freshRound: true });
@@ -1903,60 +2412,10 @@
     loadSG();
     saveSG(); updatePanel();
 
-    // Coordinator — 智能调度唯一大脑
+    // coTick 定期刷新阶段；面板使用同名 tick 事件，不可移除。
     window.addEventListener('sg-coordinator-tick', function (e) {
       if (e.detail && e.detail.stage) g_stage = e.detail.stage;
     });
-    window.addEventListener('sg-coordinator-command', function (e) {
-      var d = e.detail;
-      if (d.action === 'stop') {
-        if (d.module === 'nurture') { stopNurture(); if (window._lastModuleAction) window._lastModuleAction.nurture = Date.now(); }
-        if (d.module === 'follow')  { stopFollow();  if (window._lastModuleAction) window._lastModuleAction.follow  = Date.now(); }
-        if (d.module === 'chat')    { stopChat();    if (window._lastModuleAction) window._lastModuleAction.chat    = Date.now(); }
-      }
-      if (d.action === 'start') {
-        if (d.module === 'nurture') {
-          if (Date.now() - _lastCoorNurtureStart > 30000) { startNurture(); _lastCoorNurtureStart = Date.now(); }
-          if (window._lastModuleAction) window._lastModuleAction.nurture = Date.now();
-        }
-        if (d.module === 'follow')  { startFollow(); if (window._lastModuleAction) window._lastModuleAction.follow = Date.now(); }
-        if (d.module === 'chat')    { startChat();   if (window._lastModuleAction) window._lastModuleAction.chat   = Date.now(); }
-      }
-    });
-    if (typeof Coordinator !== 'undefined') {
-      var msCheckOld = function () {
-        try {
-          var raw = localStorage.getItem('sg_module_switches');
-          if (raw) { var sw = JSON.parse(raw); return function (m) { return sw[m] !== false; }; }
-        } catch (e) {}
-        return function () { return true; };
-      };
-      window._lastModuleAction = { follow: Date.now(), chat: Date.now(), nurture: Date.now() };
-      window.addEventListener('matrix-nurture-log', function () { if (window._lastModuleAction) window._lastModuleAction.nurture = Date.now(); });
-      window.addEventListener('matrix-follow-status', function () { if (window._lastModuleAction) window._lastModuleAction.follow = Date.now(); });
-      var msOnOld = msCheckOld();
-      Coordinator.register('nurture', { canRun: function () { return msOnOld('nurture'); }, start: function (u) { startNurture(u); }, stop: function () { stopNurture(); } });
-      Coordinator.register('follow',  { canRun: function (s) {
-        if (!msOnOld('follow')) return false;
-        try {
-          if (isChatRushActive(coLoadSg())) return false;
-          if (softRiskActive(coLoadSg(), Date.now())) return false;
-        } catch (eF) {}
-        return true;
-      }, start: function (u) { startFollow(u); }, stop: function () { stopFollow(); } });
-      Coordinator.register('chat',    { canRun: function (s) {
-        if (!msOnOld('chat')) return false;
-        try {
-          if (isChatRushActive(coLoadSg())) return true;
-          var sgC = coLoadSg();
-          if (softRiskActive(sgC, Date.now()) && !sgC.softRiskChatDone) return true;
-        } catch (eC) {}
-        return s === 'S3';
-      }, start: function (u) { startChat(u); }, stop: function () { stopChat(); } });
-      Coordinator.init();
-      Coordinator.start();
-      Logger.info('调度','Coordinator 启动');
-    }
 
     // 内置调度核心 (无条件启动，不依赖 Coordinator)
     coInit();
@@ -1971,11 +2430,14 @@
   var coPrevWorkTime = null; // 4.3.24：用「进工作窗」触发早间整页刷新（不再依赖 S0）
   var coTimer = null, coWdTimer = null, coLastTick = 0;
   var coTickLock = false, coRunning = false;
-  var coMaxRun = { chat: 30 * 60 * 1000, follow: 90 * 60 * 1000, nurture: 15 * 60 * 1000, repost: 60 * 60 * 1000 };
+  var coMaxRun = { chat: 30 * 60 * 1000, follow: 20 * 60 * 1000, nurture: 15 * 60 * 1000, repost: 60 * 60 * 1000 };
 
   // 4.6.108 低功耗：标签隐藏 + 调度停止 + 无模块在跑时，coTick 完整节拍 10s→30s
+  // 4.6.172 满额窗外空闲：调度仍开但无引擎真活 → 同样 30s 一拍（压空转 CPU）
   var _coLastFullTickAt = 0;
   var CO_LOW_POWER_TICK_MS = 30000;
+  var CO_IDLE_PARK_TICK_MS = 35000;
+  var _coIdleParkLoggedAt = 0;
   // 4.6.114 系统压力检测：测量 tick 间隔 lag，动态跳过非关键 DOM 扫描
   var _coPrevTickAt = 0;
   var _coPressureLevel = 0;       // 0=normal, 1=elevated, 2=high
@@ -2100,14 +2562,29 @@
   }
 
   /** 转帖可跑：非私信时段 + 模块开 + 有博主 + 本日未完成 + 已到开跑时刻 */
+  function isManualRepostOpenCo() {
+    try {
+      if (typeof RepostTracker !== 'undefined' && RepostTracker.isManualOpen) {
+        return !!RepostTracker.isManualOpen();
+      }
+    } catch (eT) {}
+    try {
+      if (sessionStorage.getItem('sg_repost_manual_slot') === '1') return true;
+      if (sessionStorage.getItem('sg_repost_manual_no_quota') === '1') return true;
+    } catch (eS) {}
+    return false;
+  }
+
   function nightRepostShouldRun() {
     try {
-      // 硬闸：私信时段绝不转帖（与私信零撞车）
+      if (typeof RepostTracker === 'undefined') return false;
+      // 4.6.168：用户手动启动 → 开放私信钟/模块/来源/配额/硬窗全部调度闸
+      if (isManualRepostOpenCo()) return true;
+      // 硬闸：私信时段绝不转帖（与私信零撞车）——仅自动场
       try {
         if (readWorkChatHours().isChatTime) return false;
       } catch (eChat) {}
       if (!moduleSwitchOn('repost')) return false;
-      if (typeof RepostTracker === 'undefined') return false;
       RepostTracker.ensureAutoDay();
       // 本日标成 done/timeout 但实际 0 条：多半是假收工，允许重试
       try {
@@ -2126,14 +2603,10 @@
           }
         }
       } catch (eZero) {}
-      if (RepostTracker.isAutoFinishedToday()) return false;
       if (!RepostTracker.getTargets().length) return false;
+      if (RepostTracker.isAutoFinishedToday()) return false;
       if (RepostTracker.isAutoTimedOut()) return false;
       if (RepostTracker.dailyExhausted && RepostTracker.dailyExhausted()) return false;
-      // 手动转帖：用户主动启动即放行，跳过 19:00 时段判定（避免白天手动测试被协调器误杀）
-      var isManualSlot = false;
-      try { isManualSlot = sessionStorage.getItem('sg_repost_manual_slot') === '1'; } catch (eMs) {}
-      if (isManualSlot) return true;
       if (RepostTracker.isInRepostWindowNow && !RepostTracker.isInRepostWindowNow()) return false;
       else if (!RepostTracker.isInRepostWindowNow && RepostTracker.isPastStartTime && !RepostTracker.isPastStartTime()) return false;
       return true;
@@ -2187,6 +2660,17 @@
 
   function isChatProgressAliveCo() {
     return chatProgressAgeMsCo() < CHAT_PROGRESS_STALE_MS;
+  }
+
+  // 4.6.161：调度自己已经滞后时，不把出站等待当假活（45s 线不动）
+  function shouldSkipTickProgressReclaimCo(pressureLevel, tickGapMs, staleMs) {
+    var lv = (pressureLevel != null) ? pressureLevel : _coPressureLevel;
+    var stale = (staleMs != null) ? staleMs : CHAT_PROGRESS_STALE_MS;
+    var gap = tickGapMs;
+    if (gap == null) gap = (_coPrevTickAt > 0) ? (Date.now() - _coPrevTickAt) : 0;
+    if ((lv || 0) >= 2) return true;
+    if ((gap || 0) >= (stale || 45000)) return true;
+    return false;
   }
 
   function noteChatProgressCo(why) {
@@ -2377,9 +2861,18 @@
 
   function coStop(n) {
     var m = coModules[n]; try { if (m && typeof m.stop === 'function') m.stop(); } catch (e) {}
+    try {
+      if (m && typeof SgFleetLease !== 'undefined' && SgFleetLease.resetStart) {
+        SgFleetLease.resetStart(m);
+      }
+    } catch (eLeaseReset) {}
     if (m) { m._state = 'stopped'; m._startedAt = 0; }
     coWrite(n, { running: false, phase: 'idle', targetUrl: '', startedAt: 0, lastActive: Date.now() });
     try { recordLastStop('co_stop', n, ''); } catch (eRec2) {}
+    // 4.6.173：停 chat/follow 时释放舰队槽
+    try {
+      if (n === 'chat' || n === 'follow') releaseFleetLeaseCo(n);
+    } catch (eRel) {}
     Logger.info('Coor','停止: '+n);
   }
 
@@ -2428,78 +2921,43 @@
         }
       }
     } catch (eDefer) {}
-    // 4.3.32：取消私信天数限制，Day1 即可私信（原 Day≥3 闸门已移除）
+    // 私信日龄闸在 StageDetector / SoftFill（4.6.162：Day≥2）；此处不重复判
     // 4.2.26：废除 Day≤2 须先养号才开关注（养号常空转导致整天 0 粉）；仍保留 prefer 养号在前
     if (!url && n !== 'chat') {
       Logger.warn('Coor', '拒绝启动 ' + n + '：目标页为空');
+      return;
+    }
+    // follow/chat 必须等租约回调后才能写 running；申请期仅 leasing，不占 hasRun。
+    if (n === 'follow' || n === 'chat') {
+      if (typeof SgFleetLease !== 'undefined' && SgFleetLease.isStartDenied
+        && SgFleetLease.isStartDenied(m, Date.now())) {
+        return;
+      }
+      if (n === 'follow') {
+        try {
+          if (softRiskActive(coLoadSg(), Date.now())) {
+            Logger.warn('Coor', '软风控窗口内拒绝启动 follow');
+            try { localStorage.removeItem(K.LK_FOLLOW_RUNNING); } catch (eRm) {}
+            return;
+          }
+        } catch (eAfter) {}
+      }
+      var leaseToken = coLeaseMarkPending(n, url, null);
+      if (leaseToken == null) return;
+      try {
+        if (typeof m.start === 'function') m.start(url, leaseToken);
+      } catch (eLeaseStart) {
+        Logger.warn('Coor', '启动 ' + n + ' 异常: ' + (eLeaseStart && eLeaseStart.message ? eLeaseStart.message : eLeaseStart));
+        coLeaseAbort(n, leaseToken, 'start_exception', 0, true);
+      }
       return;
     }
     try { if (typeof m.start === 'function') m.start(url); } catch (e) {
       Logger.warn('Coor', '启动 ' + n + ' 异常: ' + (e && e.message ? e.message : e));
       return;
     }
-    // follow：startFollow 若因软风控自停，禁止再强写 running（幽灵旗标根因之一）
-    if (n === 'follow') {
-      try {
-        var sgAfter = coLoadSg();
-        if (softRiskActive(sgAfter, Date.now())) {
-          Logger.warn('Coor', '启动 follow 后仍在软风控，不置 running');
-          try { localStorage.removeItem(K.LK_FOLLOW_RUNNING); } catch (eRm) {}
-          return;
-        }
-      } catch (eAfter) {}
-    }
     m._state = 'running'; m._startedAt = Date.now();
     coWrite(n, { running: true, phase: 'starting', targetUrl: url || '', startedAt: m._startedAt, lastActive: m._startedAt });
-    if (n === 'follow') {
-      try {
-        var sgF = coLoadSg();
-        sgF.followRoundStartedAt = m._startedAt;
-        sgF.followRoundPlanMs = followMaxRunMs();
-        coSaveSg(sgF);
-      } catch (eFr) {}
-    }
-    if (n === 'chat') {
-      try {
-        var sgC = coLoadSg();
-        var uChat = String(url || '').toLowerCase();
-        var isInboxUrl = uChat.indexOf('/i/chat') >= 0 || uChat.indexOf('/messages') >= 0;
-        var lease = {
-          pulseId: 'lease_' + Date.now().toString(36),
-          intent: isInboxUrl ? 'inbox' : 'outbound',
-          startedAt: Date.now(),
-          url: url || ''
-        };
-        writeChatLeaseCo(lease);
-        noteChatProgressCo('co_start');
-        try {
-          if (typeof SgTelemetry !== 'undefined' && SgTelemetry.emitRoundStart) {
-            SgTelemetry.emitRoundStart({
-              module: 'chat',
-              intent: lease.intent,
-              pulseId: lease.pulseId,
-              url: lease.url,
-              via: 'coStart'
-            });
-          } else if (typeof SgTelemetry !== 'undefined') {
-            SgTelemetry.emit('scheduler.round_start', {
-              module: 'chat',
-              intent: lease.intent,
-              pulseId: lease.pulseId,
-              url: lease.url
-            });
-          }
-        } catch (eRs) {}
-        if (softRiskActive(sgC, Date.now())) {
-          // 4.1.36：守箱废除后粉丝队列两检都不要 soft drain(5开/4分) 帽，否则 chat2 被掐轮转不过来
-          clearChatSessionCaps();
-        } else if (isInboxUrl) {
-          clearChatSessionCaps();
-        } else {
-          clearChatSessionCaps();
-        }
-      } catch (eCs) {}
-    }
     Logger.info('Coor','启动: '+n);
   }
 
@@ -2845,7 +3303,10 @@
     if (sg && sg.softRiskMode === 'nurture') {
       return { mode: 'nurture_only', allowChat: false, reason: 'sticky_nurture', day: day };
     }
-    // 4.3.32：Day1 即可私信，日龄不再挡
+    // 4.6.162：Day1 禁私信（与 SoftFillMode / stage S3.dayMin 对齐）
+    if (!(day >= 2)) {
+      return { mode: 'nurture_only', allowChat: false, reason: 'day_lt_2', day: day };
+    }
     if (!chatTimeOk) {
       // 4.6.82：已进软窗可延至下班+30
       try {
@@ -4355,12 +4816,14 @@
   }
 
   function coTick() {
-    // 4.6.108 低功耗闸门：隐藏+停止+无模块在跑时，30s 内只喂狗不跑维护任务。
+    // 4.6.108 / 4.6.172：低功耗或满额空闲时，30–35s 内只喂狗不跑完整维护。
     // 锁被持有时不跳过（落下方原锁检查），保留看门狗 60s 强制清锁救援路径。
-    if (!coTickLock && _coLastFullTickAt && coInLowPower()
-      && Date.now() - _coLastFullTickAt < CO_LOW_POWER_TICK_MS) {
-      coLastTick = Date.now();
-      return;
+    if (!coTickLock && _coLastFullTickAt) {
+      var thr = coShouldThrottleFullTick();
+      if (thr.throttle && Date.now() - _coLastFullTickAt < (thr.gapMs || CO_LOW_POWER_TICK_MS)) {
+        coLastTick = Date.now();
+        return;
+      }
     }
     _coLastFullTickAt = Date.now();
     // 4.6.114 压力检测：距上次 tick 的 gap 超阈 → 升压
@@ -4368,6 +4831,10 @@
     _coPrevTickAt = _coLastFullTickAt;
     if (coTickLock) return; coTickLock = true; coLastTick = Date.now();
     try {
+      // 4.6.172/173：满额空闲 — 173 深度 park 整拍早退（仅对账+跨日+心跳值守）
+      var _idleParkSnap = { park: false, deep: false, reason: '' };
+      try { _idleParkSnap = evaluateIdleParkGateCo(); } catch (eIps) {}
+      var _skipHeavyDom = !!(_idleParkSnap && _idleParkSnap.park);
       // 4.6.138：CPU 分段打点 helper（API 不存在时零成本空转，不影响业务）
       var __m = (typeof window !== 'undefined' && typeof window.__sgCpuMark === 'function') ? window.__sgCpuMark : function () {};
       var __t;
@@ -4385,7 +4852,40 @@
       __t = performance.now();
       try { ensureFollowDailyRollover(); } catch (eRoll) {}
       try { ensureNurtureDailyRollover(); } catch (eNurtRoll) {}
+      try { coLeaseReapPending(); } catch (eLeaseReap) {}
       __m('coTick.rollover', performance.now() - __t);
+
+      if (_idleParkSnap && _idleParkSnap.park) {
+        applyIdleParkMode(true, _idleParkSnap.reason || 'idle_park');
+        try {
+          if (!_coIdleParkLoggedAt || Date.now() - _coIdleParkLoggedAt > 120000) {
+            _coIdleParkLoggedAt = Date.now();
+            Logger.info('Coor', '空闲深度park reason=' + (_idleParkSnap.reason || 'idle_park')
+              + ' followed=' + getFollowedToday() + '/' + getLimit());
+          }
+        } catch (eIl) {}
+        try {
+          window.dispatchEvent(new CustomEvent('sg-coordinator-tick', {
+            detail: {
+              engine: 'coor',
+              stage: coPrev.stage || 'S0',
+              autoMode: coRunning,
+              runningModule: null,
+              dayCount: getDayCount(),
+              followedToday: getFollowedToday(),
+              followLimit: getLimit(),
+              whyIdle: '空闲降频·深度park',
+              idlePark: true,
+              followRunning: false,
+              chatRunning: false,
+              nurtureRunning: false,
+              repostRunning: false
+            }
+          }));
+        } catch (ePk) {}
+        return;
+      }
+      applyIdleParkMode(false, 'active');
 
       // 快速通道：用户暂停中 → 直接返回，不跑任何调度/检测
       // （避免停了之后 tick 还在做冻结检测、软风控拉养号等"余震"操作）
@@ -4413,12 +4913,14 @@
           return;
         }
         // 4.6.114：L2 压力时跳过冻结检测 DOM 扫描（isAccountFrozenNow 快查仍跑）
-        if (isAutoMode() && _coPressureLevel < 2) {
+        // 4.6.172：满额空闲拍同样跳过深扫
+        if (isAutoMode() && _coPressureLevel < 2 && !_skipHeavyDom) {
           var pathNow = '';
           try { pathNow = String(location.pathname || ''); } catch (eP) {}
           var onHome = pathNow === '/home' || pathNow === '/' || pathNow === '';
+          // 4.6.190：首页也不再每拍深扫。关注页、养号页都 30 秒一次。
           var due = !coPrev._freezeCheckAt || (Date.now() - coPrev._freezeCheckAt >= 30000);
-          if (onHome || due) {
+          if (due) {
             coPrev._freezeCheckAt = Date.now();
             var frozenHit = false;
             __t = performance.now();
@@ -4619,7 +5121,11 @@
               try { progWhy = sessionStorage.getItem('sg_chat_last_progress_why') || ''; } catch (ePw) {}
               var pinGrace = progWhy.indexOf('pin') >= 0 && chatProgressAgeMsCo() < 180000;
               if (!pinGrace) {
-                reclaimChatZombieCo('tick_progress_stale');
+                if (shouldSkipTickProgressReclaimCo()) {
+                  Logger.warn('Coor', '跳过假活回收：调度滞后/压力L2，progressAge=' + Math.round(chatProgressAgeMsCo() / 1000) + 's');
+                } else {
+                  reclaimChatZombieCo('tick_progress_stale');
+                }
               }
             }
           }
@@ -4756,11 +5262,21 @@
       __t = performance.now();
       coProbeWhiteScreen();
       __m('coTick.whiteScreen', performance.now() - __t);
-      if (_coPressureLevel < 2) {
+      if (_coPressureLevel < 2 && !_skipHeavyDom) {
         __t = performance.now();
-        coProbeMemoryPurge(); // 4.6.114 L2 压力时跳过 DOM 计数
+        coProbeMemoryPurge(); // 4.6.114 L2 / 4.6.172 空闲拍 跳过 DOM 计数
         __m('coTick.memoryPurge', performance.now() - __t);
       }
+      // 4.6.164：关注已满仍在养号 → 立刻停掉（软风控除外），降 /home CPU
+      try {
+        if (coIsRunning('nurture') || coEngineAlive('nurture')) {
+          var nqLive = evaluateNurtureQuotaGateCo(sg, now);
+          if (!nqLive.allow) {
+            Logger.info('Coor', '关注满额停养号 reason=' + nqLive.reason);
+            try { coStop('nurture'); } catch (eStopN) {}
+          }
+        }
+      } catch (eNqLive) {}
       __t = performance.now();
       // 转帖独占：非私信时段 +（应跑或已在跑）。占用关注/养号/私信直到转完。
       // 私信时段绝不独占（与私信零撞车）。
@@ -4768,9 +5284,10 @@
       var nightOkGate = nightRepostShouldRun();
       var chatTimeNow = false;
       try { chatTimeNow = !!readWorkChatHours().isChatTime; } catch (eCt) {}
-      var repostExclusive = !chatTimeNow && (nightOkGate || rpAliveGate);
-      // 私信时段若残留转帖真活：强制停掉，交回关注/养号
-      if (chatTimeNow && rpAliveGate) {
+      var manualRpOpen = isManualRepostOpenCo();
+      var repostExclusive = (!chatTimeNow || manualRpOpen) && (nightOkGate || rpAliveGate);
+      // 私信时段若残留转帖真活：强制停掉，交回关注/养号（手动场不杀）
+      if (chatTimeNow && rpAliveGate && !manualRpOpen) {
         try {
           Logger.info('Coor', '私信时段到，停止转帖让路');
           nightRepostForceTimeout();
@@ -5084,6 +5601,13 @@
       }
 
       if (hasRun) {
+        try {
+          if (coIsRunning('follow')) maybeRenewFleetLeaseCo('follow');
+          if (coIsRunning('chat')) maybeRenewFleetLeaseCo('chat');
+        } catch (eLease) {}
+      }
+
+      if (hasRun) {
         for (var i = 0; i < priority.length; i++) {
           var nm = priority[i]; var cm = coModules[nm]; if (!cm || !coIsRunning(nm)) continue;
           if (!coEngineAlive(nm)) {
@@ -5101,6 +5625,16 @@
               } catch (eFr) {}
               try { stopFollow(); } catch (eSf) {}
               coGentleStopFollow();
+              // 4.6.188：关注轮结束立刻让出一整个养号帽，否则 priority 里 follow 在前，同拍又把关注拉起来
+              try {
+                var sgHold = coLoadSg();
+                var holdUntil = Date.now() + (coMaxRun.nurture || 15 * 60 * 1000);
+                if (!(sgHold.followNextDelayUntil > holdUntil)) {
+                  sgHold.followNextDelayUntil = holdUntil;
+                  coSaveSg(sgHold);
+                }
+                Logger.info('Coor', '关注轮结束让养号 hold=' + Math.round((holdUntil - Date.now()) / 1000) + 's');
+              } catch (eHold) {}
               hasRun = false;
               break;
             }
@@ -5120,6 +5654,20 @@
       __t = performance.now();
       // 面板更新 (所有路径都发)
       var rn = null; for (var rk in coModules) { if (coIsRunning(rk)) { rn = rk; break; } }
+      // 4.6.158 门控：签名未变且距上次派发 <60s → 跳过负载重建+派发（原每 tick ~90ms 热点）；
+      // 测试会话激活时强制放行，避免 test-monitor 漏采状态变化
+      var _pnNow = Date.now();
+      var _pnSig = (rn || '-') + '|' + coPrev.stage + '|' + (coRunning ? 1 : 0)
+        + '|' + (localStorage.getItem(K.LK_FOLLOW_RUNNING) === 'true' ? 1 : 0)
+        + '|' + (sessionStorage.getItem(K.SK_CHAT_AUTO_RUN) === 'true' ? 1 : 0)
+        + '|' + (sessionStorage.getItem(K.SK_NURTURE_RUNNING) === 'true' ? 1 : 0)
+        + '|' + getFollowedToday() + '|' + getDayCount();
+      var _pnDo = (_pnSig !== _lastPanelSig) || (_pnNow - _lastPanelDispatchAt >= 60000);
+      if (!_pnDo) {
+        try { _pnDo = !!(window.SgTestMonitor && SgTestMonitor.isActive && SgTestMonitor.isActive()); } catch (eTm) {}
+      }
+      if (_pnDo) {
+      _lastPanelSig = _pnSig; _lastPanelDispatchAt = _pnNow;
       try { 
         var v5 = { dayCount: getDayCount(), followedToday: getFollowedToday(), followLimit: getLimit(),
           isChatTime: readWorkChatHours().isChatTime, isWorkTime: readWorkChatHours().isWorkTime,
@@ -5161,6 +5709,7 @@
           chatDiag: buildChatDiag(coLoadSg())
         }})); 
       } catch (e) {}
+      }
 
       if (hasRun) { __m('coTick.panelUpdate', performance.now() - __t); coSave(coPrev); return; }
 
@@ -5238,9 +5787,29 @@
           });
         }
       } catch (eLp) {}
+      var leasePendingModule = '';
+      try {
+        for (var lp in coModules) {
+          if (SgFleetLease && SgFleetLease.isStartPending && SgFleetLease.isStartPending(coModules[lp])) {
+            leasePendingModule = lp;
+            break;
+          }
+        }
+      } catch (eLeasePending) {}
+      if (leasePendingModule) {
+        Logger.info('Coor', leasePendingModule + ' 租约申请中，等回调后再启动其它模块');
+        coSave(coPrev);
+        __m('coTick.bootLaunch', performance.now() - __t);
+        return;
+      }
       for (var j = 0; j < priority.length; j++) {
         var c = priority[j]; var cm = coModules[c];
         if (!cm || typeof cm.canRun !== 'function') continue;
+        if (typeof SgFleetLease !== 'undefined' && SgFleetLease.isStartDenied
+          && SgFleetLease.isStartDenied(cm, now)) {
+          Logger.info('Coor', '  跳过 ' + c + ' (舰队租约 15s 退避中)');
+          continue;
+        }
         var cr = cm.canRun(stage);
         if (!cr) { Logger.info('Coor','  跳过 '+c+' (canRun=false for stage='+stage+')'); continue; }
         var canGo = false;
@@ -5381,6 +5950,28 @@
               Logger.info('Coor', '  chat 强制放行中 warn=' + scrmG.warn_reason);
             }
           }
+          // 4.6.163：时间片错峰（软风控旁路；未轮到则本 tick 让 follow/nurture）
+          if (canGo) {
+            var stgTick = evaluateChatStaggerGateCo({
+              softRiskActive: softRiskActive(sg, now)
+            });
+            if (!stgTick.allow) {
+              canGo = false;
+              chatBlockReason = 'chat_stagger_wait';
+              Logger.info('Coor', '  跳过 chat (错峰等待 my=' + stgTick.mySlot
+                + ' active=' + stgTick.activeSlot + ')');
+              try {
+                if (typeof SgTelemetry !== 'undefined') {
+                  SgTelemetry.emit('scheduler.chat_blocked', {
+                    reason: 'chat_stagger_wait',
+                    my_slot: stgTick.mySlot,
+                    active_slot: stgTick.activeSlot,
+                    slots: stgTick.slots
+                  });
+                }
+              } catch (eStg) {}
+            }
+          }
           // 4.6.80：软风控 SCRM/临时闸 → 挂起（含 phase=nurture 的挂起态）
           if (!canGo && softRiskActive(sg, now)) {
             var phSoft = sg.softRiskPhase || 'chat1';
@@ -5424,6 +6015,25 @@
               }
             }
           } catch (eYld) {}
+          // 4.6.164：关注日限已满 → 禁新开养号（防 /home 空滚顶 CPU）；软风控养号段除外
+          if (canGo) {
+            try {
+              var nq = evaluateNurtureQuotaGateCo(sg, now);
+              if (!nq.allow) {
+                canGo = false;
+                Logger.info('Coor', '  nurture: 跳过 (' + nq.reason + ')');
+                try {
+                  if (typeof SgTelemetry !== 'undefined') {
+                    SgTelemetry.emit('scheduler.nurture_blocked', {
+                      reason: nq.reason,
+                      followed: getFollowedToday(),
+                      limit: getLimit()
+                    });
+                  }
+                } catch (eNqEm) {}
+              }
+            } catch (eNq) {}
+          }
         } else if (c === 'repost') {
           // 非私信时段可跑；主路径仍是独占块，此处兜底
           canGo = false;
@@ -5682,7 +6292,8 @@
     coRegisterFn('nurture', { canRun: function () { return moduleSwitchOn('nurture'); }, start: function (u) { startNurture(u); }, stop: function () { stopNurture(); } });
     coRegisterFn('repost', {
       canRun: function (s) {
-        // 私信时段禁；非私信时段可跑（独占路径为主，此处兜底）
+        if (isManualRepostOpenCo()) return true;
+        // 自动场：私信时段禁；非私信时段可跑（独占路径为主，此处兜底）
         try {
           if (readWorkChatHours().isChatTime) return false;
         } catch (eCt) {}
@@ -5703,7 +6314,7 @@
         } catch (eRp) {}
       } catch (eF) {}
       return true;
-    }, start: function (u) { startFollow(u); }, stop: function () { stopFollow(); } });
+    }, start: function (u, token) { startFollow(u, token); }, stop: function () { stopFollow(); } });
     coRegisterFn('chat',    { canRun: function (s) {
       if (!moduleSwitchOn('chat')) return false;
       try {
@@ -5716,7 +6327,7 @@
         if (isChatDailyCapReachedCo()) return false;
       } catch (eC) {}
       return s === 'S3';
-    }, start: function (u) { startChat(u); }, stop: function () { stopChat(); } });
+    }, start: function (u, token) { startChat(u, token); }, stop: function () { stopChat(); } });
 
     try {
       window.addEventListener('sg-config-synced', function () {
@@ -5789,10 +6400,11 @@
     }
 
     // 远程指令：约每 10 秒向 OPS claim 一次（白名单：start/pause/reset_*），执行后 ACK
+    // 4.6.166：BitBrowser 多开几乎全是 hidden；再跳过则 pause 永远领不到，CPU 卸不下来
+    // 4.6.173：深度 park 时 claim 降到 45s（reinstallClaimRemoteTimer）
     try {
       if (!window._sgRemoteCmdTimer) {
         var claimRemote = function () {
-          if (document.hidden) return;
           try {
             if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.sendMessage) return;
             chrome.runtime.sendMessage({ action: 'ops_remote_command_claim', bot_id: getWorkerId() }, function (r) {
@@ -5991,10 +6603,9 @@
             });
           } catch (eClaim) {}
         };
+        _claimRemoteFn = claimRemote;
         claimRemote();
-        // 4.6.113：手动模式 15s 拉指令（自动模式仍 10s，调度响应不能慢）
-        var _claimInterval = isAutoMode() ? 10000 : 15000;
-        window._sgRemoteCmdTimer = setInterval(claimRemote, _claimInterval);
+        reinstallClaimRemoteTimer();
       }
     } catch (eRemote) {}
 

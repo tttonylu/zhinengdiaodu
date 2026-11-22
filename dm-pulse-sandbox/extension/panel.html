@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>DM Pulse Sandbox</title>
+  <style>
+    body { font-family: system-ui, sans-serif; width: 360px; padding: 12px; }
+    button { padding: 8px 16px; font-size: 14px; cursor: pointer; }
+    pre { background: #f5f5f5; padding: 8px; font-size: 11px; max-height: 400px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
+    .status { margin: 8px 0; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <h3>DM Pulse Sandbox</h3>
+  <p class="status" id="status">就绪。请在 x.com/i/chat 页面点击运行。</p>
+  <button id="run">运行只读脉冲</button>
+  <button id="deep">运行深扫</button>
+  <button id="read">读取首条未读（会标记已读）</button>
+  <button id="inboxTest">收箱脉冲测试（不发送）</button>
+  <button id="inboxLoop">跳过破冰，跑守箱循环</button>
+  <button id="startChat">启动真实私信测试</button>
+  <button id="reload">重载扩展（应用新版本）</button>
+  <pre id="output">等待运行…</pre>
+  <script src="panel.js"></script>
+</body>
+</html>

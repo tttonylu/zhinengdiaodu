@@ -206,22 +206,58 @@
     });
   }
 
+  // 4.6.178：sendMessage 无回调时旧逻辑会让 flushing 永真 → 心跳在、遥测全死
+  var SEND_TIMEOUT_MS = 12000;
+  var FLUSH_WATCHDOG_MS = 20000;
+  var flushingSince = 0;
+  var PAGE_ALIVE_MS = 180000;
+  var lastAliveAt = 0;
+
   function sendToBackground(payload) {
     return new Promise(function (resolve) {
+      var done = false;
+      function finish(res) {
+        if (done) return;
+        done = true;
+        try { if (timer) clearTimeout(timer); } catch (eT) {}
+        resolve(res);
+      }
+      var timer = setTimeout(function () {
+        finish({ ok: false, error: 'sw_timeout' });
+      }, SEND_TIMEOUT_MS);
       try {
         if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
           chrome.runtime.sendMessage(payload, function (res) {
             if (chrome.runtime.lastError) {
-              resolve({ ok: false, error: chrome.runtime.lastError.message || 'no_sw' });
+              finish({ ok: false, error: chrome.runtime.lastError.message || 'no_sw' });
               return;
             }
-            resolve(res || { ok: false });
+            finish(res || { ok: false });
           });
           return;
         }
       } catch (e) {}
-      resolve({ ok: false, error: 'no_runtime' });
+      finish({ ok: false, error: 'no_runtime' });
     });
+  }
+
+  function resetFlushLatch(why) {
+    if (!flushing) return;
+    flushing = false;
+    flushingSince = 0;
+    try {
+      console.warn('[telemetry] reset flushing latch why=' + (why || ''));
+    } catch (eW) {}
+  }
+
+  function armFlushWatchdog() {
+    flushingSince = Date.now();
+    setTimeout(function () {
+      if (!flushing) return;
+      if (Date.now() - flushingSince < FLUSH_WATCHDOG_MS - 50) return;
+      resetFlushLatch('watchdog');
+      try { scheduleFlush(); } catch (eS) {}
+    }, FLUSH_WATCHDOG_MS);
   }
 
   // 精确确认：后端已入库 + 即将幂等去重 = 整批都已交代
@@ -266,17 +302,34 @@
   function flushUploadBatch() {
     return new Promise(function (resolve) {
       if (flushing) {
-        resolve({ ok: true, count: 0, skipped: true });
-        return;
+        if (flushingSince && Date.now() - flushingSince > FLUSH_WATCHDOG_MS) {
+          resetFlushLatch('stale_on_enter');
+        } else {
+          resolve({ ok: true, count: 0, skipped: true });
+          return;
+        }
       }
       flushing = true;
+      armFlushWatchdog();
       readBuffer(function (buf) {
         var pending = buf.filter(function (e) { return e && e.upload && !e.uploaded; });
         if (!pending.length) {
           flushing = false;
+          flushingSince = 0;
           resolve({ ok: true, count: 0 });
           return;
         }
+        // 补 handle：unknown 批会被 OPS 整批拒收，拖死重试
+        try {
+          var live = getBotId();
+          if (live && live !== 'unknown') {
+            for (var hi = 0; hi < pending.length; hi++) {
+              if (!pending[hi].account_handle || pending[hi].account_handle === 'unknown') {
+                pending[hi].account_handle = live;
+              }
+            }
+          }
+        } catch (eH) {}
         pending.sort(function (a, b) {
           var pa = COMMAND_LOOP_PRIORITY[a.event_id] || 9;
           var pb = COMMAND_LOOP_PRIORITY[b.event_id] || 9;
@@ -290,6 +343,7 @@
           payload: { events: batch }
         }).then(function (res) {
           flushing = false;
+          flushingSince = 0;
           if (accounted(batch, res)) {
             failStreak = 0;
             markUploaded(ids).then(function () { resolve(res); });
@@ -300,6 +354,7 @@
           }
         }).catch(function (err) {
           flushing = false;
+          flushingSince = 0;
           failStreak += 1;
           scheduleRetry();
           resolve({ ok: false, error: (err && err.message) || 'flush_catch' });
@@ -526,11 +581,70 @@
     });
   }
 
+  function emitPageAlive(force) {
+    var now = Date.now();
+    if (!force && lastAliveAt && now - lastAliveAt < PAGE_ALIVE_MS) return;
+    lastAliveAt = now;
+    try {
+      emit('system.page_alive', {
+        park: (function () {
+          try { return sessionStorage.getItem('sg_idle_park') === '1'; } catch (eP) { return false; }
+        })(),
+        hidden: !!(typeof document !== 'undefined' && document.hidden),
+        buf: (function () {
+          try {
+            var raw = sessionStorage.getItem(BUFFER_KEY);
+            var b = raw ? JSON.parse(raw) : [];
+            return Array.isArray(b) ? b.length : 0;
+          } catch (eB) { return -1; }
+        })()
+      });
+    } catch (eA) {}
+  }
+
+  function schedulePageAlive() {
+    setTimeout(function () {
+      try { emitPageAlive(false); } catch (e1) {}
+      schedulePageAlive();
+    }, PAGE_ALIVE_MS + Math.random() * 30000);
+  }
+
   initCatalog();
   try {
     window.addEventListener('sg-config-synced', function () { loadCatalogFromRemote(); });
   } catch (eL) {}
+  try {
+    document.addEventListener('visibilitychange', function () {
+      if (!document.hidden) {
+        resetFlushLatch('visible');
+        try { flushAllPending(4).catch(function () {}); } catch (eF) {}
+        emitPageAlive(true);
+      }
+    });
+  } catch (eVis) {}
+  try {
+    window.addEventListener('sg-idle-park-change', function () {
+      // park 不挡遥测：降频后仍须能出队
+      try { scheduleFlush(); } catch (ePk) {}
+    });
+  } catch (ePark) {}
+  try {
+    if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
+      chrome.runtime.onMessage.addListener(function (msg, _sender, sendResponse) {
+        if (!msg || msg.action !== 'telemetry_flush_now') return;
+        resetFlushLatch('sw_nudge');
+        flushAllPending(6).then(function (r) {
+          sendResponse(r || { ok: true });
+        }).catch(function () {
+          sendResponse({ ok: false });
+        });
+        return true;
+      });
+    }
+  } catch (eMsg) {}
   scheduleIntervalFlush();
+  schedulePageAlive();
+  try { setTimeout(function () { emitPageAlive(true); }, 8000 + Math.random() * 5000); } catch (eBoot) {}
 
   var SgTelemetry = {
     emit: emit,

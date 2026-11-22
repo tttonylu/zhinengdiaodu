@@ -622,6 +622,22 @@
   if (typeof window !== 'undefined') window.SgTestMonitor = SgTestMonitor;
   if (typeof self !== 'undefined') self.SgTestMonitor = SgTestMonitor;
 
+  // 4.6.156 K3：生产环境禁止自启；仅当测试控制台显式 `window.__sgTestMonitor = true` 才启动
+  var productionMode = !(typeof window !== 'undefined' && window.__sgTestMonitor === true);
+  if (productionMode) {
+    loadSession();
+    if (session && session.active) {
+      unregisterListeners();
+      session.active = false;
+      session.ended_at = Date.now();
+      saveSession();
+      emitTelemetry('test.monitor_auto_stopped', { reason: 'production_mode', session_id: session.session_id }, 'warn');
+    }
+    if (typeof window !== 'undefined') window.SgTestMonitor = SgTestMonitor;
+    if (typeof self !== 'undefined') self.SgTestMonitor = SgTestMonitor;
+    return;
+  }
+
   loadSession();
   installPageBridge();
   if (session.active) {

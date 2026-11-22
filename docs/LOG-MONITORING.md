@@ -188,7 +188,7 @@ CREATE TABLE IF NOT EXISTS log_rollups_hourly (...); -- 180 天
 第5步 ✅ NAS Docker 重建部署并验证（幂等去重、UTF-8 中文、趋势统计均通过）
 ```
 
-部署方式：`rsync src/ → /vol2/1000/test/x-ops-console/src/`，然后 `docker compose up -d --build --force-recreate`（容器内 `DATA_DIR=/data`，日志库落在 `./data/x-ops-log.sqlite`）。
+部署方式：`rsync src/ → /vol2/1000/test/x-ops-console/src/`，然后 `docker compose up -d --build --force-recreate`（容器内 `DATA_DIR=/data`，日志库落在 `/vol2/1000/test/x-ops-console/data/x-ops-log.sqlite`；compose 必须写绝对路径挂载，禁止 `./data`）。
 
 ## 7. 待办（后续优化）
 

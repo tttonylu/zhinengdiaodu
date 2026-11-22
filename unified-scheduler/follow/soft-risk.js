@@ -33,7 +33,7 @@
     return Math.floor(Math.random() * (max - min + 1)) + min;
   }
 
-  /** Day≥3 且私信时段且 modules.chat 开 → SoftFillMode.chat_fill；否则不可塞私信 */
+  /** Day≥2 且私信时段且 modules.chat 开 → SoftFillMode.chat_fill；否则不可塞私信 */
   function canEnterSoftRiskChat() {
     try {
       try {
@@ -45,12 +45,12 @@
       if (typeof SgSoftFillMode !== 'undefined' && SgSoftFillMode.resolve) {
         return !!SgSoftFillMode.resolve({ day: currentDayCount() }).allowChat;
       }
-      // 无能力闸时退回旧判定
+      // 无能力闸时退回：Day≥2 + 私信时段
       if (typeof StageDetector !== 'undefined') {
         if (StageDetector.detect) StageDetector.detect();
         if (StageDetector.isChatTime && !StageDetector.isChatTime()) return false;
       }
-      return currentDayCount() >= 3;
+      return currentDayCount() >= 2;
     } catch (e) {
       return false;
     }
@@ -118,7 +118,8 @@
           if (mods && mods.chat === false) modOn = false;
         } catch (eMod) {}
         if (!modOn) fill = { mode: 'off', allowChat: false, reason: 'chat_module_off', day: day };
-        // 4.3.32：取消私信天数限制，Day1 即可私信（原 day<3 限制已移除）
+        // 4.6.162：Day1 禁私信
+        else if (day < 2) fill = { mode: 'nurture_only', allowChat: false, reason: 'day_lt_2', day: day };
         else if (!chatTimeOkFb) fill = { mode: 'nurture_only', allowChat: false, reason: 'outside_chat_hours', day: day };
         else fill = { mode: 'chat_fill', allowChat: true, reason: '', day: day };
       }

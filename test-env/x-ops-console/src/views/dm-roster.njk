@@ -52,7 +52,8 @@
           <span class="chip">pending = <b>{{ snap.pending if snap else '-' }}</b></span>
           <span class="chip">skipped = <b>{{ snap.skipped if snap else '-' }}</b></span>
           <span class="chip">已核验 = <b>{{ verifiedCount }}</b></span>
-          <span class="chip">库内累计行 = <b>{{ items.length }}</b></span>
+          <span class="chip">真实粉丝台账 = <b>{{ activeCount }}</b></span>
+          <span class="chip" title="历史保留，默认隐藏">已取关历史 = <b>{{ leftCount }}</b></span>
           <span class="chip">库内 pending = <b>{{ pendingInDb }}</b></span>
           {% if reconcileStatus == 'ok' %}
           <span class="chip ok">{{ reconcileLabel }}</span>
@@ -74,13 +75,16 @@
         <p class="empty-hint" style="color:#f85149;font-weight:600">⚠ 快照与库内脱节：最新封口队列为空/未扫到粉丝格，但库内仍挂着旧 pending。以 OPS 台账为准——请重载 4.6.67+ 插件回灌最新快照，完成后再跑软窗。</p>
         {% endif %}
         <div class="filter-bar">
-          <a href="?status={% if historyMode %}&snap={{ viewingSnapId }}{% endif %}" class="{% if not statusFilter %}on{% endif %}">{% if historyMode %}快照内全部{% else %}库内全部{% endif %} {{ items.length }}</a>
+          <a href="?status={% if historyMode %}&snap={{ viewingSnapId }}{% endif %}" class="{% if not statusFilter and not showLeft %}on{% endif %}">{% if historyMode %}快照内全部{% else %}真实粉丝{% endif %} {{ activeCount }}</a>
           <a href="?status=pending{% if historyMode %}&snap={{ viewingSnapId }}{% endif %}" class="{% if statusFilter == 'pending' %}on{% endif %}">pending</a>
           <a href="?status=skipped{% if historyMode %}&snap={{ viewingSnapId }}{% endif %}" class="{% if statusFilter == 'skipped' %}on{% endif %}">skipped</a>
           <a href="?status=deferred{% if historyMode %}&snap={{ viewingSnapId }}{% endif %}" class="{% if statusFilter == 'deferred' %}on{% endif %}">deferred</a>
           <a href="?status=doing{% if historyMode %}&snap={{ viewingSnapId }}{% endif %}" class="{% if statusFilter == 'doing' %}on{% endif %}">doing</a>
+          {% if leftCount %}
+          <a href="?show=left{% if historyMode %}&snap={{ viewingSnapId }}{% endif %}" class="{% if showLeft %}on{% endif %}" title="已取关的人：历史保留，仅供审计">已取关 {{ leftCount }}</a>
+          {% endif %}
         </div>
-        {% if not items.length %}
+        {% if not activeCount %}
         <p class="empty-hint">{% if historyPayloadEmpty %}该历史快照仅保留趋势数据（F/cells/queue），粉丝明细已按保留策略清理（近 7 天内的快照含完整明细）。{% elif historyMode %}该快照无明细。{% else %}尚无台账。等插件早间全量扫封口后 POST /api/plugin/dm/roster。{% endif %}</p>
         {% else %}
         <table class="data-table">
@@ -110,7 +114,7 @@
               <td>{% if it.ice_sent_at %}有{% else %}<span style="color:#f85149">未破冰</span>{% endif %}</td>
               <td>{% if it.dm_verified_at %}✓{% else %}待{% endif %}</td>
               <td>{% if it.blocked %}{{ it.block_reason or 'blocked' }}{% else %}-{% endif %}</td>
-              <td>{% if it.stale %}<span style="color:#d29922">stale</span>{% else %}-{% endif %}</td>
+              <td>{% if it.left_followers %}<span style="color:#f85149">已取关</span>{% elif it.stale %}<span style="color:#d29922">stale</span>{% else %}-{% endif %}</td>
             </tr>
             {% endfor %}
           </tbody>

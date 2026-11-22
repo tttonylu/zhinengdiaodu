@@ -4,6 +4,7 @@ const { createActivityLogsRepo } = require('../../repositories/activity-logs-rep
 const { createDmRecordsRepo } = require('../../repositories/dm-records-repo');
 const { createDmRosterRepo } = require('../../repositories/dm-roster-repo');
 const { createRuntimeStatusRepo } = require('../../repositories/runtime-status-repo');
+const { createFleetLeaseRepo } = require('../../repositories/fleet-lease-repo');
 const { createAccountsService } = require('../../services/accounts-service');
 const { createLeadsService } = require('../../services/leads-service');
 const { createActivityService } = require('../../services/activity-service');
@@ -11,7 +12,7 @@ const { accountDailyStatsRepo } = require('../../repositories/account-daily-stat
 const { sendNotify } = require('../../services/push-notify');
 const { createTelemetryRepo } = require('../../repositories/telemetry-repo');
 const { createLogRepo } = require('../../repositories/log-repo');
-const { maybeAlertTelemetry } = require('../../services/telemetry-alert');
+const { maybeAlertTelemetry, maybeAlertTelemetryBatch } = require('../../services/telemetry-alert');
 const { zhDateSql } = require('../../db/client');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -47,8 +48,22 @@ async function pluginRoutes(app) {
   const dmRosterRepo = createDmRosterRepo(app.db);
   const dailyStatsRepo = accountDailyStatsRepo(app.db);
   const runtimeRepo = createRuntimeStatusRepo(app.db);
+  const fleetLeaseRepo = createFleetLeaseRepo(app.db);
   const telemetryRepo = createTelemetryRepo(app.db);
   const logRepo = createLogRepo(app.logDb);
+
+  function readFleetHeavySlots() {
+    try {
+      const row = app.db
+        .prepare("SELECT value FROM config_thresholds WHERE key = 'fleet_heavy_slots'")
+        .get();
+      const n = parseInt(row && row.value, 10);
+      if (isNaN(n)) return 8;
+      return n;
+    } catch (e) {
+      return 8;
+    }
+  }
 
   /** 插件写入后失效页面缓存：dashboard/analytics/monitor/accounts/leads */
   function bustPageCaches() {
@@ -82,7 +97,7 @@ async function pluginRoutes(app) {
 
       // 今日关注：优先插件心跳 followed_today（与轻总控闸门同源）
       const dmStats = dmRecordsRepo.todayStatsByBot(handle);
-      const todayFollow = accountsRepo.resolveTodayFollowCount(account);
+      const todayFollow = accountsRepo.resolveTodayFollow(account);
       let fleet_handles = [];
       try { fleet_handles = accountsRepo.listFleetHandles(); } catch (eF) {}
 
@@ -97,10 +112,12 @@ async function pluginRoutes(app) {
           status: account.status,
           daily_follow_limit: account.daily_follow_limit,
           daily_dm_limit: account.daily_dm_limit,
-          today_follow_count: todayFollow,
+          today_follow_count: todayFollow.count,
+          today_follow_count_date: todayFollow.date,
         },
         today_dm: dmStats,
-        today_follow_count: todayFollow,
+        today_follow_count: todayFollow.count,
+        today_follow_count_date: todayFollow.date,
         fleet_handles,
       };
     } catch (e) {
@@ -110,7 +127,7 @@ async function pluginRoutes(app) {
 
   // ==================== DM 轮次记录 ====================
   app.post('/api/plugin/dm/record', async (request) => {
-    const { bot_id, target_handle, round_number, message_content, result } = request.body || {};
+    const { bot_id, target_handle, round_number, message_content, result, ledger_backfill } = request.body || {};
     if (!bot_id || !target_handle || !round_number) {
       return { ok: false, msg: 'bot_id, target_handle, round_number are required' };
     }
@@ -124,6 +141,7 @@ async function pluginRoutes(app) {
     const wantRound = Number(round_number);
     const resultNorm = String(result || 'success').toLowerCase();
     const isSuccess = resultNorm === 'success';
+    const isLedgerBackfill = ledger_backfill === true || ledger_backfill === 'true';
 
     try {
       // 禁止号池互发
@@ -177,9 +195,24 @@ async function pluginRoutes(app) {
         throw eIns;
       }
 
+      // 台账补记只补齐轮次序列，不代表真实发送：不推进线索阶段、不写 ad_sent/kick_sent 活动。
+      // 否则 OPS 会把占位文案当成一次真实广告，看起来像重复发送。
+      if (isLedgerBackfill) {
+        bustPageCaches();
+        return { ok: true, advanced: false, backfill: true, round: wantRound };
+      }
+
       // 同时写 activity_log
-      const actionMap = { 1: 'ice_sent', 2: 'ad_sent', 3: 'kick_sent' };
-      const backendAction = actionMap[wantRound] || 'ice_sent';
+      // 4 = 终催（第二次催加）。漏掉 4 会落到默认 ice_sent，
+      // 把已经 kick_sent 的线索错误回退成破冰阶段。
+      const actionMap = { 1: 'ice_sent', 2: 'ad_sent', 3: 'kick_sent', 4: 'kick_sent' };
+      // 收口后对方又回复 = 新一轮对话：5=再次广告，6/7=两次催加，8=第三轮广告…
+      let backendAction = actionMap[wantRound];
+      if (!backendAction && wantRound >= 5) {
+        const step = (wantRound - 5) % 3; // 0=广告 1=首次催加 2=终催
+        backendAction = step === 0 ? 'ad_sent' : 'kick_sent';
+      }
+      backendAction = backendAction || 'ice_sent';
 
       const account = accountEarly;
 
@@ -277,17 +310,44 @@ async function pluginRoutes(app) {
 
       const upserted = dmRosterRepo.upsertItems(botKey, items, ts);
       let markedStale = 0;
-      // 4.6.70：仅最终分片做 stale 标记；keep 用 allHandles（全量）优先
-      if (isFinalChunk && typeof dmRosterRepo.markPendingNotInSetStale === 'function') {
+      let markedLeft = 0;
+      // 4.9.117：只有「这次确实读全了粉丝列表」才允许把没出现的人标成 stale。
+      // 现场问题：主页显示 59 粉，粉丝列表只滚出 50 格就封口，
+      // keep 只含这 50 人 → 另外 120 条老 pending 被整批标 stale_not_in_seal，
+      // 它们从此不再进破冰队列，台账看起来就是「永远没被破冰」。
+      // 判定标准：
+      //   1) 调用方显式声明 truncated / shallow → 不是全量，禁止 stale；
+      //   2) 主页粉丝数可读，且 allHandles 明显少于粉丝数（>2 人缺口）→ 浅扫，禁止 stale；
+      //   3) 只在“全量且读全”时才做 stale 标记。
+      const bodyTruncated = body.truncated === true || body.truncated === 1
+        || body.shallow === true || body.shallow === 1;
+      const keepAll = Array.isArray(body.allHandles) ? body.allHandles : [];
+      // 关键：判“浅扫”要看本次真正滚出来的格数（cellsSeen），不是 keep 的长度。
+      // keep 来自本地目标库，本地库里没有的老粉不在 keep 里，
+      // 用 keep 长度判断会得出“读全了”的错误结论，正是 120 条被误标 stale 的原因。
+      // cellsSeen=0 但主页有粉 = 完全没扫到，更不可能代表“这些人已取关”，同样禁止标 stale。
+      const shallowByCount = profileFollowers > 0
+        && (cellsSeen <= 0 || cellsSeen + 2 < profileFollowers);
+      const allowStaleMark = isFinalChunk && !bodyTruncated && !shallowByCount
+        && typeof dmRosterRepo.markPendingNotInSetStale === 'function';
+      if (allowStaleMark) {
         try {
           let keep = [];
-          if (Array.isArray(body.allHandles) && body.allHandles.length > 0) {
-            keep = body.allHandles.map((h) => cleanHandle(h)).filter(Boolean);
+          if (keepAll.length > 0) {
+            keep = keepAll.map((h) => cleanHandle(h)).filter(Boolean);
           } else if (items.length > 0) {
             keep = items.map((it) => cleanHandle(it.handle || it.Handle)).filter(Boolean);
           }
           if (keep.length > 0) {
             markedStale = dmRosterRepo.markPendingNotInSetStale(botKey, keep, ts) || 0;
+            // 4.9.126：全量粉丝列表为准——没再出现的行标「已取关」（保留历史，默认隐藏）。
+            // 只认 allHandles：items 是分片传输，单看 items 会把没在本片的人误判取关。
+            const keepCoversProfile = profileFollowers > 0 && keepAll.length + 2 >= profileFollowers;
+            if (keepAll.length > 0 && keepCoversProfile
+              && typeof dmRosterRepo.markNotInSetLeftFollowers === 'function') {
+              const rLeft = dmRosterRepo.markNotInSetLeftFollowers(botKey, keep, ts) || {};
+              markedLeft = rLeft.marked || 0;
+            }
           }
         } catch (eStale) {}
       }
@@ -297,6 +357,8 @@ async function pluginRoutes(app) {
         bot: botKey,
         upserted: upserted,
         marked_stale: markedStale,
+        marked_left: markedLeft,
+        stale_skipped: allowStaleMark ? '' : (bodyTruncated ? 'truncated' : (shallowByCount ? 'shallow_scan' : 'not_final')),
         chunkIndex: Number.isFinite(chunkIndex) ? chunkIndex : 0,
         chunkTotal,
         finalize_stale: !!isFinalChunk,
@@ -331,12 +393,17 @@ async function pluginRoutes(app) {
     const bot = cleanHandle(request.params.bot) || String(request.params.bot || '').trim();
     if (!bot) return { ok: false, msg: 'bot required' };
     try {
-      const items = dmRosterRepo.listByBot(bot);
+      // 4.9.126：默认不把「已取关」的人回灌给插件，否则插件会把幽灵重新塞回破冰队列，
+      // 下次封口又把人带回来，取关标记被反复冲掉。需要审计用 ?include_left=1。
+      const includeLeft = String((request.query && request.query.include_left) || '') === '1';
+      const all = dmRosterRepo.listByBot(bot);
+      const items = includeLeft ? all : all.filter((it) => Number(it.left_followers) !== 1);
       const snap = dmRosterRepo.latestSnapshotMeta(bot);
       return {
         ok: true,
         bot: bot,
         snapshot: snap,
+        left_count: all.length - items.length,
         count: items.length,
         items: items
       };
@@ -719,7 +786,24 @@ async function pluginRoutes(app) {
       if (!account) {
         account = accountsService.ensureAccount(bot_id);
       }
-      const lead = leadsService.ensureLead(String(target).toLowerCase(), 'chat_plugin');
+      const cleanTarget = String(target).replace(/^@/, '').toLowerCase().trim();
+      // 关注成功只保留 activity/report 的带目标主记录；旧 log 上报和备份重放不得再记一遍。
+      if (backendAction === 'follow' && cleanTarget) {
+        const pDedup = todayCreatedAtLikeParams();
+        const dup = app.db.prepare(`
+          SELECT 1 AS ok FROM activity_logs
+          WHERE account_id = ?
+            AND lower(action_type) = 'follow'
+            AND lower(COALESCE(action_result, '')) = 'success'
+            AND lower(COALESCE(json_extract(detail_json, '$.target_handle'), '')) = ?
+            AND (
+              created_at LIKE ? OR created_at LIKE ? OR created_at LIKE ? OR created_at LIKE ?
+            )
+          LIMIT 1
+        `).get(account.id, cleanTarget, pDedup.t1, pDedup.t2, pDedup.t3, pDedup.t4);
+        if (dup) return { ok: true, deduped: true };
+      }
+      const lead = leadsService.ensureLead(cleanTarget, 'chat_plugin');
       let updatedLead = lead;
       let result = 'success';
 
@@ -818,13 +902,48 @@ async function pluginRoutes(app) {
           ).run(ts, handle);
         } catch (ePin) {}
       }
+      const todayFollowState = accountsRepo.resolveTodayFollow(account);
       return {
         ok: true,
         day_count: account.day_count || 1,
         command: cmdRow ? cmdRow.command : null,
         dm_pin_blocked: dmPinBlocked,
-        today_follow_count: accountsRepo.resolveTodayFollowCount(account),
+        today_follow_count: todayFollowState.count,
+        today_follow_count_date: todayFollowState.date,
       };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
+  // ==================== 舰队重活租约（4.6.173） ====================
+  app.post('/api/plugin/fleet/lease', async (request) => {
+    const body = request.body || {};
+    const handle = extractHandle(body.bot_id || body.handle || '');
+    if (!handle) return { ok: false, granted: false, msg: 'bot_id required' };
+    const kind = String(body.kind || 'chat').toLowerCase();
+    if (kind !== 'chat' && kind !== 'follow') {
+      return { ok: false, granted: false, msg: 'kind must be chat|follow' };
+    }
+    const slots = readFleetHeavySlots();
+    const ttlMs = Math.max(30000, parseInt(body.ttl_ms, 10) || 180000);
+    const ts = shanghaiNow();
+    try {
+      const r = fleetLeaseRepo.acquire(handle, kind, slots, ttlMs, Date.now(), ts);
+      return { ok: true, ...r };
+    } catch (e) {
+      return { ok: false, granted: false, error: e.message };
+    }
+  });
+
+  app.post('/api/plugin/fleet/release', async (request) => {
+    const body = request.body || {};
+    const handle = extractHandle(body.bot_id || body.handle || '');
+    if (!handle) return { ok: false, msg: 'bot_id required' };
+    const kind = body.kind ? String(body.kind).toLowerCase() : '';
+    try {
+      fleetLeaseRepo.release(handle, kind);
+      return { ok: true };
     } catch (e) {
       return { ok: false, error: e.message };
     }
@@ -1072,18 +1191,16 @@ async function pluginRoutes(app) {
     accountsRepo.touch(handle, ts);
     const count = telemetryRepo.insertBatch(account.id, events, ts);
     const pushCandidates = events.filter((e) => e && (e.push || e.severity === 'error'));
-    for (const ev of pushCandidates.slice(-8)) {
-      try {
-        await maybeAlertTelemetry(app, telemetryRepo, {
-          account_id: account.id,
-          event_id: ev.event_id,
-          label_zh: ev.label_zh,
-          meta: ev.meta || {},
-          push: ev.push,
-          created_at: ts,
-        }, handle);
-      } catch (eAl) {}
-    }
+    try {
+      await maybeAlertTelemetryBatch(app, telemetryRepo, pushCandidates.slice(-8).map((ev) => ({
+        account_id: account.id,
+        event_id: ev.event_id,
+        label_zh: ev.label_zh,
+        meta: ev.meta || {},
+        push: ev.push,
+        created_at: ts,
+      })), handle);
+    } catch (eAl) {}
     return { ok: true, count };
   });
 
@@ -1178,18 +1295,16 @@ async function pluginRoutes(app) {
       const countAdapter = {
         countRecentByEvent: (accountId, eventId, since) => logRepo.countEvents({ accountId, eventId, since }),
       };
-      for (const ev of pushCandidates.slice(-8)) {
-        try {
-          await maybeAlertTelemetry(app, countAdapter, {
-            account_id: account.id,
-            event_id: ev.event_id,
-            label_zh: ev.label_zh,
-            meta: ev.meta || {},
-            push: ev.push,
-            created_at: ts,
-          }, handle);
-        } catch (eAl) {}
-      }
+      try {
+        await maybeAlertTelemetryBatch(app, countAdapter, pushCandidates.slice(-8).map((ev) => ({
+          account_id: account.id,
+          event_id: ev.event_id,
+          label_zh: ev.label_zh,
+          meta: ev.meta || {},
+          push: ev.push,
+          created_at: ts,
+        })), handle);
+      } catch (eAl) {}
     }
 
     return { ok: true, ingested: res.inserted, deduped: res.deduped, failed: res.failed };

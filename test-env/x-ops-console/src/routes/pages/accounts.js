@@ -226,6 +226,8 @@ async function accountsPageRoutes(app) {
     const handle = normalizeHandle(request.params.handle) || String(request.params.handle || '').replace(/^@/, '').toLowerCase().trim();
     if (!handle) return reply.code(400).send('handle required');
     const statusFilter = String(request.query.status || '').toLowerCase().trim();
+    // 4.9.126：默认只看真实粉丝；已取关的行保留历史但默认隐藏
+    const showLeft = String(request.query.show || '') === 'left';
     const snapId = parseInt(String((request.query && request.query.snap) || ''), 10);
     let items = [];
     let snap = null;
@@ -268,11 +270,14 @@ async function accountsPageRoutes(app) {
         request.log.warn({ err: eList }, 'dm-roster list failed');
       }
     }
+    // 4.9.126：left_followers=1 = 真实粉丝列表里已不存在；保留历史，默认不展示
+    const leftCount = items.filter((it) => Number(it.left_followers) === 1).length;
+    const activeItems = showLeft ? items : items.filter((it) => Number(it.left_followers) !== 1);
     const filtered = statusFilter
-      ? items.filter((it) => String(it.queue_status || '').toLowerCase() === statusFilter)
-      : items;
-    const verifiedCount = items.filter((it) => it.dm_verified_at).length;
-    const pendingInDb = items.filter((it) => String(it.queue_status || '').toLowerCase() === 'pending').length;
+      ? activeItems.filter((it) => String(it.queue_status || '').toLowerCase() === statusFilter)
+      : activeItems;
+    const verifiedCount = activeItems.filter((it) => it.dm_verified_at).length;
+    const pendingInDb = activeItems.filter((it) => String(it.queue_status || '').toLowerCase() === 'pending').length;
     const F = snap ? (parseInt(snap.profile_followers, 10) || 0) : 0;
     const cells = snap ? (parseInt(snap.cells_seen, 10) || 0) : 0;
     const qTotal = snap ? (parseInt(snap.queue_total, 10) || 0) : 0;
@@ -303,10 +308,10 @@ async function accountsPageRoutes(app) {
     } else if (qTotal + 2 < F || (cells > 0 && cells + 2 < F)) {
       reconcileStatus = 'mismatch';
       reconcileLabel = 'mismatch：F=' + F + ' / cells=' + cells + ' / queue=' + qTotal;
-    } else if (items.length > 0 && items.length + 5 < F) {
+    } else if (activeItems.length > 0 && activeItems.length + 5 < F) {
       // 库内累计行明显少于 F 也告警（历史 upsert 不应远少于主页）
       reconcileStatus = 'mismatch';
-      reconcileLabel = 'mismatch：库内 ' + items.length + ' 行 < F=' + F;
+      reconcileLabel = 'mismatch：库内 ' + activeItems.length + ' 行 < F=' + F;
     }
     const mismatch = reconcileStatus === 'mismatch' || reconcileStatus === 'no_f' || reconcileStatus === 'stale';
     if (historyMode && items.length === 0) historyPayloadEmpty = true;
@@ -323,6 +328,9 @@ async function accountsPageRoutes(app) {
       items,
       filtered,
       statusFilter,
+      showLeft,
+      leftCount,
+      activeCount: activeItems.length,
       verifiedCount,
       pendingInDb,
       mismatch,

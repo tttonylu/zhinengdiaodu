@@ -62,6 +62,46 @@ test('POST /api/plugin/log advances from ice_sent to ad_sent', async () => {
   await app.close();
 });
 
+test('dm/record ledger_backfill 只补轮次，不推进阶段、不写 ad_sent 活动', async () => {
+  const app = createFixtureApp();
+  app.db.prepare(`
+    INSERT INTO accounts (x_handle, status, daily_follow_limit, daily_dm_limit, created_at, updated_at, day_count)
+    VALUES ('workerA', 'active', 200, 50, '2026-11-14 00:00:00', '2026-11-14 00:00:00', 1)
+  `).run();
+
+  const round1 = await app.inject({
+    method: 'POST',
+    url: '/api/plugin/dm/record',
+    payload: {
+      bot_id: '@workerA#guard', target_handle: 'backfill1',
+      round_number: 1, message_content: 'ice', result: 'success',
+    },
+  });
+  assert.equal(round1.json().ok, true);
+  const stageBefore = app.db.prepare('SELECT current_stage FROM leads ORDER BY id DESC LIMIT 1').get().current_stage;
+  const adBefore = app.db.prepare("SELECT COUNT(*) AS c FROM activity_logs WHERE action_type = 'ad_sent'").get().c;
+
+  const backfill = await app.inject({
+    method: 'POST',
+    url: '/api/plugin/dm/record',
+    payload: {
+      bot_id: '@workerA#guard', target_handle: 'backfill1',
+      round_number: 2, message_content: '[补记占位]', result: 'success',
+      ledger_backfill: true,
+    },
+  });
+  assert.equal(backfill.json().ok, true);
+  assert.equal(backfill.json().backfill, true);
+  assert.equal(backfill.json().advanced, false);
+
+  const stageAfter = app.db.prepare('SELECT current_stage FROM leads ORDER BY id DESC LIMIT 1').get().current_stage;
+  const adAfter = app.db.prepare("SELECT COUNT(*) AS c FROM activity_logs WHERE action_type = 'ad_sent'").get().c;
+  assert.equal(stageAfter, stageBefore);
+  assert.equal(adAfter, adBefore);
+
+  await app.close();
+});
+
 test('POST /api/plugin/log marks CORPSE as skipped', async () => {
   const app = createFixtureApp();
 
@@ -95,6 +135,46 @@ test('POST /api/plugin/log records message content in detail_json', async () => 
   // Activity log should contain the message
   const evidence = await app.inject({ method: 'GET', url: '/api/plugin/health/chat-evidence?limit=5' });
   assert.equal(evidence.json().ok, true);
+
+  await app.close();
+});
+
+test('旧 log 关注上报不会重复写 activity/report 已记的成功关注', async () => {
+  const app = createFixtureApp();
+  app.db.prepare(`
+    INSERT INTO accounts (x_handle, status, daily_follow_limit, daily_dm_limit, created_at, updated_at, day_count)
+    VALUES ('workerA', 'active', 200, 50, '2026-11-14 00:00:00', '2026-11-14 00:00:00', 1)
+  `).run();
+
+  const canonical = await app.inject({
+    method: 'POST',
+    url: '/api/plugin/activity/report',
+    payload: {
+      account_handle: '@workerA#guard',
+      target_handle: '@dedupe_follow',
+      action_type: 'follow',
+      result: 'success',
+      source: 'plugin',
+    },
+  });
+  assert.equal(canonical.json().ok, true);
+
+  const legacy = await sendLog(app, {
+    bot_id: '@workerA#guard',
+    target: 'dedupe_follow',
+    action_type: 'FOLLOW',
+    detail: 'AUTO',
+  });
+  assert.equal(legacy.json().ok, true);
+  assert.equal(legacy.json().deduped, true);
+
+  const count = app.db.prepare(`
+    SELECT COUNT(*) AS c FROM activity_logs
+    WHERE lower(action_type) = 'follow'
+      AND lower(COALESCE(action_result, '')) = 'success'
+      AND lower(COALESCE(json_extract(detail_json, '$.target_handle'), '')) = 'dedupe_follow'
+  `).get().c;
+  assert.equal(count, 1, '同一目标当日只应保留一条成功关注日志');
 
   await app.close();
 });

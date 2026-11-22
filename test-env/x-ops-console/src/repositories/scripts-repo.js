@@ -1,8 +1,8 @@
 function createScriptsRepo(db) {
-  function listSets() {
+  function listSets(pool = 'dating') {
     return db
-      .prepare('SELECT * FROM script_sets ORDER BY sort_order, id')
-      .all();
+      .prepare('SELECT * FROM script_sets WHERE pool = ? ORDER BY sort_order, id')
+      .all(pool);
   }
 
   function findSet(setId) {
@@ -26,8 +26,8 @@ function createScriptsRepo(db) {
     return { ...set, templates: templateMap };
   }
 
-  function listFullSets() {
-    const sets = listSets();
+  function listFullSets(pool = 'dating') {
+    const sets = listSets(pool);
     return sets.map((s) => {
       const templates = getTemplates(s.set_id);
       const templateMap = {};
@@ -38,16 +38,41 @@ function createScriptsRepo(db) {
     });
   }
 
+  function getPoolVersion(pool = 'dating') {
+    const key = `pool_version_${pool}`;
+    const cur = getSetting(key);
+    if (cur == null) {
+      setSetting(key, '3');
+      return 3;
+    }
+    const n = parseInt(cur, 10);
+    return Number.isNaN(n) ? 3 : n;
+  }
+
+  function bumpPoolVersion(pool = 'dating') {
+    const next = getPoolVersion(pool) + 1;
+    setSetting(`pool_version_${pool}`, String(next));
+    return next;
+  }
+
+  function poolOfSet(setId) {
+    const set = findSet(setId);
+    return (set && set.pool) || 'dating';
+  }
+
   function upsertSet(setId, data) {
     const existing = findSet(setId);
     if (existing) {
       db.prepare(
         `UPDATE script_sets SET name = ?, description = ?, enabled = ?, updated_at = datetime('now', '+8 hours') WHERE set_id = ?`
       ).run(data.name || existing.name, data.description ?? existing.description, (data.enabled != null ? (data.enabled ? 1 : 0) : existing.enabled), setId);
+      bumpPoolVersion(existing.pool || 'dating');
     } else {
+      const pool = data.pool || 'dating';
       db.prepare(
-        `INSERT INTO script_sets (set_id, name, description, enabled, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, datetime('now', '+8 hours'), datetime('now', '+8 hours'))`
-      ).run(setId, data.name || setId, data.description || '', (data.enabled != null ? (data.enabled ? 1 : 0) : 1), data.sort_order || 0);
+        `INSERT INTO script_sets (set_id, name, description, enabled, sort_order, pool, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, datetime('now', '+8 hours'), datetime('now', '+8 hours'))`
+      ).run(setId, data.name || setId, data.description || '', (data.enabled != null ? (data.enabled ? 1 : 0) : 1), data.sort_order || 0, pool);
+      bumpPoolVersion(pool);
     }
   }
 
@@ -57,17 +82,21 @@ function createScriptsRepo(db) {
        VALUES (?, ?, ?, datetime('now', '+8 hours'), datetime('now', '+8 hours'))
        ON CONFLICT(set_id, template_type) DO UPDATE SET content = excluded.content, updated_at = datetime('now', '+8 hours')`
     ).run(setId, templateType, content);
+    bumpPoolVersion(poolOfSet(setId));
   }
 
   function deleteSet(setId) {
+    const pool = poolOfSet(setId);
     db.prepare('DELETE FROM script_templates WHERE set_id = ?').run(setId);
     db.prepare('DELETE FROM script_sets WHERE set_id = ?').run(setId);
+    bumpPoolVersion(pool);
   }
 
   function setEnabled(setId, enabled) {
     const val = enabled ? 1 : 0;
     db.prepare("UPDATE script_sets SET enabled = ?, updated_at = datetime('now', '+8 hours') WHERE set_id = ?")
       .run(val, setId);
+    bumpPoolVersion(poolOfSet(setId));
   }
 
   function getSetting(key) {
@@ -82,12 +111,12 @@ function createScriptsRepo(db) {
     ).run(key, value);
   }
 
-  function getPoolPayload() {
-    const sets = listFullSets().filter(s => s.enabled);
+  function getPoolPayload(pool = 'dating') {
+    const sets = listFullSets(pool).filter(s => s.enabled);
     const shuffleMode = getSetting('shuffle_mode') || 'random';
-    const templateTypes = ['icebreaker', 'ad_template', 'kick_message', 'reject_message', 'foreigner_reject'];
+    const templateTypes = ['icebreaker', 'ad_template', 'kick_message', 'final_kick_message', 'reject_message', 'foreigner_reject'];
     return {
-      version: '2.0',
+      version: String(getPoolVersion(pool)),
       mode: shuffleMode,
       random_pool: sets.map(s => s.set_id),
       scripts: Object.fromEntries(sets.map(s => {
@@ -115,6 +144,8 @@ function createScriptsRepo(db) {
     setEnabled,
     getSetting,
     setSetting,
+    getPoolVersion,
+    bumpPoolVersion,
     getPoolPayload,
   };
 }

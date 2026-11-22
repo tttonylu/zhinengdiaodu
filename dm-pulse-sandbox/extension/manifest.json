@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "DM Pulse Sandbox",
+  "version": "0.5.13",
+  "description": "只读验证新版 X 会话栏、深扫、会话气泡探针与测试副本收件箱适配诊断，不接入生产。",
+  "minimum_chrome_version": "116",
+  "permissions": ["activeTab", "scripting", "management", "alarms"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "DM Pulse Sandbox",
+    "default_popup": "panel.html"
+  },
+  "host_permissions": ["https://x.com/i/chat*", "http://127.0.0.1/*"]
+}

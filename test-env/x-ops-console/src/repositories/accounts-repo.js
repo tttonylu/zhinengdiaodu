@@ -81,22 +81,47 @@ function createAccountsRepo(db) {
     },
 
     /**
-     * 今日关注闸门读数：优先插件心跳写入的 account_runtime_status.followed_today；
-     * 无 runtime 行时回退 activity_logs 计数（老号未心跳）。
+     * 今日关注读数 + 数据日期：优先插件心跳写入的 runtime.followed_today；
+     * 无 runtime 行或 runtime 非今日时回退 activity_logs（日志本来就是今日）。
      */
-    resolveTodayFollowCount(account) {
-      if (!account || !account.id) return 0;
+    resolveTodayFollow(account) {
+      const todayDate = (() => {
+        try {
+          const { shanghaiDateKey } = require('../utils/shanghai-date');
+          return shanghaiDateKey();
+        } catch (e) { return ''; }
+      })();
+      if (!account || !account.id) return { count: 0, date: todayDate };
       const handle = account.x_handle;
+      const logs = this.countFollowsToday(account.id);
       if (handle) {
         try {
           const rt = runtimeRepo.findByHandle(handle);
           if (rt) {
             const n = parseInt(rt.followed_today, 10);
-            return Number.isFinite(n) ? Math.max(0, n) : 0;
+            const rtN = Number.isFinite(n) ? Math.max(0, n) : 0;
+            try {
+              const { toShanghaiDateKey, shanghaiDateKey } = require('../utils/shanghai-date');
+              const today = shanghaiDateKey();
+              // 4.6.186：显式日历日优先
+              const dayCol = toShanghaiDateKey(rt.followed_today_date || '');
+              if (dayCol && today && dayCol !== today) return { count: logs, date: today };
+              // 无日历日：用心跳日兜底
+              const seenKey = toShanghaiDateKey(rt.last_seen_at || rt.updated_at || '');
+              if (seenKey && today && seenKey !== today) return { count: logs, date: today };
+              // 今日日志远低于 runtime（常见 0 vs 昨日满额）→ 防回灌（不限凌晨）
+              if (logs < rtN && (rtN - logs) >= 20) return { count: logs, date: today };
+            } catch (eDay) {}
+            return { count: rtN, date: todayDate };
           }
         } catch (eRt) {}
       }
-      return this.countFollowsToday(account.id);
+      return { count: logs, date: todayDate };
+    },
+
+    /** 兼容旧调用：只取今日关注数。 */
+    resolveTodayFollowCount(account) {
+      return this.resolveTodayFollow(account).count;
     },
 
     /**
@@ -135,11 +160,14 @@ function createAccountsRepo(db) {
         if (acc && acc.x_handle) {
           const h = String(acc.x_handle).replace(/^@/, '').toLowerCase().trim();
           if (h) {
+            const dayRt = shanghaiDateKey();
             const rt = db.prepare(`
               UPDATE account_runtime_status
-              SET followed_today = 0, updated_at = datetime('now', '+8 hours')
+              SET followed_today = 0,
+                  followed_today_date = ?,
+                  updated_at = datetime('now', '+8 hours')
               WHERE LOWER(x_handle) = LOWER(?)
-            `).run(h);
+            `).run(dayRt, h);
             runtimeZeroed = rt && rt.changes ? rt.changes : 0;
           }
         }
@@ -153,7 +181,7 @@ function createAccountsRepo(db) {
 
     listSummary() {
       const p = this.todayCreatedAtLikeParams();
-      return db
+      const rows = db
         .prepare(`
           WITH today_stats AS (
             SELECT
@@ -183,10 +211,7 @@ function createAccountsRepo(db) {
           SELECT
             a.*,
             COALESCE(lc.lead_count, 0) AS lead_count,
-            CASE
-              WHEN rs.x_handle IS NOT NULL THEN COALESCE(rs.followed_today, 0)
-              ELSE COALESCE(ts.today_follow_count, 0)
-            END AS today_follow_count,
+            COALESCE(ts.today_follow_count, 0) AS log_today_follow_count,
             COALESCE(ts.today_dm_count, 0) AS today_dm_count,
             COALESCE(ac.activity_count, 0) AS activity_count,
             rs.auto_mode AS rt_auto_mode,
@@ -195,6 +220,7 @@ function createAccountsRepo(db) {
             rs.stage AS rt_stage,
             rs.why_idle AS rt_why_idle,
             rs.followed_today AS rt_followed_today,
+            rs.followed_today_date AS rt_followed_today_date,
             rs.last_cmd AS rt_last_cmd,
             rs.last_cmd_issued AS rt_last_cmd_issued,
             rs.last_cmd_issued_at AS rt_last_cmd_issued_at,
@@ -212,6 +238,11 @@ function createAccountsRepo(db) {
             COALESCE(a.last_seen_at, a.updated_at, a.created_at) DESC
         `)
         .all({ t1: p.t1, t2: p.t2, t3: p.t3, t4: p.t4 });
+      // 4.6.186：禁止裸读 rs.followed_today；与 resolveTodayFollowCount 同规则
+      return rows.map((row) => {
+        const resolved = this.resolveTodayFollowCount(row);
+        return Object.assign({}, row, { today_follow_count: resolved });
+      });
     },
     findDetail(id) {
       const account = this.findById(id);

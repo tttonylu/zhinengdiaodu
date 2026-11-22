@@ -136,6 +136,16 @@ var RemoteSettings = (function () {
     return v === 'job' ? 'job' : 'dating';
   }
 
+  /** 交友两段式：dating 默认 on；显式 off/classic 关 */
+  function chatTwoSegMode() {
+    var t = thresholds() || {};
+    var v = t.chat_two_seg_mode;
+    var s = (v === undefined || v === null || v === '') ? '' : String(v).toLowerCase().trim();
+    if (s === '0' || s === 'off' || s === 'false' || s === 'classic' || s === 'no') return false;
+    if (s === '1' || s === 'on' || s === 'true' || s === 'yes' || s === 'two_seg') return true;
+    return chatScriptPool() !== 'job';
+  }
+
   var api = {
     thresholds: thresholds,
     intervals: intervals,
@@ -148,7 +158,8 @@ var RemoteSettings = (function () {
     dmDailyLimit: dmDailyLimit,
     onlyJapanese: onlyJapanese,
     antiBanEnabled: antiBanEnabled,
-    chatScriptPool: chatScriptPool
+    chatScriptPool: chatScriptPool,
+    chatTwoSegMode: chatTwoSegMode
   };
 
   if (typeof window !== 'undefined') window.RemoteSettings = api;

@@ -21,6 +21,19 @@ function createLogRepo(db) {
     return shanghaiWallTime(Date.now() - hours * 3600 * 1000).replace(/:\d{2}$/, ':00:00');
   }
 
+  /**
+   * 兼容历史脏数据：库里同时存在 `2026/11/9 23:58:56`（斜杠、不补零）和
+   * `2026-11-12 14:58:25`（横杠）两种 created_at。
+   * 直接按字符串排序时 '/' > '-' 且 "9" > "12"，11/9 会永远排在最新，
+   * 导致看板“最新事件”停在旧数据、since 过滤也失效。统一用 ts_ms 比较。
+   */
+  function wallToMs(s) {
+    const m = String(s || '').trim()
+      .match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})[ T](\d{1,2}):(\d{2}):(\d{2})/);
+    if (!m) return 0;
+    return Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4] - 8, +m[5], +m[6]);
+  }
+
   function insertBatch(rows) {
     if (!Array.isArray(rows) || !rows.length) return { inserted: 0, deduped: 0, failed: 0 };
     const stmt = db.prepare(`
@@ -101,13 +114,15 @@ function createLogRepo(db) {
       cond.push('(meta_json LIKE @kw OR label_zh LIKE @kw OR event_id LIKE @kw OR account_handle LIKE @kw)');
       params.kw = `%${keyword}%`;
     }
-    if (since) {
-      cond.push('created_at >= @since');
-      params.since = since;
+    const sinceMs = since ? wallToMs(since) : 0;
+    const untilMs = until ? wallToMs(until) : 0;
+    if (sinceMs) {
+      cond.push('ts_ms >= @since_ms');
+      params.since_ms = sinceMs;
     }
-    if (until) {
-      cond.push('created_at <= @until');
-      params.until = until;
+    if (untilMs) {
+      cond.push('ts_ms <= @until_ms');
+      params.until_ms = untilMs;
     }
     const where = cond.length ? 'WHERE ' + cond.join(' AND ') : '';
     params.limit = Math.min(500, Math.max(1, limit));
@@ -117,13 +132,14 @@ function createLogRepo(db) {
              label_zh, session_id, meta_json, ts_ms, created_at
       FROM log_events
       ${where}
-      ORDER BY created_at DESC, id DESC
+      ORDER BY ts_ms DESC, id DESC
       LIMIT @limit OFFSET @offset
     `).all(params);
     return rows.map((r) => {
       let meta = {};
       try { meta = JSON.parse(r.meta_json || '{}'); } catch (_) {}
-      return { ...r, meta };
+      // 展示层统一成可排序的横杠格式，别把历史脏格式再吐给前端
+      return { ...r, created_at: shanghaiWallTime(Number(r.ts_ms) || Date.now()), meta };
     });
   }
 
@@ -157,8 +173,10 @@ function createLogRepo(db) {
   function countEvents({ since, until, severity, eventId, accountId, accountHandle, board } = {}) {
     const cond = [];
     const params = {};
-    if (since) { cond.push('created_at >= @since'); params.since = since; }
-    if (until) { cond.push('created_at <= @until'); params.until = until; }
+    const sinceMs = since ? wallToMs(since) : 0;
+    const untilMs = until ? wallToMs(until) : 0;
+    if (sinceMs) { cond.push('ts_ms >= @since_ms'); params.since_ms = sinceMs; }
+    if (untilMs) { cond.push('ts_ms <= @until_ms'); params.until_ms = untilMs; }
     if (severity) { cond.push('severity = @severity'); params.severity = severity; }
     if (eventId) { cond.push('event_id = @event_id'); params.event_id = eventId; }
     if (accountId) { cond.push('account_id = @account_id'); params.account_id = accountId; }
@@ -193,8 +211,10 @@ function createLogRepo(db) {
   function severityBreakdown({ since, until } = {}) {
     const cond = [];
     const params = {};
-    if (since) { cond.push('created_at >= @since'); params.since = since; }
-    if (until) { cond.push('created_at <= @until'); params.until = until; }
+    const sinceMs = since ? wallToMs(since) : 0;
+    const untilMs = until ? wallToMs(until) : 0;
+    if (sinceMs) { cond.push('ts_ms >= @since_ms'); params.since_ms = sinceMs; }
+    if (untilMs) { cond.push('ts_ms <= @until_ms'); params.until_ms = untilMs; }
     const where = cond.length ? 'WHERE ' + cond.join(' AND ') : '';
     return db.prepare(`
       SELECT severity, COUNT(*) AS c FROM log_events ${where}
@@ -205,15 +225,15 @@ function createLogRepo(db) {
   function hourlyTrend(hours = 24, { accountId } = {}) {
     const cond = [];
     const params = {};
-    cond.push('created_at >= @since_hour');
-    params.since_hour = shanghaiHourAgo(hours);
+    cond.push('ts_ms >= @since_ms');
+    params.since_ms = Date.now() - hours * 3600 * 1000;
     if (accountId) {
       cond.push('account_id = @account_id');
       params.account_id = accountId;
     }
     const where = cond.length ? 'WHERE ' + cond.join(' AND ') : '';
     const rows = db.prepare(`
-      SELECT strftime('%Y-%m-%d %H:00', zhdate(created_at)) AS hour_key,
+      SELECT strftime('%Y-%m-%d %H:00', datetime(ts_ms / 1000, 'unixepoch', '+8 hours')) AS hour_key,
              severity,
              COUNT(*) AS c
       FROM log_events

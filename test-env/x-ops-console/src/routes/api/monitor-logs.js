@@ -55,9 +55,9 @@ async function monitorLogApiRoutes(app) {
     const severity = logRepo.severityBreakdown({ since: sinceSql, ...scope });
     const accounts = app.logDb.prepare(`
       SELECT DISTINCT account_handle FROM log_events
-      WHERE created_at >= @since AND account_handle IS NOT NULL AND TRIM(account_handle) != ''
+      WHERE ts_ms >= @since_ms AND account_handle IS NOT NULL AND TRIM(account_handle) != ''
       ORDER BY account_handle ASC
-    `).all({ since: sinceSql }).map((r) => r.account_handle);
+    `).all({ since_ms: sinceMs }).map((r) => r.account_handle);
 
     const total = severity.reduce((s, x) => s + Number(x.c || 0), 0);
     return {

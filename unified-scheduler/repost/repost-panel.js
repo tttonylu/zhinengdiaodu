@@ -154,7 +154,8 @@
 
   function stopManual() {
     try {
-      if (window.RepostEngine && RepostEngine.stop) RepostEngine.stop();
+      // 4.6.184：显式 panel，执行中也立刻停（勿无参走 api 再被挂起）
+      if (window.RepostEngine && RepostEngine.stop) RepostEngine.stop('panel');
     } catch (e) {}
     try {
       window.dispatchEvent(new CustomEvent('sg-repost-command', { detail: { command: 'stop', reason: 'panel' } }));

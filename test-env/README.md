@@ -11,21 +11,26 @@ test-env/
 
 ## 部署到 NAS
 
-### 1. 上传整个 test-env 目录到 NAS
+### 1. 上传代码到 NAS（只传 src，禁止覆盖 data）
 
-```
-scp -r test-env/ user@nas:/volume1/docker/
+```bash
+rsync -av --exclude data test-env/x-ops-console/src/ user@nas:/vol2/1000/test/x-ops-console/src/
 ```
 
 ### 2. 启动两个后台服务
 
 ```bash
-cd /volume1/docker/test-env/x-pool-service
+cd /vol2/1000/test/x-pool-service
 docker compose up -d
 
 cd /volume1/docker/test-env/x-ops-console
 docker compose up -d
 ```
+
+> **数据目录唯一**：`x-ops-console` 的 compose 必须挂载绝对路径
+> `/vol2/1000/test/x-ops-console/data:/data`，禁止使用 `./data:/data`。
+> 否则在另一个部署目录执行 `docker compose up` 会挂载到该目录下的空库，表现为「数据丢失」。
+> 同理 `x-pool-service` 也必须挂载固定的绝对数据路径。
 
 ### 3. 验证服务
 

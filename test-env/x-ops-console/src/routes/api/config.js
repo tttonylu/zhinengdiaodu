@@ -210,9 +210,9 @@ async function configApiRoutes(app) {
         } else {
           var cs = (parseInt(policy.chatHours.start[0], 10) || 0) * 60 + (parseInt(policy.chatHours.start[1], 10) || 0);
           var cem = ce * 60 + (parseInt(policy.chatHours.end[1], 10) || 0);
-          // 私信保持日窗 08–18；零宽才回默认（跨夜私信不在此需求）
+          // 私信保持日窗 09–18；零宽才回默认（跨夜私信不在此需求）
           if (cem === cs) {
-            policy.chatHours = { start: [8, 0], end: [18, 0] };
+            policy.chatHours = { start: [9, 0], end: [18, 0] };
           }
         }
       }
@@ -382,7 +382,9 @@ async function configApiRoutes(app) {
     const merged = mergeAccountConfig(global, account, overrideRows, db);
     const cmdRow = accountsRepo.getCommand(handle);
     if (merged.account && account) {
-      merged.account.today_follow_count = accountsRepo.countFollowsToday(account.id);
+      const todayFollow = accountsRepo.resolveTodayFollow(account);
+      merged.account.today_follow_count = todayFollow.count;
+      merged.account.today_follow_count_date = todayFollow.date;
     }
 
     return {

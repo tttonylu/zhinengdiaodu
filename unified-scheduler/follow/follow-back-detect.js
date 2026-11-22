@@ -357,6 +357,12 @@
   function canStartActiveTrip() {
     if (!activeScanEnabled()) return false;
     if (!myHandle()) return false;
+    // 4.6.157：follow 未授权时禁止主动扫通知（否则 Gate 反复拦「未授权」刷屏）
+    // 根因：moduleRunning 用 sessionStorage 判断「有没有模块在跑」，但 SchedulerGate 用 localStorage 判断「follow 是否授权」；
+    // follow 被 stopFollow 清 localStorage 后，moduleRunning 仍可能放行（sessionStorage 残留），导致 SchedulerGate 拦截并刷屏。
+    try {
+      if (typeof SchedulerGate !== 'undefined' && SchedulerGate.isModuleOn && !SchedulerGate.isModuleOn('follow')) return false;
+    } catch (eAuth) {}
     // 养号也是主任务：跑着时禁止抢页（否则 hold 空转 + 总跳通知）
     if (moduleRunning('follow') || moduleRunning('chat') || moduleRunning('nurture')) return false;
     if (/\/messages|\/i\/chat/i.test(location.pathname || '')) return false;

@@ -1,0 +1,169 @@
+{
+  "manifest_version": 3,
+  "name": "智能调度中心【测试副本·V2适配器·勿上生产】",
+  "version": "4.9.157",
+  "version_name": "4.9.157-test-copy-ice-drain-watchdog",
+  "description": "测试副本 4.9.157：修掉“破冰永远做不完”——拉新封口后逐个开人时看门狗不再按 90 秒把拉新复位，离开粉丝列表进资料页/会话页也不再算页面走丢；读到对方回复但判定“等下一轮”不再被记成已处理（改为到点重试，有新消息立即复活）。保留 4.9.156 的刷新/重启自动恢复、4.9.154 的软风控无进展回关注、4.9.148 的孤儿脚本停摆、4.9.146 的白屏兜底、4.9.144 的扫描 180 秒宽限、4.9.143 的 24h 全天模式与 4.9.142 的超过 3 天旧会话过期。OPS 仍硬锁 127.0.0.1:15681。",
+  "action": {
+    "default_title": "【测试副本】智能调度中心 4.9.157"
+  },
+  "permissions": [
+    "storage",
+    "alarms",
+    "tabs",
+    "browsingData",
+    "unlimitedStorage",
+    "declarativeNetRequest",
+    "declarativeNetRequestWithHostAccess"
+  ],
+  "host_permissions": [
+    "http://192.168.0.100:*/*",
+    "http://127.0.0.1:*/*",
+    "https://kongzhi1.kooldns.cn/*",
+    "https://haochi1.kooldns.cn/*",
+    "https://*.x.com/*",
+    "https://*.twitter.com/*",
+    "https://*.twimg.com/*"
+  ],
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "twimg_block",
+        "enabled": false,
+        "path": "rules/twimg-block.json"
+      },
+      {
+        "id": "x_telemetry_block",
+        "enabled": false,
+        "path": "rules/x-telemetry-block.json"
+      }
+    ]
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "chat_scripts.json",
+        "chat_scripts_job.json",
+        "obs/event-catalog.json"
+      ],
+      "matches": [
+        "https://*.x.com/*",
+        "https://*.twitter.com/*"
+      ]
+    }
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.x.com/*",
+        "https://*.twitter.com/*"
+      ],
+      "js": [
+        "shared/media-block-main.js",
+        "page-diag-bridge.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://*.x.com/*",
+        "https://*.twitter.com/*"
+      ],
+      "css": [
+        "shared/media-block.css"
+      ],
+      "js": [
+        "shared/media-block-sync.js"
+      ],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://*.x.com/*",
+        "https://*.twitter.com/*"
+      ],
+      "js": [
+        "shared/cpu-profiler.js",
+        "shared/config.js",
+        "shared/id_extractor.js",
+        "shared/logger.js",
+        "shared/debug-log.js",
+        "shared/telemetry.js",
+        "shared/diag-contract.js",
+        "obs/test-monitor.js",
+        "shared/storage-keys.js",
+        "shared/time-util.js",
+        "shared/scheduler-gate.js",
+        "shared/soft-fill-mode.js",
+        "shared/engine-utils.js",
+        "shared/challenge-guard.js",
+        "shared/remote-settings.js",
+        "follow/risk_control.js",
+        "follow/pool-api.js",
+        "follow/soft-risk.js",
+        "follow/content_follow_v1522.js",
+        "follow/follow-back-detect.js",
+        "follow/push_blogger.js",
+        "shared/ui_console.js",
+        "shared/config-sync.js",
+        "scheduler/stage-detector.js",
+        "scheduler/soft-risk-fallback-decision.js",
+        "scheduler/page-router.js",
+        "scheduler/time-budget.js",
+        "scheduler/chat-strategy.js",
+        "scheduler/chat-stagger.js",
+        "scheduler/nurture-quota-gate.js",
+        "scheduler/idle-park-gate.js",
+        "scheduler/fleet-lease.js",
+        "chat/age-parse.js",
+        "chat/roster-check.js",
+        "chat/target-db.js",
+        "chat/promo-links.js",
+        "chat/chat-gates.js",
+        "chat/dm-pin.js",
+        "chat/inbox-v2-adapter.js",
+        "chat/inbox-list-scan.js",
+        "chat/inbox-decision.js",
+        "chat/inbox-pulse.js",
+        "chat/inbox-state.js",
+        "chat/inbox-watch.js",
+        "chat/content_chat.js",
+        "chat/engine-watchdog.js",
+        "nurture/nurture-config.js",
+        "nurture/nurture-tracker.js",
+        "nurture/nurture-comments.js",
+        "nurture/nurture-engine.js",
+        "repost/repost-tracker.js",
+        "repost/content-pool-client.js",
+        "repost/repost-engine.js",
+        "repost/profile-clone.js",
+        "repost/repost-panel.js",
+        "scheduler-core.js",
+        "ui/panel.js",
+        "ui/follow-btn.js"
+      ],
+      "css": [
+        "ui/panel.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}
+
+
+
+

@@ -2,6 +2,9 @@
   "version": "1.0",
   "events": [
     { "id": "cpu.profile_minute", "label_zh": "CPU 仪表分钟桶", "category": "system", "severity": "info", "upload": true, "push": false, "description": "sg_cpu_profile=1 时每分钟上报各 js 文件定时器/观察器回调耗时 top15，用于架构级 CPU 治理归因" },
+    { "id": "system.page_alive", "label_zh": "页面存活脉冲", "category": "system", "severity": "info", "upload": true, "push": false, "description": "4.6.178：页侧约 3 分钟一发，含 park/hidden/缓冲长度，防深空闲后业务事件静默造成盲区" },
+    { "id": "system.sw_alive", "label_zh": "SW存活", "category": "system", "severity": "info", "upload": true, "push": false, "description": "4.6.178：Service Worker keepalive 约 2 分钟一发；页冻住时仍可证明 OPS 上报通路" },
+    { "id": "system.diag_probe", "label_zh": "诊断探针", "category": "system", "severity": "info", "upload": true, "push": false, "description": "运维手动探测 log/batch 写入" },
     { "id": "chat.inbox_watch_start", "label_zh": "守箱开始", "category": "chat", "severity": "info", "upload": true, "push": false, "description": "进入 inbox 守箱段，开始清债" },
     { "id": "chat.inbox_open", "label_zh": "守箱打开会话", "category": "chat", "severity": "info", "upload": true, "push": false, "description": "从消息列表打开有债会话" },
     { "id": "inbox.arm_step2", "label_zh": "守箱武装步进", "category": "chat", "severity": "info", "upload": true, "push": false, "description": "身份证明通过后写入 dan_auto_step=2" },
@@ -30,6 +33,7 @@
     { "id": "chat.dry_run_preview", "label_zh": "干跑预览", "category": "chat", "severity": "info", "upload": true, "push": false, "description": "干跑模式预览待发话术，未真实发送" },
     { "id": "chat.outbound_ice_skip", "label_zh": "粉丝页跳过已破冰", "category": "chat", "severity": "info", "upload": true, "push": false, "description": "对照 OPS 轮次跳过已处理粉丝，不点进主页" },
     { "id": "chat.inbox_no_actionable_debt", "label_zh": "收件箱无可处理债", "category": "chat", "severity": "info", "upload": true, "push": false, "description": "DM 页无未读广告债或到期催加债，立即结束本轮" },
+    { "id": "chat.stale_prune", "label_zh": "48h 清理结论", "category": "chat", "severity": "info", "upload": true, "push": false, "description": "48h 未回复清理结果：清理数、延后数、检查数；缺少扫描证据时只延后不拉黑（deferred_reason=scan_evidence_missing）" },
     { "id": "chat.dm_pin_unlock", "label_zh": "DM PIN解锁", "category": "chat", "severity": "info", "upload": true, "push": false, "description": "加密私信 PIN 自动填入解锁" },
     { "id": "system.console_line", "label_zh": "Console日志", "category": "system", "severity": "info", "upload": true, "push": false, "description": "插件 console/调试行" },
     { "id": "system.logger_error", "label_zh": "系统错误", "category": "system", "severity": "error", "upload": true, "push": false, "description": "Logger.error 或运行时异常" },

@@ -83,8 +83,15 @@
       }, timeoutMs || 15000);
     });
   }
+  // 4.6.159：用户手动（面板「启动」）场标记——发帖不占当日配额、成功 1 条即收工、
+  // 反垃圾只写冷却不填配额。键仅 scheduler-core manualRepost() 写；新号上路 manual_slot 不在此列
+  function isManualNoQuota() {
+    try { return sessionStorage.getItem('sg_repost_manual_no_quota') === '1'; } catch (e) { return false; }
+  }
+
   // 反垃圾/日限命中时填满当日配额（与 UI 路径同口径）
   function fillDailyQuotaForApiStop() {
+    if (isManualNoQuota()) return; // 手动场不动当日配额
     try {
       var lim = T().getEffectiveDailyLimit ? T().getEffectiveDailyLimit() : 10;
       if (T().setDailyCount) T().setDailyCount(lim);
@@ -244,6 +251,51 @@
         });
       } catch (e) { resolve({ ok: false }); }
     });
+  }
+
+  // ── 扫描段媒体闸（4.6.148，手册 E1）─────────────────────────────────────
+  // media_load_mode=off 时 DNR 拦图片域，来源页时间线在闸关下渲染不出
+  // [data-testid="tweetPhoto"] img → hasPhoto 恒假 → 图帖被当纯文字帖选中，
+  // 绕过图优先守卫静默降级。规则：导航/重载来源页前持闸，抓完帖即关闸。
+  var SCAN_GATE_KEY = 'sg_repost_scan_gate_at';
+  var SCAN_GATE_RELOAD_KEY = 'sg_repost_scan_gate_reloaded';
+  var SCAN_GATE_TTL_MS = 150000; // 略小于后台 3min 墙；过期平衡重取（先 close 再 open）
+
+  function scanGateHeld() {
+    try {
+      var stamp = parseInt(sessionStorage.getItem(SCAN_GATE_KEY) || '0', 10) || 0;
+      return stamp > 0 && (Date.now() - stamp) < SCAN_GATE_TTL_MS;
+    } catch (e) { return false; }
+  }
+
+  /** 确保扫描闸持有；resolve true=本次新取（调用方据此判断页面需带闸重载） */
+  function scanGateEnsure() {
+    if (scanGateHeld()) return Promise.resolve(false);
+    var stale = false;
+    try { stale = !!sessionStorage.getItem(SCAN_GATE_KEY); } catch (e0) {}
+    var pre = stale ? mediaGateClose('repost_scan_refresh') : Promise.resolve({ ok: true });
+    return pre.then(function () {
+      return mediaGateOpen('repost_scan');
+    }).then(function (gateResult) {
+      // 开闸失败不盖标记：不触发无意义重载，按闸关现状扫描（与旧行为一致）
+      var opened = !!(gateResult && gateResult.ok !== false);
+      if (opened) {
+        try { sessionStorage.setItem(SCAN_GATE_KEY, String(Date.now())); } catch (e1) {}
+      }
+      return opened;
+    });
+  }
+
+  /** 扫描结束关闸：标记在才发 close（引用计数按标签页平衡），标记不在直接 no-op */
+  function scanGateClose() {
+    var had = false;
+    try { had = !!sessionStorage.getItem(SCAN_GATE_KEY); } catch (e) {}
+    if (!had) return Promise.resolve(false);
+    try {
+      sessionStorage.removeItem(SCAN_GATE_KEY);
+      sessionStorage.removeItem(SCAN_GATE_RELOAD_KEY);
+    } catch (e2) {}
+    return mediaGateClose('repost_scan');
   }
 
   function rand(min, max) {
@@ -604,16 +656,82 @@
     });
   }
 
+  /** BG 代拉 dataUrl → Blob（复用 profile_clone_fetch_url，须已开闸） */
+  function dataUrlToBlob(dataUrl, mimeHint) {
+    try {
+      var parts = String(dataUrl || '').split(',');
+      var mimeMatch = parts[0] && parts[0].match(/data:([^;]+)/);
+      var mime = (mimeMatch && mimeMatch[1]) || mimeHint || 'image/jpeg';
+      var b64 = parts[1] || '';
+      if (!b64) return null;
+      var bin = atob(b64);
+      var arr = new Uint8Array(bin.length);
+      for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+      return new Blob([arr], { type: mime });
+    } catch (e) { return null; }
+  }
+
+  function fetchBlobViaBg(url) {
+    return new Promise(function (resolve, reject) {
+      try {
+        chrome.runtime.sendMessage({ action: 'profile_clone_fetch_url', url: url }, function (r) {
+          void chrome.runtime.lastError;
+          if (!r || !r.ok || !r.dataUrl) {
+            reject(new Error((r && r.error) || 'bg_fetch_fail'));
+            return;
+          }
+          var blob = dataUrlToBlob(r.dataUrl, r.mime);
+          if (!blob || blob.size < 500) reject(new Error('bg_blob_small'));
+          else resolve(blob);
+        });
+      } catch (e) {
+        reject(e);
+      }
+    });
+  }
+
+  /** 页面 fetch → omit+cors → BG 代拉（对齐 E3；手动转帖下图主加固） */
   async function fetchBlob(url) {
+    var blob = null;
+    var lastErr = null;
     try {
       var r = await fetch(url);
       if (!r.ok) throw new Error('fetch_' + r.status);
-      return await r.blob();
+      blob = await r.blob();
     } catch (e1) {
-      var r2 = await fetch(url, { credentials: 'omit', mode: 'cors', cache: 'no-cache' });
-      if (!r2.ok) throw new Error('fetch_' + r2.status);
-      return await r2.blob();
+      lastErr = e1;
+      try {
+        var r2 = await fetch(url, { credentials: 'omit', mode: 'cors', cache: 'no-cache' });
+        if (!r2.ok) throw new Error('fetch_' + r2.status);
+        blob = await r2.blob();
+      } catch (e2) {
+        lastErr = e2;
+      }
     }
+    if (!blob || blob.size < 500) {
+      try {
+        blob = await fetchBlobViaBg(url);
+        log('BG 代拉成功 size=' + (blob && blob.size));
+      } catch (e3) {
+        lastErr = e3;
+        blob = null;
+      }
+    }
+    if (!blob) throw lastErr || new Error('fetch_fail');
+    if (!blob.type || blob.type === 'application/octet-stream') {
+      var t = /\.png(\?|$)/i.test(url) ? 'image/png' : 'image/jpeg';
+      try { blob = new Blob([blob], { type: t }); } catch (eT) {}
+    }
+    return blob;
+  }
+
+  /** 开闸带一次重试（SW 瞬时忙/墙刚 force-zero 时常见） */
+  async function mediaGateOpenRetry(reason) {
+    var gateResult = await mediaGateOpen(reason);
+    if (gateResult && gateResult.ok !== false) return gateResult;
+    await sleep(rand(400, 900));
+    gateResult = await mediaGateOpen(reason);
+    return gateResult || { ok: false };
   }
 
   /** X compose：系统剪贴板复制一次 + 粘贴一次。禁止 selectAll+delete；有残留仅全选后 paste 覆盖。
@@ -684,9 +802,54 @@
     return /Your post was sent|Post sent|已发送|已发帖|已发布|发布成功|posted|tweeted|送信済|送信しました/i.test(String(txt || ''));
   }
 
+  /** 只认发帖框那句打回。时间线上的 “Something went wrong. Try again.” 不是这句。 */
+  function looksLikeComposePostError(txt) {
+    var s = String(txt || '');
+    if (/don.?t fret|another shot/i.test(s)) return true;
+    if (/别担心[\s\S]{0,80}再试/.test(s)) return true;
+    if (/問題が発生しました[\s\S]{0,80}もう一度/.test(s)) return true;
+    return false;
+  }
+
+  function pageHasComposePostError() {
+    var t = '';
+    try { t = String((document.body && document.body.innerText) || '').slice(0, 8000); } catch (e) {}
+    return looksLikeComposePostError(t);
+  }
+
+  function clickComposeTryAgain() {
+    var buttons = [];
+    try { buttons = document.querySelectorAll('button, [role="button"]'); } catch (e) { return false; }
+    for (var i = 0; i < buttons.length; i++) {
+      var label = ((buttons[i].innerText || buttons[i].textContent || buttons[i].getAttribute('aria-label') || '') + '')
+        .replace(/\s+/g, ' ').trim();
+      if (/^(Try again|Retry|再试一次|重试|もう一度)/i.test(label)) {
+        try { buttons[i].click(); return true; } catch (e2) {}
+      }
+    }
+    return false;
+  }
+
+  async function waitForComposerUploadIdle(maxMs) {
+    var start = Date.now();
+    while (Date.now() - start < maxMs) {
+      var busy = false;
+      try {
+        var root = document.querySelector('[data-testid="attachments"]')
+          || document.querySelector('[data-testid="media-preview"]');
+        if (!root) return true;
+        busy = !!root.querySelector('[role="progressbar"], [aria-label*="Uploading" i], [aria-label*="上传中"], [aria-label*="アップロード中"]');
+      } catch (e) { busy = false; }
+      if (!busy) return true;
+      await sleep(500);
+    }
+    return false;
+  }
+
   /** 发帖成功信号：优先 toast；编辑器消失须排除「是否离开」放弃路径 */
   function detectComposePostSuccess(initialUrl, opts) {
     opts = opts || {};
+    if (pageHasComposePostError()) return { ok: false, reason: 'compose_error' };
     try {
       var toastTxt = '';
       var toasts = document.querySelectorAll('[data-testid="toast"], [role="status"], [role="alert"]');
@@ -744,7 +907,11 @@
     try { await EngineUtils.humanClick(postBtn); } catch (eH) {
       try { postBtn.click(); } catch (eC0) {}
     }
-    await sleep(rand(1500, 2500));
+    await sleep(rand(2800, 4200));
+    if (pageHasComposePostError()) {
+      log('首次点击后平台打回，不再补点');
+      return false;
+    }
     if (detectComposePostSuccess(location.href).ok) {
       log('发送 try=1 已见成功信号，跳过 native');
       return true;
@@ -775,15 +942,17 @@
       try { if (T().markOwnPosted) T().markOwnPosted(); } catch (eOwn) {}
     }
     try { if (T().markLastOkAt) T().markLastOkAt(Date.now()); } catch (eOk) {}
-    try { T().bumpDaily(); } catch (eB) {}
+    // 4.6.159：手动场不 bumpDaily，当天的 1 条自动配额保留
+    var noQuota = isManualNoQuota();
+    if (!noQuota) { try { T().bumpDaily(); } catch (eB) {} }
     var used = 0;
     var cap = 1;
     try { used = (T().getDaily() || {}).count || 0; } catch (eU) {}
     try { cap = T().getEffectiveDailyLimit ? T().getEffectiveDailyLimit() : (T().getDailyQuota ? T().getDailyQuota() : 1); } catch (eC) {}
     var ownHs = [];
     try { if (T().ownHandleCandidates) ownHs = T().ownHandleCandidates(); } catch (eHs) {}
-    setRepostLastMsg('✓发帖成功 ' + used + '/' + cap);
-    log('✓ 发帖成功，已记账（@' + (ownHs.join(' @') || 'unknown') + '）id=' + (id || '-') + ' via=' + (why || '') + ' daily=' + used + '/' + cap);
+    setRepostLastMsg(noQuota ? '✓手动发帖成功（不占配额）' : ('✓发帖成功 ' + used + '/' + cap));
+    log('✓ 发帖成功' + (noQuota ? '（手动场，不计配额）' : '，已记账') + '（@' + (ownHs.join(' @') || 'unknown') + '）id=' + (id || '-') + ' via=' + (why || '') + ' daily=' + used + '/' + cap);
   }
 
   // H9 来源号被动检测：进来源主页检出冻结/不存在 → 上报 OPS 标 banned，本来源跳过
@@ -862,6 +1031,8 @@
     var first = await scan();
     if (first.enough) return result;
     while (scrolls < 40 && result.length < count && EngineUtils.isActive(NAME)) {
+      // 扫描闸保活：TTL 2.5min < 后台 3min 墙，防扫描中途 force-zero 拦图致图帖 hasPhoto 全假（4.6.150）
+      try { await scanGateEnsure(); } catch (eGate) {}
       window.scrollBy(0, Math.floor(window.innerHeight * rand(70, 95) / 100));
       await sleep(rand(1200, 2400));
       var s = await scan();
@@ -904,9 +1075,9 @@
     var gateHeld = false;
     if (needMedia) {
       try {
-        var go = await mediaGateOpen('repost');
-        if (go && go.ok !== false) gateHeld = true;
-        else log('媒体开闸失败，跳过下图', go && go.error);
+        var gateResult = await mediaGateOpenRetry('repost');
+        if (gateResult && gateResult.ok !== false) gateHeld = true;
+        else log('媒体开闸失败，跳过下图', gateResult && gateResult.error);
         if (gateHeld) {
           if (typeof window.__sgWaitMediaAllow === 'function') {
             try { await window.__sgWaitMediaAllow(rand(3000, 5000)); } catch (eWa) {}
@@ -1046,6 +1217,31 @@
 
   function isPublishReadyPage() {
     return isHomePage() || isComposePage();
+  }
+
+  /** 全页 /compose/post 没有弹层关闭钮，closeCompose 会空转并留在发帖页。收工必须离开路由。 */
+  function leaveComposeRoute() {
+    if (!isComposePage()) return false;
+    try {
+      if (typeof SchedulerGate !== 'undefined' && SchedulerGate.prepareLeave) SchedulerGate.prepareLeave();
+    } catch (ePl) {}
+    var home = 'https://x.com/home';
+    try {
+      if (typeof SchedulerGate !== 'undefined' && SchedulerGate.go) {
+        SchedulerGate.go('repost', home, { force: true });
+        log('发帖页收工，离开 /compose');
+        return true;
+      }
+    } catch (eGo) {}
+    try {
+      if (typeof SchedulerGate !== 'undefined' && SchedulerGate.goRaw) {
+        SchedulerGate.goRaw(home, { force: true });
+        log('发帖页收工，离开 /compose');
+        return true;
+      }
+    } catch (eRaw) {}
+    try { location.href = home; log('发帖页收工，离开 /compose'); return true; } catch (eLoc) {}
+    return false;
   }
 
   // 发布待发内容：从来源号主页抓取后导航到首页，在首页打开 compose 发布
@@ -1227,7 +1423,7 @@
       log('准备注入图片 ' + mediaFiles.length + ' 张');
       var gateHeld2 = false;
       try {
-        var go2 = await mediaGateOpen('repost');
+        var go2 = await mediaGateOpenRetry('repost');
         if (go2 && go2.ok !== false) gateHeld2 = true;
         if (gateHeld2) {
           if (typeof window.__sgWaitMediaAllow === 'function') {
@@ -1293,6 +1489,13 @@
           await sleep(300);
         }
         log('验证环节·图片：预览 ' + thumbCount + '/' + mediaFiles.length + (previewOk ? ' 通过' : ' 未出现'));
+        if (previewOk) {
+          var uploadIdle = await waitForComposerUploadIdle(20000);
+          if (!uploadIdle) {
+            log('图片仍在上传，本次不点发送');
+            return false;
+          }
+        }
         if (!previewOk) {
           log('图片预览失败，干净关窗回退（不重注、不重贴）');
           if (pid) try { T().markSkipped(pid, 'media_preview_fail'); } catch (eSk4) {}
@@ -1352,6 +1555,7 @@
     // 等待确认（手点发出同样算成功）
     var confirmed = false;
     var confirmWhy = '';
+    var composeErrorRetried = false;
     var waitStart = Date.now();
     var initialUrl2 = location.href;
     var beforeTextLen = 0;
@@ -1360,6 +1564,22 @@
     while (Date.now() - waitStart < 45000 && EngineUtils.isActive(NAME)) {
       await sleep(1000);
       var det2 = detectComposePostSuccess(initialUrl2, { beforeTextLen: beforeTextLen });
+      if (det2.reason === 'compose_error' || pageHasComposePostError()) {
+        if (!composeErrorRetried) {
+          composeErrorRetried = true;
+          log('平台打回发帖，点一次再试');
+          setRepostLastMsg('平台打回，再试一次…');
+          clickComposeTryAgain();
+          await sleep(2500);
+          continue;
+        }
+        log('平台仍打回发帖，离开发帖页，3 分钟后再试');
+        setRepostLastMsg('发帖被平台打回，稍后再试');
+        try { sessionStorage.setItem('sg_repost_compose_backoff_until', String(Date.now() + 3 * 60 * 1000)); } catch (eBo) {}
+        if (isComposePage()) leaveComposeRoute();
+        else await closeCompose({ force: true });
+        return false;
+      }
       if (det2.ok) {
         confirmed = true;
         confirmWhy = det2.reason;
@@ -1395,9 +1615,12 @@
         log('发帖命中反垃圾检测，当日停止转帖并进入 60–120 分钟冷却：' + errT.slice(0, 60));
         try { EngineUtils.markAntiSpamCooldown(60, 120); } catch (eCd2) {}
         try {
-          var limit2 = T().getEffectiveDailyLimit ? T().getEffectiveDailyLimit() : 10;
-          if (T().setDailyCount) T().setDailyCount(limit2);
-          else for (var fi2 = 0; fi2 < limit2; fi2++) T().bumpDaily();
+          // 4.6.159：手动场命中只写冷却，不填当日配额
+          if (!isManualNoQuota()) {
+            var limit2 = T().getEffectiveDailyLimit ? T().getEffectiveDailyLimit() : 10;
+            if (T().setDailyCount) T().setDailyCount(limit2);
+            else for (var fi2 = 0; fi2 < limit2; fi2++) T().bumpDaily();
+          }
         } catch (eFill2) {}
         if (pid) try { T().markSkipped(pid, 'antispam_detected'); } catch (eSk8) {}
         await closeCompose({ force: true });
@@ -1434,7 +1657,16 @@
       scheduleNext(Math.min(600000, Math.max(60000, left * 60000)));
       return;
     }
-    if (T().dailyExhausted()) {
+    try {
+      var boUntil = parseInt(sessionStorage.getItem('sg_repost_compose_backoff_until') || '0', 10) || 0;
+      if (boUntil > Date.now()) {
+        log('平台打回发帖，' + Math.ceil((boUntil - Date.now()) / 60000) + ' 分钟后再试');
+        scheduleNext(Math.min(60000, Math.max(5000, boUntil - Date.now())));
+        return;
+      }
+      if (boUntil) sessionStorage.removeItem('sg_repost_compose_backoff_until');
+    } catch (eBo2) {}
+    if (T().dailyExhausted() && !isManualNoQuota()) {
       log('今日转帖条数已满');
       stop('quota');
       return;
@@ -1445,6 +1677,7 @@
     var cfg = T().getConfig();
     var rem = 1;
     try { rem = Math.max(0, T().remainingDaily ? T().remainingDaily() : (T().getEffectiveDailyLimit() - T().getDaily().count)); } catch (eRem) { rem = 1; }
+    if (isManualNoQuota()) rem = 1; // 4.6.159：手动场不受剩余配额约束，一轮 1 条
     if (rem <= 0) {
       log('今日转帖条数已满');
       isProcessing = false;
@@ -1537,6 +1770,13 @@
           clearPendingContent();
           consecutiveFails = 0;
           log('发布成功');
+          // 4.6.159：手动场成功 1 条即收工（不占配额，本日自动场照常）
+          if (isManualNoQuota()) {
+            log('手动场发帖成功，收工（当日自动配额保留）');
+            isProcessing = false;
+            stop('done');
+            return;
+          }
           if (T().dailyExhausted()) {
             log('今日转帖条数已满，收工');
             isProcessing = false;
@@ -1611,6 +1851,11 @@
         T().setCurrent(current);
       }
 
+      // 扫描段持闸（4.6.148）：导航/重载来源页前必须开闸，
+      // 闸关渲染的时间线无图可筛（hasPhoto 恒假 → 图帖静默降级纯文）
+      var scanGateJustOpened = false;
+      try { scanGateJustOpened = await scanGateEnsure(); } catch (eSg) { scanGateJustOpened = false; }
+
       if (!isProfilePage(current)) {
         ping('navigating');
         log('导航到 @' + current + '（lang=ja，保持 isProcessing，待重载 recover）');
@@ -1622,9 +1867,31 @@
         return;
       }
 
+      // 已在来源页但页面是闸关状态下渲染的（上轮残留/外部直跳）：闸开后 DOM 不补图，带闸重载一次
+      if (scanGateJustOpened) {
+        var gateReloaded = false;
+        try { gateReloaded = sessionStorage.getItem(SCAN_GATE_RELOAD_KEY) === '1'; } catch (eRl) {}
+        if (!gateReloaded) {
+          try { sessionStorage.setItem(SCAN_GATE_RELOAD_KEY, '1'); } catch (eRl2) {}
+          ping('reloading_media');
+          log('来源页为闸关渲染，带闸重载以渲染图片');
+          try { console.warn('[转帖] reload with media gate @' + current); } catch (eRl3) {}
+          // 同 URL 重载禁止走 SchedulerGate.go：urlsRoughlySame 短路只 markNav 不跳转，引擎会干等 recover
+          location.reload();
+          return; // 保持 isProcessing，重载后 recover
+        }
+        log('带闸重载后闸记录仍新取，按现状继续扫描（首屏图可能不全）');
+      }
+
       await sleep(rand(2000, 4000));
       // H9：死号检测 → 上报 banned 并跳过本来源
       var deadKind = detectSourceDeadPage();
+      var tweets = [];
+      if (!deadKind) {
+        tweets = await findLatestTweets(perHandle, cfg.postType || 'text_or_image', cfg.banVideo !== false);
+      }
+      // 扫描结束立即关闸（含死号/空扫路径）；发帖段冷却 30–90 分不持闸，发帖自带闸
+      try { await scanGateClose(); } catch (eSg2) {}
       if (deadKind) {
         log('来源号 @' + current + ' ' + (deadKind === 'suspended' ? '已冻结' : '不存在') + '，上报并跳过');
         reportSourceStatus(current, 'banned', deadKind);
@@ -1634,7 +1901,6 @@
         setTimeout(function () { isProcessing = false; scheduleNext(1200); }, 200);
         return;
       }
-      var tweets = await findLatestTweets(perHandle, cfg.postType || 'text_or_image', cfg.banVideo !== false);
       if (!tweets.length) {
         log('@' + current + ' 无可用日语帖，跳过');
         T().markCompletedRound(current);
@@ -1868,6 +2134,8 @@
   }
 
   function startWithTarget(targetUrl) {
+    try { sessionStorage.removeItem('sg_repost_user_stop'); } catch (eClr) {}
+    try { sessionStorage.removeItem('sg_repost_pending_stop'); } catch (eClr2) {}
     if (EngineUtils.isRunning(NAME)) {
       EngineUtils.resume(NAME);
       writeModuleState({ running: true, phase: 'active', targetUrl: targetUrl || '', startedAt: Date.now(), lastActive: Date.now() });
@@ -1887,23 +2155,39 @@
     scheduleNext(800);
   }
 
+  /** 用户/调度主动停：立即生效。仅内部软停（超时收口等）才可挂到安全点。 */
+  function isImmediateStopReason(reason) {
+    var r = String(reason || '');
+    return !r
+      || r === 'challenge' || r === 'force' || r === 'fuse'
+      || r === 'panel' || r === 'cmd' || r === 'api';
+  }
+
   function stop(reason) {
     cancelSleeps();
-    // repostTweet 执行中：外部 stop 请求延迟到安全点执行，避免打断发文流程
-    // 'challenge'（软风控）和 'force'（强制）仍立即执行
-    if (isProcessing && reason !== 'challenge' && reason !== 'force' && reason !== 'fuse') {
+    // 4.6.184：用户点停止（panel/cmd/api）必须立刻清 running；旧逻辑只挂 pending，
+    // 长扫/跳页后内存丢失 → recover 又把转帖拉起，表现为「点了停止停不掉」。
+    if (isProcessing && !isImmediateStopReason(reason)) {
       pendingStopReason = reason;
+      try { sessionStorage.setItem('sg_repost_pending_stop', String(reason || 'cmd')); } catch (ePs) {}
       log('转帖执行中，延迟停止请求 reason=' + (reason || ''));
       return;
     }
     EngineUtils.stop(NAME);
+    try { scanGateClose(); } catch (eSg) {} // 扫描闸兜底关（标记在才发 close，引用计数保持平衡）
     sessionStorage.removeItem('sg_repost_running');
+    try { sessionStorage.setItem('sg_repost_user_stop', '1'); } catch (eUs) {}
+    try { sessionStorage.removeItem('sg_repost_pending_stop'); } catch (ePs2) {}
     if (tickTimer && tickTimer.cancel) tickTimer.cancel();
     tickTimer = null;
     isProcessing = false;
     pendingStopReason = null;
     writeModuleState({ running: false, phase: reason || 'idle', targetUrl: '', startedAt: 0, lastActive: Date.now() });
-    try { closeCompose({ force: true }); } catch (eClose) {}
+    var leftCompose = false;
+    try { leftCompose = leaveComposeRoute(); } catch (eLeave) { leftCompose = false; }
+    if (!leftCompose) {
+      try { closeCompose({ force: true }); } catch (eClose) {}
+    }
     try {
       if (reason === 'done' || reason === 'quota') {
         setRepostLastMsg(reason === 'quota' ? '今日转帖已满' : '转帖轮次完成');
@@ -1913,8 +2197,13 @@
         } else {
           try {
             if (sessionStorage.getItem('sg_repost_manual_slot') === '1') {
-              T().markAutoDone();
-              log('手动转帖完成，本日自动跳过');
+              // 4.6.159：用户手动场不封本日自动；新号上路 manual_slot 仍记 done
+              if (isManualNoQuota()) {
+                log('手动转帖完成（不占配额），本日自动照常');
+              } else {
+                T().markAutoDone();
+                log('手动转帖完成，本日自动跳过');
+              }
             }
           } catch (eMan) {}
         }
@@ -1928,11 +2217,35 @@
         setRepostLastMsg('');
       }
       try { sessionStorage.removeItem('sg_repost_manual_slot'); } catch (eMs) {}
+      try { sessionStorage.removeItem('sg_repost_manual_no_quota'); } catch (eNq) {}
     } catch (eAuto) {}
     log('引擎停止 ' + (reason || ''));
   }
 
   function recover() {
+    // 用户已点停止：禁止断点恢复把引擎又拉起来
+    try {
+      if (sessionStorage.getItem('sg_repost_user_stop') === '1') {
+        sessionStorage.removeItem('sg_repost_user_stop');
+        sessionStorage.removeItem('sg_repost_running');
+        sessionStorage.removeItem('sg_repost_pending_stop');
+        pendingStopReason = null;
+        isProcessing = false;
+        try { EngineUtils.stop(NAME); } catch (eSt) {}
+        log('存在用户停止闩，跳过断点恢复');
+        return;
+      }
+    } catch (eLatch) {}
+    // 跳页前挂起的软停：重载后继续收口
+    try {
+      var soft = sessionStorage.getItem('sg_repost_pending_stop');
+      if (soft) {
+        sessionStorage.removeItem('sg_repost_pending_stop');
+        isProcessing = false;
+        stop(soft);
+        return;
+      }
+    } catch (eSoft) {}
     var was = sessionStorage.getItem('sg_repost_running') === 'true';
     if (!was) return;
     var allowAutoRecover = false;
@@ -1990,7 +2303,7 @@
 
   window.RepostEngine = {
     start: function () { startWithTarget(''); },
-    stop: function () { stop('api'); },
+    stop: function (reason) { stop(reason || 'api'); },
     startWithTarget: startWithTarget,
     getStatus: function () { return EngineUtils.isActive(NAME) ? 'running' : 'idle'; },
     isActive: function () { return EngineUtils.isActive(NAME); },
@@ -2000,6 +2313,11 @@
       reportPoolOutcome: reportPoolOutcome,
       runContentPoolTick: runContentPoolTick,
       runOnce: runOnce,
+      detectComposePostSuccess: detectComposePostSuccess,
+      setProcessing: function (v) { isProcessing = !!v; },
+      isProcessing: function () { return !!isProcessing; },
+      getPendingStop: function () { return pendingStopReason; },
+      recover: recover,
     }
   };
 

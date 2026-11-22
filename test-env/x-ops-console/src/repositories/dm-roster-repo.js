@@ -55,7 +55,8 @@ function createDmRosterRepo(db) {
   // 否则 upsertItems 事务因「no such column: dm_verified_at」整体回滚（2026-10-05 起明细全丢）
   function ensureItemsColumns() {
     ['ALTER TABLE dm_roster_items ADD COLUMN dm_verified_at INTEGER',
-     'ALTER TABLE dm_roster_items ADD COLUMN stale INTEGER DEFAULT 0'].forEach((ddl) => {
+     'ALTER TABLE dm_roster_items ADD COLUMN stale INTEGER DEFAULT 0',
+     'ALTER TABLE dm_roster_items ADD COLUMN left_followers INTEGER DEFAULT 0'].forEach((ddl) => {
       try { db.exec(ddl); } catch (eCol) { /* column already exists */ }
     });
   }
@@ -122,6 +123,7 @@ function createDmRosterRepo(db) {
           ice_sent_at=excluded.ice_sent_at,
           blocked_at=excluded.blocked_at,
           dm_verified_at=excluded.dm_verified_at,
+          left_followers=0,
           updated_at=excluded.updated_at
       `);
       const updatedAt = ts || new Date().toISOString();
@@ -228,8 +230,51 @@ function createDmRosterRepo(db) {
       const row = db.prepare(`
         SELECT COUNT(*) AS c FROM dm_roster_items
         WHERE bot_id=? AND LOWER(COALESCE(queue_status,''))='pending'
+          AND COALESCE(left_followers,0)=0
       `).get(bot);
       return (row && row.c) || 0;
+    },
+
+    /**
+     * 4.9.126：以本次全量粉丝列表为准，把没再出现的台账行标成「已取关」。
+     * 只做标记不删行：私信历史/轮次/发送时间全部保留，默认视图隐藏。
+     * keepHandles 必须是本次真实读全的粉丝 handle 集合（浅扫禁止调用）。
+     * @returns {{marked:number, cleared:number}}
+     */
+    markNotInSetLeftFollowers(botId, keepHandles, ts) {
+      const bot = cleanH(botId);
+      if (!bot) return { marked: 0, cleared: 0 };
+      const keep = new Set((keepHandles || []).map(cleanH).filter(Boolean));
+      if (!keep.size) return { marked: 0, cleared: 0 };
+      const rows = db.prepare(`
+        SELECT handle, COALESCE(left_followers,0) AS left_followers
+        FROM dm_roster_items WHERE bot_id=?
+      `).all(bot);
+      const updatedAt = ts || new Date().toISOString();
+      const mark = db.prepare(`
+        UPDATE dm_roster_items SET left_followers=1, updated_at=@updated_at
+        WHERE bot_id=@bot AND handle=@handle AND COALESCE(left_followers,0)=0
+      `);
+      const clear = db.prepare(`
+        UPDATE dm_roster_items SET left_followers=0, updated_at=@updated_at
+        WHERE bot_id=@bot AND handle=@handle AND COALESCE(left_followers,0)=1
+      `);
+      let marked = 0;
+      let cleared = 0;
+      const tx = db.transaction((list) => {
+        for (const row of list) {
+          const h = cleanH(row.handle);
+          if (!h) continue;
+          if (keep.has(h)) {
+            if (row.left_followers) { clear.run({ bot, handle: h, updated_at: updatedAt }); cleared++; }
+            continue;
+          }
+          mark.run({ bot, handle: h, updated_at: updatedAt });
+          marked++;
+        }
+      });
+      tx(rows);
+      return { marked, cleared };
     },
 
     latestSnapshotMeta(botId) {

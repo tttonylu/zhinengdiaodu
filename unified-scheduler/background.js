@@ -3,12 +3,13 @@
 // API 中转：号池(关注) + 运营后台(私信) + 调度命令转发
 // =============================================================================
 
-// 家里台式机默认内网；不通时自动切外网映射
+// 家里台式机默认内网。4.6.181：本地运行默认只走内网，不自动切外网（需要时把 WAN_FAILOVER_ENABLED 改 true）
 const DEFAULT_POOL_SERVER = 'http://192.168.0.100:15678';
 const DEFAULT_OPS_SERVER = 'http://192.168.0.100:15680';
 const FALLBACK_POOL_SERVER = 'https://haochi1.kooldns.cn';
 const FALLBACK_OPS_SERVER = 'https://kongzhi1.kooldns.cn';
-const FAILOVER_STICKY_MS = 120000; // 外网成功后 sticky 2 分钟，再试内网
+const WAN_FAILOVER_ENABLED = false;
+const FAILOVER_STICKY_MS = 120000; // 外网成功后 sticky 2 分钟，再试内网（仅 WAN_FAILOVER_ENABLED 时有意义）
 const LAN_TRY_MS = 2500;
 const WAN_TRY_MS = 8000;
 const STICKY_STORAGE_KEY = 'sg_failover_sticky'; // SW 回收后恢复线路记忆
@@ -20,10 +21,109 @@ const OPS_OUTBOX_MAX_LEN = 80;
 var cachedPoolServer = DEFAULT_POOL_SERVER;
 var cachedOpsServer = DEFAULT_OPS_SERVER;
 var liteHeartbeatThrottle = Object.create(null); // handle -> ts
+var swPresenceHbAt = 0; // 4.6.171：SW 保活 presence 心跳节流
+var swTelemetryNudgeAt = 0; // 4.6.178：催页侧 flush
+var swAlivePulseAt = 0; // 4.6.178：SW 侧存活遥测
 var failoverSticky = {
   pool: { base: '', until: 0 },
   ops: { base: '', until: 0 },
 };
+// 4.6.180：外网挂死冷静期——避免每次 LAN 微抖都再卡 WAN_TRY_MS，拖死推博主/心跳
+var WAN_COOLDOWN_MS = 5 * 60 * 1000;
+var wanCooldownUntil = { pool: 0, ops: 0 };
+
+function markWanDead(kind) {
+  wanCooldownUntil[kind] = Date.now() + WAN_COOLDOWN_MS;
+}
+function clearWanCooldown(kind) {
+  wanCooldownUntil[kind] = 0;
+}
+function wanInCooldown(kind) {
+  return Date.now() < (wanCooldownUntil[kind] || 0);
+}
+
+/** 4.6.178：页侧 flushing 闩死时，SW 每 ≥60s 催一次出队 */
+function nudgePagesTelemetryFlush() {
+  var now = Date.now();
+  if (swTelemetryNudgeAt && now - swTelemetryNudgeAt < 60000) return;
+  swTelemetryNudgeAt = now;
+  try {
+    chrome.tabs.query({ url: ['https://x.com/*', 'https://twitter.com/*', 'https://www.x.com/*'] }, function (tabs) {
+      void chrome.runtime.lastError;
+      if (!tabs || !tabs.length) return;
+      for (var i = 0; i < tabs.length; i++) {
+        try {
+          chrome.tabs.sendMessage(tabs[i].id, { action: 'telemetry_flush_now' }, function () {
+            void chrome.runtime.lastError;
+          });
+        } catch (eTab) {}
+      }
+    });
+  } catch (eN) {}
+}
+
+/** 4.6.178：页冻住时仍每 ≥2min 打一条 SW 存活，防「心跳在、日志全死」盲区 */
+function maybeSwAlivePulse() {
+  var now = Date.now();
+  if (swAlivePulseAt && now - swAlivePulseAt < 120000) return;
+  try {
+    chrome.storage.local.get(['my_handle', 'worker_id'], function (r) {
+      var botId = normalizeBotId(r.worker_id || r.my_handle || '');
+      if (!isRegistrableBotId(botId)) return;
+      var handle = String(botId).replace(/^@/, '').replace(/#guard$/i, '').toLowerCase();
+      if (!handle || handle === 'unknown') return;
+      swAlivePulseAt = Date.now();
+      var ts = Date.now();
+      opsFetch('/api/plugin/log/batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          account_handle: handle,
+          events: [{
+            client_event_id: 'sw_alive_' + ts + '_' + Math.random().toString(36).slice(2, 6),
+            event_id: 'system.sw_alive',
+            severity: 'info',
+            category: 'system',
+            label_zh: 'SW存活',
+            session_id: 'sw',
+            meta: { via: 'keepalive' },
+            ts: ts,
+            account_handle: handle,
+            upload: true
+          }]
+        })
+      }).catch(function () {});
+    });
+  } catch (eP) {}
+}
+
+/**
+ * 4.6.171 多开 BitBrowser 后台标签会把页面 setInterval(30s) 心跳拖到数分钟，
+ * 仪表盘 15min / 监控 90s 大量假离线。SW keepalive 闹钟仍准 → 有 x.com 页时
+ * 仅 touch last_seen（不带 engine/auto_mode，避免冲掉 full 心跳业务态）。
+ */
+function maybeSwPresenceHeartbeat() {
+  var now = Date.now();
+  // 55–70s 抖动，防 50+ 实例齐刷 OPS
+  var minGap = 55000 + Math.floor(Math.random() * 15000);
+  if (swPresenceHbAt && now - swPresenceHbAt < minGap) return;
+  try {
+    chrome.tabs.query({ url: ['https://x.com/*', 'https://twitter.com/*', 'https://www.x.com/*'] }, function (tabs) {
+      void chrome.runtime.lastError;
+      if (!tabs || !tabs.length) return;
+      chrome.storage.local.get(['my_handle', 'worker_id'], function (r) {
+        var botId = normalizeBotId(r.worker_id || r.my_handle || '');
+        if (!isRegistrableBotId(botId)) return;
+        swPresenceHbAt = Date.now();
+        opsFetch('/api/plugin/account/heartbeat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ bot_id: botId }),
+        }).catch(function () {});
+      });
+    });
+  } catch (e) {}
+}
 
 // ====== failover sticky 持久化（防 SW 回收丢记忆） ======
 function loadFailoverSticky() {
@@ -33,15 +133,36 @@ function loadFailoverSticky() {
         var saved = r && r[STICKY_STORAGE_KEY] ? JSON.parse(r[STICKY_STORAGE_KEY]) : null;
         if (saved && saved.pool) failoverSticky.pool = saved.pool;
         if (saved && saved.ops) failoverSticky.ops = saved.ops;
+        // 4.6.183：关外网时清掉历史 WAN sticky，避免面板 active 仍显示 haochi1
+        if (!WAN_FAILOVER_ENABLED) {
+          var dirty = false;
+          if (failoverSticky.pool && failoverSticky.pool.base && !isLanUrl(failoverSticky.pool.base)) {
+            failoverSticky.pool = { base: '', until: 0 }; dirty = true;
+          }
+          if (failoverSticky.ops && failoverSticky.ops.base && !isLanUrl(failoverSticky.ops.base)) {
+            failoverSticky.ops = { base: '', until: 0 }; dirty = true;
+          }
+          if (dirty) saveFailoverSticky();
+        }
         var now = Date.now();
         var poolAlive = failoverSticky.pool.until > now ? failoverSticky.pool.base : '(expired)';
         var opsAlive = failoverSticky.ops.until > now ? failoverSticky.ops.base : '(expired)';
-        console.log('[调度-SW] failover sticky 已恢复 pool=', poolAlive, 'ops=', opsAlive);
+        console.log('[调度-SW] failover sticky 已恢复 pool=', poolAlive, 'ops=', opsAlive,
+          'wanFailover=', WAN_FAILOVER_ENABLED);
       } catch (eParse) {
         console.warn('[调度-SW] failover sticky 解析失败:', eParse);
       }
     });
   } catch (e) {}
+}
+
+/** 关外网时把误配的 WAN 地址改回内网默认（读写两端统一） */
+function forceLanIfWanDisabled(kind, url) {
+  var u = normalizeServerUrl(url, kind === 'pool' ? DEFAULT_POOL_SERVER : DEFAULT_OPS_SERVER);
+  if (!WAN_FAILOVER_ENABLED && !isLanUrl(u)) {
+    return kind === 'pool' ? DEFAULT_POOL_SERVER : DEFAULT_OPS_SERVER;
+  }
+  return u;
 }
 
 function saveFailoverSticky() {
@@ -75,6 +196,7 @@ function isDefaultPool78(u) {
 }
 
 function canFallBackToWan(kind, preferred) {
+  if (!WAN_FAILOVER_ENABLED) return false;
   if (!isLanUrl(preferred)) return false;
   if (kind !== 'pool') return true;
   return isDefaultPool78(preferred);
@@ -83,11 +205,21 @@ function canFallBackToWan(kind, preferred) {
 function refreshServersFromStorage() {
   try {
     chrome.storage.local.get(['pool_server', 'ops_server'], function (r) {
-      cachedPoolServer = normalizeServerUrl(r.pool_server, DEFAULT_POOL_SERVER);
-      cachedOpsServer = normalizeServerUrl(r.ops_server, DEFAULT_OPS_SERVER);
+      var nextPool = forceLanIfWanDisabled('pool', r.pool_server);
+      var nextOps = forceLanIfWanDisabled('ops', r.ops_server);
+      cachedPoolServer = nextPool;
+      cachedOpsServer = nextOps;
+      // storage 里若残留外网地址，写回内网，避免面板显示外网但实际走内网
+      try {
+        var patch = {};
+        if (nextPool !== normalizeServerUrl(r.pool_server, DEFAULT_POOL_SERVER)) patch.pool_server = nextPool;
+        if (nextOps !== normalizeServerUrl(r.ops_server, DEFAULT_OPS_SERVER)) patch.ops_server = nextOps;
+        if (Object.keys(patch).length) chrome.storage.local.set(patch);
+      } catch (eFix) {}
       // 启动时加载 sticky 持久化状态（SW 被回收后恢复）
       loadFailoverSticky();
       console.log('[调度-SW] servers pool=', cachedPoolServer, 'ops=', cachedOpsServer,
+        'wanFailover=', WAN_FAILOVER_ENABLED,
         'fallback pool=', FALLBACK_POOL_SERVER, 'ops=', FALLBACK_OPS_SERVER);
     });
   } catch (e) {}
@@ -97,13 +229,15 @@ try {
   chrome.storage.onChanged.addListener(function (changes, area) {
     if (area !== 'local') return;
     if (changes.pool_server) {
-      cachedPoolServer = normalizeServerUrl(changes.pool_server.newValue, DEFAULT_POOL_SERVER);
+      cachedPoolServer = forceLanIfWanDisabled('pool', changes.pool_server.newValue);
       failoverSticky.pool = { base: '', until: 0 };
+      clearWanCooldown('pool');
       saveFailoverSticky();
     }
     if (changes.ops_server) {
-      cachedOpsServer = normalizeServerUrl(changes.ops_server.newValue, DEFAULT_OPS_SERVER);
+      cachedOpsServer = forceLanIfWanDisabled('ops', changes.ops_server.newValue);
       failoverSticky.ops = { base: '', until: 0 };
+      clearWanCooldown('ops');
       saveFailoverSticky();
     }
   });
@@ -122,6 +256,7 @@ function cloneFetchOpts(options, timeoutMs) {
 function candidatesFor(kind) {
   var preferred = kind === 'pool' ? cachedPoolServer : cachedOpsServer;
   var wan = kind === 'pool' ? FALLBACK_POOL_SERVER : FALLBACK_OPS_SERVER;
+  var lanDefault = kind === 'pool' ? DEFAULT_POOL_SERVER : DEFAULT_OPS_SERVER;
   var sticky = failoverSticky[kind] || { base: '', until: 0 };
   var now = Date.now();
   var list = [];
@@ -132,21 +267,33 @@ function candidatesFor(kind) {
     if (list.indexOf(u) < 0) list.push(u);
   }
 
-  // sticky 期内优先上次成功的（多半是外网），但仍把内网 preferred 放第二位以便恢复
-  if (sticky.base && sticky.until > now) {
-    push(sticky.base);
-    push(preferred);
-    if (canFallBackToWan(kind, preferred)) push(wan);
-    return list;
+  // 4.6.181：本地默认只走内网。关外网时若 storage 仍是 haochi1/kongzhi1，直接改走 LAN，不先卡 WAN_TRY_MS
+  if (!WAN_FAILOVER_ENABLED && !isLanUrl(preferred)) {
+    preferred = lanDefault;
   }
 
-  // 默认：内网 preferred → 外网 fallback（仅 preferred 是内网且号池为 78 主池时自动加）
+  // 4.6.175：preferred 为内网时始终内网优先。外网 sticky 只作次选——
+  // 外网挂死时若 sticky 置顶，每心跳先卡 WAN_TRY_MS（8s），多开会拖垮 SW → 监控假离线。
   push(preferred);
-  if (canFallBackToWan(kind, preferred)) push(wan);
+  if (WAN_FAILOVER_ENABLED && sticky.base && sticky.until > now && sticky.base !== preferred) {
+    // 冷静期内 sticky 若是外网也跳过
+    if (!(wanInCooldown(kind) && !isLanUrl(sticky.base))) push(sticky.base);
+  }
+  // 外网 fallback（仅开关开、preferred 是内网、号池为 78 主池时；OPS 同理）
+  // 4.6.180：外网近期失败则跳过，推博主不再被 haochi1 超时拖死
+  if (canFallBackToWan(kind, preferred) && !wanInCooldown(kind)) push(wan);
+  // 开关开且 preferred 仍是外网时，再补内网默认作次选
+  if (WAN_FAILOVER_ENABLED && !isLanUrl(preferred)) {
+    push(lanDefault);
+  }
   return list;
 }
 
 function markFailoverSuccess(kind, base, preferred) {
+  if (!isLanUrl(base)) {
+    // 外网其实通了 → 清冷静期
+    clearWanCooldown(kind);
+  }
   failoverSticky[kind] = {
     base: base,
     until: Date.now() + (base !== preferred && isLanUrl(preferred) ? FAILOVER_STICKY_MS : 15000),
@@ -185,6 +332,17 @@ function fetchJsonWithFailover(kind, path, options) {
       })
       .catch(function (e) {
         console.warn('[' + tag + '] ' + base + path + ' -> ' + (e && e.message ? e.message : e));
+        // sticky 指向的地址失败则立刻清掉，避免下一拍继续先撞死链
+        try {
+          var st = failoverSticky[kind] || {};
+          if (st.base && st.base === base) {
+            failoverSticky[kind] = { base: '', until: 0 };
+            saveFailoverSticky();
+          }
+        } catch (eClr) {}
+        try {
+          if (!isLanUrl(base)) markWanDead(kind);
+        } catch (eCd) {}
         return attempt();
       });
   }
@@ -224,6 +382,16 @@ function opsFetchRaw(path) {
       })
       .catch(function (e) {
         console.warn('[OPS] ' + base + path + ' -> ' + (e && e.message ? e.message : e));
+        try {
+          var st = failoverSticky.ops || {};
+          if (st.base && st.base === base) {
+            failoverSticky.ops = { base: '', until: 0 };
+            saveFailoverSticky();
+          }
+        } catch (eClr) {}
+        try {
+          if (!isLanUrl(base)) markWanDead('ops');
+        } catch (eCd) {}
         return attempt();
       });
   }
@@ -747,29 +915,39 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
   // ----- 服务器地址配置 -----
   if (request.action === 'get_servers') {
     chrome.storage.local.get(['pool_server', 'ops_server'], function (r) {
+      var pool = forceLanIfWanDisabled('pool', r.pool_server);
+      var ops = forceLanIfWanDisabled('ops', r.ops_server);
+      var stickyPool = (WAN_FAILOVER_ENABLED && failoverSticky.pool && failoverSticky.pool.until > Date.now())
+        ? failoverSticky.pool.base : '';
+      var stickyOps = (WAN_FAILOVER_ENABLED && failoverSticky.ops && failoverSticky.ops.until > Date.now())
+        ? failoverSticky.ops.base : '';
       sendResponse({
         ok: true,
-        pool_server: normalizeServerUrl(r.pool_server, DEFAULT_POOL_SERVER),
-        ops_server: normalizeServerUrl(r.ops_server, DEFAULT_OPS_SERVER),
+        pool_server: pool,
+        ops_server: ops,
+        wan_failover: WAN_FAILOVER_ENABLED,
         defaults: { pool_server: DEFAULT_POOL_SERVER, ops_server: DEFAULT_OPS_SERVER },
         fallbacks: { pool_server: FALLBACK_POOL_SERVER, ops_server: FALLBACK_OPS_SERVER },
         active: {
-          pool_server: (failoverSticky.pool && failoverSticky.pool.until > Date.now())
-            ? failoverSticky.pool.base : normalizeServerUrl(r.pool_server, DEFAULT_POOL_SERVER),
-          ops_server: (failoverSticky.ops && failoverSticky.ops.until > Date.now())
-            ? failoverSticky.ops.base : normalizeServerUrl(r.ops_server, DEFAULT_OPS_SERVER),
+          pool_server: stickyPool || pool,
+          ops_server: stickyOps || ops,
         },
       });
     });
     return true;
   }
   if (request.action === 'set_servers') {
-    var nextPool = normalizeServerUrl(request.pool_server, DEFAULT_POOL_SERVER);
-    var nextOps = normalizeServerUrl(request.ops_server, DEFAULT_OPS_SERVER);
+    var nextPool = forceLanIfWanDisabled('pool', request.pool_server);
+    var nextOps = forceLanIfWanDisabled('ops', request.ops_server);
     chrome.storage.local.set({ pool_server: nextPool, ops_server: nextOps }, function () {
       cachedPoolServer = nextPool;
       cachedOpsServer = nextOps;
-      sendResponse({ ok: true, pool_server: nextPool, ops_server: nextOps });
+      sendResponse({
+        ok: true,
+        pool_server: nextPool,
+        ops_server: nextOps,
+        wan_failover: WAN_FAILOVER_ENABLED,
+      });
     });
     return true;
   }
@@ -909,7 +1087,7 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
 
   // ----- 话术 -----
   if (request.action === 'scripts_pool' || request.action === 'fetch_script_pool') {
-    opsFetch('/api/scripts/pool').then(function (d) { sendResponse(d); });
+    opsFetch('/api/scripts/pool?pool=' + encodeURIComponent(request.pool || 'dating')).then(function (d) { sendResponse(d); });
     return true;
   }
 
@@ -1000,16 +1178,29 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
     try {
       handle = (evts[0].account_handle || '').replace(/^@/, '').replace(/#guard$/i, '').toLowerCase();
     } catch (eH) {}
+    var responded = false;
+    function reply(d) {
+      if (responded) return;
+      responded = true;
+      try { sendResponse(d); } catch (eR) {}
+    }
+    // 硬兜底：防 opsFetch 异常路径不回调 → 页侧 flushing 闩死
+    var replyTimer = setTimeout(function () {
+      queueTelemetryBatch(evts);
+      reply({ ok: false, error: 'sw_emit_timeout', queued: true });
+    }, 15000);
     opsFetch('/api/plugin/log/batch', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ events: evts, account_handle: handle }),
     }).then(function (d) {
+      try { clearTimeout(replyTimer); } catch (eC) {}
       if (!d || !d.ok) queueTelemetryBatch(evts);
-      sendResponse(d || { ok: false });
+      reply(d || { ok: false });
     }).catch(function () {
+      try { clearTimeout(replyTimer); } catch (eC2) {}
       queueTelemetryBatch(evts);
-      sendResponse({ ok: false, queued: true });
+      reply({ ok: false, queued: true });
     });
     return true;
   }
@@ -1324,10 +1515,53 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
       .catch(function () { sendResponse({ ok: false, allow_chat: false, reason: 'SCRM状态过期' }); });
     return true;
   }
+  // 4.6.173：舰队重活并发租约
+  if (request.action === 'ops_fleet_lease') {
+    opsFetch('/api/plugin/fleet/lease', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        bot_id: request.bot_id || '',
+        kind: request.kind || 'chat',
+        ttl_ms: request.ttl_ms || 180000,
+      }),
+    }).then(function (d) { sendResponse(d || { ok: false, granted: false }); })
+      .catch(function () { sendResponse({ ok: false, granted: false, reason: 'ops_unreachable' }); });
+    return true;
+  }
+  if (request.action === 'ops_fleet_release') {
+    opsFetch('/api/plugin/fleet/release', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        bot_id: request.bot_id || '',
+        kind: request.kind || '',
+      }),
+    }).then(function (d) { sendResponse(d || { ok: false }); })
+      .catch(function () { sendResponse({ ok: false }); });
+    return true;
+  }
 
   // ----- 缓存自愈（方案 B） -----
   if (request.action === 'sg_request_heal') {
-    handleHealRequest(request, sender).then(function (r) { sendResponse(r); });
+    // 4.6.154：同 tab 多探针（白屏/内存/关注/养号）同拍并发时共享同一在途自愈，
+    // 否则两路各自 tabs.create 却只有一个能 tabs.remove 旧 id → 每次并发净漏 1 页
+    var healTabId = sender && sender.tab && sender.tab.id;
+    if (healTabId && healInFlight[healTabId]) {
+      healInFlight[healTabId].then(function (r) { sendResponse(r); }, function (e) {
+        sendResponse({ ok: false, error: (e && e.message) || String(e) });
+      });
+      return true;
+    }
+    var healP = handleHealRequest(request, sender);
+    if (healTabId) {
+      healInFlight[healTabId] = healP;
+      var clearHealInFlight = function () {
+        if (healInFlight[healTabId] === healP) delete healInFlight[healTabId];
+      };
+      healP.then(clearHealInFlight, clearHealInFlight);
+    }
+    healP.then(function (r) { sendResponse(r); });
     return true;
   }
   if (request.action === 'sg_purge_cache') {
@@ -1421,6 +1655,53 @@ function setStaticTwimgBlock(wantBlock) {
         resolve({ ok: true, blocked: wantBlock });
       }
     });
+  });
+}
+
+// ---------- K3 页面瘦身·第三针：X 遥测 DNR（随 sg_page_slim 启停，不看 force） ----------
+var XTELEM_STATIC_RULESET = 'x_telemetry_block';
+var _xTelemDnrOn = null;
+
+function setStaticXTelemBlock(wantBlock) {
+  if (!chrome.declarativeNetRequest || !chrome.declarativeNetRequest.updateEnabledRulesets) {
+    return Promise.resolve({ ok: false, error: 'no_static_rulesets' });
+  }
+  // 4.6.194：幂等缓存——config-sync 每分钟写 sg_page_slim 会触发 onChanged，
+  // 状态没变时不重复调 updateEnabledRulesets（50 实例下省掉每分钟一枪）。
+  if (_xTelemDnrOn === !!wantBlock) {
+    return Promise.resolve({ ok: true, blocked: !!wantBlock, cached: true });
+  }
+  return new Promise(function (resolve) {
+    var opts = wantBlock
+      ? { enableRulesetIds: [XTELEM_STATIC_RULESET] }
+      : { disableRulesetIds: [XTELEM_STATIC_RULESET] };
+    chrome.declarativeNetRequest.updateEnabledRulesets(opts, function () {
+      var err = chrome.runtime.lastError;
+      if (err) {
+        _xTelemDnrOn = null;
+        console.warn('[调度-SW] x-telemetry DNR fail:', err.message);
+        resolve({ ok: false, error: err.message });
+      } else {
+        _xTelemDnrOn = !!wantBlock;
+        resolve({ ok: true, blocked: wantBlock });
+      }
+    });
+  });
+}
+
+function applySlimDnrRules() {
+  return new Promise(function (resolve) {
+    try {
+      chrome.storage.local.get(['sg_page_slim'], function (st) {
+        var on = String((st && st.sg_page_slim) || '0') === '1';
+        setStaticXTelemBlock(on).then(function (r) {
+          console.log('[调度-SW] x-telemetry block=', on, 'ok=', !!(r && r.ok));
+          resolve(r);
+        });
+      });
+    } catch (e) {
+      resolve({ ok: false, error: String(e) });
+    }
   });
 }
 
@@ -1617,12 +1898,40 @@ function recreateXTab(tabId) {
           if (rmErr) {
             console.warn('[调度-SW] recreate: 旧 tab 关闭失败（新 tab 已开）', rmErr.message);
           }
-          resolve({ ok: true, newTabId: newTab.id, url: url });
+          resolve({ ok: true, newTabId: newTab.id, windowId: newTab.windowId, url: url });
         });
       });
     });
   });
 }
+
+/**
+ * 4.6.154：recreate 后核销同窗残留 x 页。
+ * 多探针同拍请求自愈时，tabs.create 各自成功、tabs.remove 只有一个能删旧 id → 每并发净漏 1 页；
+ * 单实例=单账号，同窗非 active/非 pinned 的其它 x 页都是漏出来的旧页，必须关掉。
+ */
+function sweepSiblingXTabs(keepTabId, windowId) {
+  return new Promise(function (resolve) {
+    if (windowId == null || !chrome.tabs || !chrome.tabs.query) { resolve(0); return; }
+    chrome.tabs.query({ windowId: windowId }, function (tabs) {
+      if (chrome.runtime.lastError || !Array.isArray(tabs)) { resolve(0); return; }
+      var victims = tabs.filter(function (t) {
+        if (!t || t.id == null || t.id === keepTabId) return false;
+        if (t.active || t.pinned) return false;
+        return /^https:\/\/(x|twitter)\.com\//i.test(t.url || '');
+      }).map(function (t) { return t.id; });
+      if (!victims.length) { resolve(0); return; }
+      chrome.tabs.remove(victims, function () {
+        void chrome.runtime.lastError;
+        console.log('[调度-SW] heal 清理同窗旧 x 页:', victims.join(','), 'window=', windowId, 'keep=', keepTabId);
+        resolve(victims.length);
+      });
+    });
+  });
+}
+
+/** 4.6.154：同 tab 自愈在途去重（白屏/内存/关注/养号多探针并发） */
+var healInFlight = Object.create(null);
 
 /**
  * soft_reload：不 bypassCache、不 purge（loading_shell 首次）
@@ -1729,13 +2038,16 @@ function handleHealRequest(request, sender) {
               });
             }
             var nowR = Date.now();
-            return writeHealSuccess(nowR, 'recreate', reason).then(function () {
-              console.log('[调度-SW] heal recreate reason=', reason, 'old=', tabId, 'new=', rec.newTabId);
-              return {
-                ok: true, reason: reason, mode: 'recreate',
-                newTabId: rec.newTabId,
-                purged: !!(purgeRes && purgeRes.ok && !purgeRes.skipped), at: nowR
-              };
+            // 4.6.154：新页开好后核销同窗残留 x 页（并发自愈/历史遗留都可能堆页）
+            return sweepSiblingXTabs(rec.newTabId, rec.windowId).then(function (closed) {
+              return writeHealSuccess(nowR, 'recreate', reason).then(function () {
+                console.log('[调度-SW] heal recreate reason=', reason, 'old=', tabId, 'new=', rec.newTabId, 'swept=', closed);
+                return {
+                  ok: true, reason: reason, mode: 'recreate',
+                  newTabId: rec.newTabId, sweptTabs: closed,
+                  purged: !!(purgeRes && purgeRes.ok && !purgeRes.skipped), at: nowR
+                };
+              });
             });
           });
         }
@@ -1907,6 +2219,9 @@ if (chrome.alarms) {
     if (alarm.name === 'keepalive') {
       flushTelemetryQueue();
       try { flushOpsOutbox(function () {}); } catch (eOb) {}
+      try { maybeSwPresenceHeartbeat(); } catch (eHb) {}
+      try { nudgePagesTelemetryFlush(); } catch (eNg) {}
+      try { maybeSwAlivePulse(); } catch (eAl) {}
     }
     if (alarm.name === OPS_OUTBOX_ALARM) {
       flushOpsOutbox(function () {});
@@ -1934,6 +2249,9 @@ try {
     if (area !== 'local') return;
     if (changes.sg_media_load_mode) {
       applyMediaDnrRules();
+    }
+    if (changes.sg_page_slim) {
+      applySlimDnrRules();
     }
   });
 } catch (eStCh) {}
@@ -2049,6 +2367,8 @@ ensureInstallationId().then(function () {
   });
 }).then(function () {
   return applyMediaDnrRules();
+}).then(function () {
+  return applySlimDnrRules();
 }).then(function () {
   try {
     chrome.alarms.create(CRASH_SCAN_ALARM, { periodInMinutes: 1 });

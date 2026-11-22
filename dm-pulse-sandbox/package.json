@@ -1,0 +1,9 @@
+{
+  "name": "dm-pulse-sandbox",
+  "private": true,
+  "version": "0.5.6",
+  "description": "Bounded X inbox pulse, deep scan, conversation probe and test-copy inbox adapter diagnostics; no production integration.",
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}

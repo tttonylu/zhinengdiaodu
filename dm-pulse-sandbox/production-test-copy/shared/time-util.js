@@ -1,0 +1,315 @@
+// =============================================================================
+// 上海时区时间工具 — 强制 24h（h23）；禁止 en-US 字符串正则把下午 1:xx 当成凌晨
+// =============================================================================
+
+var TimeUtil = (function () {
+  'use strict';
+
+  function pad2(n) {
+    n = parseInt(n, 10) || 0;
+    return (n < 10 ? '0' : '') + n;
+  }
+
+  /** Intl formatToParts + hourCycle h23；失败再用 UTC+8 墙钟（永不走 en-US 正则） */
+  function shanghaiParts(optNow) {
+    var now = optNow != null ? new Date(optNow) : new Date();
+    try {
+      var parts = new Intl.DateTimeFormat('en-GB', {
+        timeZone: 'Asia/Shanghai',
+        hour: '2-digit',
+        minute: '2-digit',
+        hourCycle: 'h23'
+      }).formatToParts(now);
+      var h = 0, m = 0;
+      for (var i = 0; i < parts.length; i++) {
+        if (parts[i].type === 'hour') h = parseInt(parts[i].value, 10);
+        if (parts[i].type === 'minute') m = parseInt(parts[i].value, 10);
+      }
+      if (h === 24) h = 0;
+      if (!isNaN(h) && !isNaN(m) && h >= 0 && h <= 23) {
+        return { h: h, m: m, minutes: h * 60 + m };
+      }
+    } catch (e0) {}
+    try {
+      var parts2 = new Intl.DateTimeFormat('zh-CN', {
+        timeZone: 'Asia/Shanghai',
+        hour: '2-digit',
+        minute: '2-digit',
+        hourCycle: 'h23'
+      }).formatToParts(now);
+      var h2 = 0, m2 = 0;
+      for (var j = 0; j < parts2.length; j++) {
+        if (parts2[j].type === 'hour') h2 = parseInt(parts2[j].value, 10);
+        if (parts2[j].type === 'minute') m2 = parseInt(parts2[j].value, 10);
+      }
+      if (h2 === 24) h2 = 0;
+      if (!isNaN(h2) && !isNaN(m2) && h2 >= 0 && h2 <= 23) {
+        return { h: h2, m: m2, minutes: h2 * 60 + m2 };
+      }
+    } catch (e1) {}
+    // 最后兜底：按 UTC+8 墙钟（不依赖 locale 字符串）
+    try {
+      var utc = now.getTime() + 8 * 3600 * 1000;
+      var d = new Date(utc);
+      var hh = d.getUTCHours();
+      var mm = d.getUTCMinutes();
+      return { h: hh, m: mm, minutes: hh * 60 + mm };
+    } catch (e2) {
+      return null;
+    }
+  }
+
+  function shanghaiDate() {
+    try {
+      return new Date().toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' });
+    } catch (e) {
+      return new Date().toLocaleDateString('zh-CN');
+    }
+  }
+
+  /** 给定分钟数是否在 [start, end)（支持跨夜 end<=start；end>=24:00 当午夜） */
+  function inRangeMinutes(t, hS, mS, hE, mE) {
+    var start = (parseInt(hS, 10) || 0) * 60 + (parseInt(mS, 10) || 0);
+    var end = (parseInt(hE, 10) || 0) * 60 + (parseInt(mE, 10) || 0);
+    if (end >= 24 * 60) end = 24 * 60;
+    if (end <= start) return t >= start || t < end;
+    return t >= start && t < end;
+  }
+
+  function inRange(hS, mS, hE, mE, optNow) {
+    var p = shanghaiParts(optNow);
+    if (!p) return false;
+    return inRangeMinutes(p.minutes, hS, mS, hE, mE);
+  }
+
+  function nowLabel(optNow) {
+    var p = shanghaiParts(optNow);
+    if (!p) return '?';
+    return pad2(p.h) + ':' + pad2(p.m);
+  }
+
+  function hmLabel(h, m) {
+    return pad2(h) + ':' + pad2(m);
+  }
+
+  /** 测试副本默认 24h 全天模式；显式写 sg_test_24h=false 才恢复昼夜时段。 */
+  function isTest24h() {
+    try {
+      var v = localStorage.getItem('sg_test_24h');
+      if (v === 'true') return true;
+      if (v === 'false') return false;
+      return true; // 测试副本默认 24h；显式写 false 才恢复昼夜时段
+    } catch (eT24) {
+      return true;
+    }
+  }
+
+  /** 兼职粉池：私信不早于北京时间 10:00 开（与 chat_script_pool=job 绑定） */
+  function isJobScriptPool() {
+    try {
+      if (typeof window !== 'undefined' && window.RemoteSettings && typeof window.RemoteSettings.chatScriptPool === 'function') {
+        return window.RemoteSettings.chatScriptPool() === 'job';
+      }
+    } catch (eRs) {}
+    try {
+      var t = JSON.parse(localStorage.getItem('sg_config_thresholds') || '{}') || {};
+      return String(t.chat_script_pool || 'dating').toLowerCase().trim() === 'job';
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /** 账号级上班/下班覆盖（H10）：OPS sg_account_config.work_hours 任一侧有值 = 有账号级私信窗 */
+  function hasAccountWorkHoursOverride() {
+    try {
+      var ac = JSON.parse(localStorage.getItem('sg_account_config') || '{}');
+      var wh = ac && ac.work_hours;
+      return !!(wh && (wh.work_start || wh.work_end));
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /** 读 sg_stage_policy.chatHours；产品默认 dating 09:00–18:00；job 池 OPS 下发优先（H10 账号级下班时间=私信停止），无下发兜底硬窗 10:00–19:00 */
+  function readChatHours() {
+    if (isTest24h()) return { startH: 0, startM: 0, endH: 24, endM: 0 };
+    var out = { startH: 9, startM: 0, endH: 18, endM: 0 };
+    try {
+      var p = JSON.parse(localStorage.getItem('sg_stage_policy') || '{}');
+      var ch = (p.chatHours && p.chatHours.start) ? p.chatHours : null;
+      if (ch && Array.isArray(ch.start) && Array.isArray(ch.end)) {
+        var startH = parseInt(ch.start[0], 10);
+        var startM = parseInt(ch.start[1], 10);
+        var endH = parseInt(ch.end[0], 10);
+        var endM = parseInt(ch.end[1], 10);
+        out = {
+          startH: isFinite(startH) ? startH : 9,
+          startM: isFinite(startM) ? startM : 0,
+          endH: isFinite(endH) ? endH : 18,
+          endM: isFinite(endM) ? endM : 0
+        };
+      }
+    } catch (e) {}
+    // 测试副本不接受残留的 00:00–24:00 全天私信窗。
+    if (out.startH === 0 && out.startM === 0 && out.endH >= 24 && out.endM === 0) {
+      out = { startH: 9, startM: 0, endH: 18, endM: 0 };
+    }
+    var spanStart = (out.startH * 60) + out.startM;
+    var spanEnd = (out.endH * 60) + out.endM;
+    if (spanEnd <= spanStart) {
+      out = { startH: 9, startM: 0, endH: 18, endM: 0 };
+    }
+    // 兼职粉：北京时间（Asia/Shanghai）；有账号级上下班覆盖 → 信 OPS 下发（已按号覆盖 chatHours）；
+    // 无覆盖 → 兜底硬窗 10:00–19:00（19:00 起硬停，留到次日）；inRange 为 [start, end)
+    if (isJobScriptPool() && !hasAccountWorkHoursOverride()) {
+      out.startH = 10;
+      out.startM = 0;
+      out.endH = 19;
+      out.endM = 0;
+    }
+    return out;
+  }
+
+  function readWorkHours() {
+    if (isTest24h()) return { startH: 0, startM: 0, endH: 24, endM: 0 };
+    try {
+      var p = JSON.parse(localStorage.getItem('sg_stage_policy') || '{}');
+      var wh = (p.workHours && p.workHours.start) ? p.workHours : null;
+      if (wh && Array.isArray(wh.start) && Array.isArray(wh.end)) {
+        return {
+          startH: parseInt(wh.start[0], 10) || 6,
+          startM: parseInt(wh.start[1], 10) || 0,
+          endH: parseInt(wh.end[0], 10) || 2,
+          endM: parseInt(wh.end[1], 10) || 0
+        };
+      }
+    } catch (e) {}
+    return { startH: 6, startM: 0, endH: 2, endM: 0 };
+  }
+
+  /** 当前是否在私信时段内（含 test24h 全天） */
+  function isWithinChatHours() {
+    if (isTest24h()) return true;
+    var h = readChatHours();
+    return inRange(h.startH, h.startM, h.endH, h.endM);
+  }
+
+  /** 定格点：上海时间；dating 17:00；job 对齐私信硬停点（H10 账号级下班时间，无覆盖时 19:00；不停窗内破冰）；24h 测试永不定格 */
+  function chatFreezeMinutes() {
+    if (isTest24h()) return 24 * 60;
+    if (isJobScriptPool()) return chatStopMinutes();
+    return 17 * 60;
+  }
+
+  /** 私信硬停：跟 chatHours.end（默认 18:00）；24h 测试模式永不硬停 */
+  function chatStopMinutes() {
+    if (isTest24h()) return 24 * 60;
+    var h = readChatHours();
+    return (h.endH * 60) + (h.endM || 0);
+  }
+
+  /** 是否已到定格点（含定格后全天，直到次日清） */
+  function isPastChatFreeze() {
+    var p = shanghaiParts();
+    if (!p) return false;
+    return p.minutes >= chatFreezeMinutes();
+  }
+
+  /** 是否已过私信硬停：不在私信窗内（跟 chatHours，默认 09–18） */
+  function isPastChatStop() {
+    if (isTest24h()) return false;
+    return !isWithinChatHours();
+  }
+
+  /**
+   * 4.6.82：软窗「最后一次进」起点 = 私信下班点前 30 分（兼职 18:30；dating 17:30）。
+   * 该时刻后当天只允许再进一次带私信的软窗。
+   */
+  function softLastEntryStartMinutes() {
+    if (isTest24h()) return 24 * 60;
+    return Math.max(0, chatStopMinutes() - 30);
+  }
+
+  /**
+   * 4.6.82：软窗私信延伸硬停 = 私信下班点后 30 分（兼职 19:30；dating 18:30）。
+   * 已进窗的私信一轮可跑到此点；到点停 chat→只养号。
+   */
+  function softChatExtendEndMinutes() {
+    if (isTest24h()) return 24 * 60;
+    return Math.min(24 * 60, chatStopMinutes() + 30);
+  }
+
+  function isPastSoftLastEntryStart(optNow) {
+    if (isTest24h()) return false;
+    var p = shanghaiParts(optNow);
+    if (!p) return false;
+    return p.minutes >= softLastEntryStartMinutes();
+  }
+
+  function isPastSoftChatExtendEnd(optNow) {
+    if (isTest24h()) return false;
+    var p = shanghaiParts(optNow);
+    if (!p) return false;
+    return p.minutes >= softChatExtendEndMinutes();
+  }
+
+  /** 当前是否处于 [私信下班, 延伸硬停) —— 仅已进软窗续跑用 */
+  function isWithinSoftChatExtend(optNow) {
+    if (isTest24h()) return false;
+    var p = shanghaiParts(optNow);
+    if (!p) return false;
+    var stop = chatStopMinutes();
+    var ext = softChatExtendEndMinutes();
+    return p.minutes >= stop && p.minutes < ext;
+  }
+
+  /** 今日上海墙钟「延伸硬停」对应的 Date.now 时刻（跨日粗算：用分钟差） */
+  function softChatExtendEndMs(optNow) {
+    if (isTest24h()) return 0;
+    var p = shanghaiParts(optNow);
+    if (!p) return 0;
+    var now = optNow != null ? new Date(optNow).getTime() : Date.now();
+    return now + (softChatExtendEndMinutes() - p.minutes) * 60000;
+  }
+
+  /** 赶工窗：已停用（产品改为软风控短扫，过点不赶债） */
+  function isChatRushWindow() {
+    return false;
+  }
+
+  var api = {
+    shanghaiParts: shanghaiParts,
+    shanghaiDate: shanghaiDate,
+    inRange: inRange,
+    inRangeMinutes: inRangeMinutes,
+    nowLabel: nowLabel,
+    hmLabel: hmLabel,
+    pad2: pad2,
+    readChatHours: readChatHours,
+    readWorkHours: readWorkHours,
+    isWithinChatHours: isWithinChatHours,
+    isTest24h: isTest24h,
+    chatFreezeMinutes: chatFreezeMinutes,
+    chatStopMinutes: chatStopMinutes,
+    isPastChatFreeze: isPastChatFreeze,
+    isPastChatStop: isPastChatStop,
+    softLastEntryStartMinutes: softLastEntryStartMinutes,
+    softChatExtendEndMinutes: softChatExtendEndMinutes,
+    isPastSoftLastEntryStart: isPastSoftLastEntryStart,
+    isPastSoftChatExtendEnd: isPastSoftChatExtendEnd,
+    isWithinSoftChatExtend: isWithinSoftChatExtend,
+    softChatExtendEndMs: softChatExtendEndMs,
+    isChatRushWindow: isChatRushWindow
+  };
+  if (typeof window !== 'undefined') window.TimeUtil = api;
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  try {
+    var _ver = (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getManifest)
+      ? String(chrome.runtime.getManifest().version || '') : '';
+    if (_ver) {
+      localStorage.setItem('sg_ext_version', _ver);
+      localStorage.setItem('sg_ext_loaded_at', String(Date.now()));
+    }
+  } catch (eStamp) {}
+  return api;
+})();

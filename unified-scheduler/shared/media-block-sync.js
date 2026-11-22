@@ -28,6 +28,45 @@
   // 4.3.14：默认放行媒体（不再首屏默禁盖 CSS）
   push('on', true);
 
+  // ==========================================================================
+  // K3 页面瘦身·第一针 class 同步：sg-page-slim（force 优先，仅影响 CSS/限频/评论输入）
+  // ==========================================================================
+  function slimResolve(st) {
+    try {
+      var f = localStorage.getItem('sg_page_slim_force');
+      if (f === '1') return true;
+      if (f === '0') return false;
+    } catch (eF) {}
+    return String((st && st.sg_page_slim) || '0') === '1';
+  }
+
+  function syncSlimClass() {
+    try {
+      chrome.storage.local.get(['sg_page_slim'], function (st) {
+        var on = slimResolve(st);
+        try {
+          var root = document.documentElement;
+          if (root) {
+            if (on) root.classList.add('sg-page-slim');
+            else root.classList.remove('sg-page-slim');
+          }
+        } catch (eC) {}
+      });
+    } catch (e) {}
+  }
+  window.sgPageSlimOn = function () {
+    try {
+      var f = localStorage.getItem('sg_page_slim_force');
+      if (f === '1') return true;
+      if (f === '0') return false;
+      return localStorage.getItem('sg_page_slim') === '1';
+    } catch (e) { return false; }
+  };
+  syncSlimClass();
+  try {
+    window.addEventListener('sg-page-slim-changed', function () { syncSlimClass(); });
+  } catch (eEv) {}
+
   function syncFromStorage() {
     try {
       chrome.storage.local.get(['sg_media_load_mode', 'sg_media_gate_ref'], function (st) {
@@ -94,6 +133,7 @@
     chrome.storage.onChanged.addListener(function (changes, area) {
       if (area !== 'local') return;
       if (changes.sg_media_load_mode || changes.sg_media_gate_ref) syncFromStorage();
+      if (changes.sg_page_slim) syncSlimClass();
     });
   } catch (eCh) {}
 
@@ -112,5 +152,5 @@
   } catch (eMsg) {}
 
   // 兜底轮询：实时更新已由 chrome.storage.onChanged 覆盖，60s 仅防极端漏推；隐藏标签跳过
-  setInterval(function () { if (!document.hidden) syncFromStorage(); }, 60000);
+  setInterval(function () { if (!document.hidden) { syncFromStorage(); syncSlimClass(); } }, 60000);
 })();

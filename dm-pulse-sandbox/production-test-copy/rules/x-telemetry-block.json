@@ -1,0 +1,56 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "||api.x.com/1.1/jot/",
+      "resourceTypes": ["xmlhttprequest", "script", "image", "ping", "other"]
+    }
+  },
+  {
+    "id": 2,
+    "priority": 1,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "||api.twitter.com/1.1/jot/",
+      "resourceTypes": ["xmlhttprequest", "script", "image", "ping", "other"]
+    }
+  },
+  {
+    "id": 3,
+    "priority": 1,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "||x.com/i/api/1.1/jot/",
+      "resourceTypes": ["xmlhttprequest", "script", "image", "ping", "other"]
+    }
+  },
+  {
+    "id": 4,
+    "priority": 1,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "||twitter.com/i/api/1.1/jot/",
+      "resourceTypes": ["xmlhttprequest", "script", "image", "ping", "other"]
+    }
+  },
+  {
+    "id": 5,
+    "priority": 1,
+    "action": { "type": "block" },
+    "condition": {
+      "requestDomains": ["ads-api.twitter.com", "ads-api.x.com"],
+      "resourceTypes": ["xmlhttprequest", "script", "image", "ping", "other"]
+    }
+  },
+  {
+    "id": 6,
+    "priority": 1,
+    "action": { "type": "block" },
+    "condition": {
+      "requestDomains": ["analytics.twitter.com"],
+      "resourceTypes": ["xmlhttprequest", "script", "image", "ping", "other"]
+    }
+  }
+]

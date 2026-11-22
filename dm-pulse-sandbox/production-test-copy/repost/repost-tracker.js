@@ -1,0 +1,797 @@
+// =============================================================================
+// 转帖 Tracker：来源号、已发/跳过 ID、日限额、定时自动状态、配置
+// 自动门禁：固定开跑时刻 + 每日条数；仍由调度仅在 S0 拉起
+// =============================================================================
+(function () {
+  'use strict';
+  if (window.RepostTracker) return;
+
+  var TARGETS_KEY = 'sg_repost_targets';
+  var POSTED_KEY = 'sg_repost_posted_ids';
+  var SKIP_KEY = 'sg_repost_skip_ids';
+  var CONFIG_KEY = 'sg_repost_config';
+  var DAILY_KEY = 'sg_repost_daily';
+  var CURRENT_KEY = 'sg_repost_current';
+  var COMPLETED_KEY = 'sg_repost_completed_round';
+  var AUTO_DATE_KEY = 'sg_repost_auto_date';
+  var AUTO_STATUS_KEY = 'sg_repost_auto_status';
+  var AUTO_STARTED_KEY = 'sg_repost_auto_started_at';
+
+  var DEFAULT_CONFIG = {
+    postType: 'text_or_image', // text | image | text_or_image
+    banVideo: true,
+    postsPerHandle: 1,
+    cooldownMin: 40,
+    cooldownMax: 90,
+    dailyCap: 50,
+    day14Quota: 2,  // Day1–4 每日条数（与 OPS 一致）
+    day5Quota: 1,   // Day5+ 每日条数（与 OPS 一致）
+    maxMinutes: 60,
+    // 开跑时刻（上海）；followWorkEnd=true 时跟 stage 的 workHours.end
+    followWorkEnd: false,
+    startHour: 20,
+    startMin: 0,
+    // 多开错峰：开跑后 0..N 分钟按号哈希分槽（默认 240）
+    startJitterMaxMin: 240,
+    // 旧双窗字段仅兼容旧 LS，门禁不再使用
+    eveEndHour: 23,
+    eveEndMin: 0,
+    mornStartHour: 3,
+    mornStartMin: 0,
+    mornEndHour: 5,
+    mornEndMin: 0,
+    appendLink: ''
+  };
+
+  function shanghaiDate() {
+    try {
+      return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' });
+    } catch (e) {
+      try {
+        if (typeof TimeUtil !== 'undefined' && TimeUtil.shanghaiDate) return TimeUtil.shanghaiDate();
+      } catch (e2) {}
+      return new Date().toLocaleDateString('zh-CN');
+    }
+  }
+
+  function loadJson(key, fallback) {
+    try {
+      var raw = localStorage.getItem(key);
+      if (!raw) return fallback;
+      return JSON.parse(raw);
+    } catch (e) { return fallback; }
+  }
+
+  function saveJson(key, val) {
+    try { localStorage.setItem(key, JSON.stringify(val)); } catch (e) {}
+  }
+
+  function normHandle(h) {
+    return String(h || '').replace(/^@/, '').toLowerCase().trim();
+  }
+
+  function getConfig() {
+    var cfg = Object.assign({}, DEFAULT_CONFIG, loadJson(CONFIG_KEY, {}) || {});
+    cfg.cooldownMin = Math.max(30, parseInt(cfg.cooldownMin, 10) || 30);
+    cfg.cooldownMax = Math.max(cfg.cooldownMin, parseInt(cfg.cooldownMax, 10) || 90);
+    try {
+      if (!cfg.appendLink) {
+        chrome.storage.local.get(['dynamic_append_link'], function (r) {
+          if (r && r.dynamic_append_link) {
+            cfg.appendLink = r.dynamic_append_link;
+            saveJson(CONFIG_KEY, cfg);
+          }
+        });
+      }
+    } catch (e) {}
+    return cfg;
+  }
+
+  var LAST_OK_KEY = 'sg_repost_last_ok_at';
+  function getLastOkAt() {
+    try { return parseInt(localStorage.getItem(LAST_OK_KEY) || '0', 10) || 0; } catch (e) { return 0; }
+  }
+  function markLastOkAt(ts) {
+    try { localStorage.setItem(LAST_OK_KEY, String(ts || Date.now())); } catch (e) {}
+  }
+  function msUntilNextPostAllowed() {
+    var cfg = getConfig();
+    var minMs = Math.max(30, cfg.cooldownMin || 30) * 60000;
+    var last = getLastOkAt();
+    if (!last) return 0;
+    return Math.max(0, last + minMs - Date.now());
+  }
+
+  function setConfig(partial) {
+    var prev = getConfig();
+    var cfg = Object.assign({}, prev, partial || {});
+    saveJson(CONFIG_KEY, cfg);
+    try {
+      if (Number(prev.startJitterMaxMin) !== Number(cfg.startJitterMaxMin)
+          || Number(prev.startHour) !== Number(cfg.startHour)
+          || Number(prev.startMin) !== Number(cfg.startMin)
+          || !!prev.followWorkEnd !== !!cfg.followWorkEnd) {
+        localStorage.removeItem('sg_repost_start_jitter_min');
+        localStorage.removeItem('sg_repost_start_jitter_max_used');
+      }
+    } catch (eClr) {}
+    return cfg;
+  }
+
+  function getTargets() {
+    var list = loadJson(TARGETS_KEY, []);
+    if (!Array.isArray(list)) list = [];
+    return list.map(normHandle).filter(Boolean);
+  }
+
+  function resolveBotId() {
+    try {
+      if (typeof window !== 'undefined' && window.__SG_WORKER_ID) return String(window.__SG_WORKER_ID);
+    } catch (e0) {}
+    var h = '';
+    try {
+      h = (localStorage.getItem('my_handle') || localStorage.getItem('matrix_my_handle') || '').replace(/^@/, '').trim();
+    } catch (e1) {}
+    if (h && h !== 'unknown') return '@' + h + '#guard';
+    try {
+      var w = localStorage.getItem('matrix_worker_id') || localStorage.getItem('sg_worker_id') || '';
+      if (w) return w;
+    } catch (e2) {}
+    return '';
+  }
+
+  function pushTargetsToOps(out) {
+    try {
+      if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.sendMessage) return;
+      var botId = resolveBotId();
+      if (!botId) return;
+      chrome.runtime.sendMessage({
+        action: 'ops_repost_targets_push',
+        bot_id: botId,
+        targets: out || []
+      }, function () { void chrome.runtime.lastError; });
+    } catch (ePush) {}
+  }
+
+  function setTargets(list, opts) {
+    var out = [];
+    (list || []).forEach(function (h) {
+      h = normHandle(h);
+      if (h && out.indexOf(h) < 0) out.push(h);
+    });
+    saveJson(TARGETS_KEY, out);
+    try {
+      var cur = getCurrent();
+      if (cur && out.indexOf(cur) < 0) setCurrent('');
+    } catch (eCur) {}
+    try { chrome.storage.local.set({ matrix_repost_targets: out }); } catch (e) {}
+    // 默认不回写 OPS（后台为准）；仅显式 forcePush 时上传
+    if (opts && opts.forcePush) pushTargetsToOps(out);
+    return out;
+  }
+
+  function hasLocalTargets() {
+    return getTargets().length > 0;
+  }
+
+  function myHandle() {
+    try {
+      var h = (localStorage.getItem('matrix_my_handle') || '').replace(/^@/, '').replace(/#guard$/i, '').toLowerCase().trim();
+      if (h && h !== 'unknown') return h;
+    } catch (e) {}
+    return 'unknown';
+  }
+
+  var POSTED_OK_KEY_PREFIX = 'sg_repost_posted_ok_';
+
+  // 本号 handle 候选：导航栏个人资料链接（无论当前停在谁的主页，都指向登录本号）
+  // > matrix_my_handle（转帖跳来源号主页时可能被改写）> matrix_stats_*（最后兜底）
+  function navProfileHandle() {
+    try {
+      var a = document.querySelector('a[data-testid="AppTabBar_Profile_Link"]');
+      var href = a && (a.getAttribute('href') || a.href || '');
+      var m = String(href || '').match(/x\.com\/([A-Za-z0-9_]+)/) || String(href || '').match(/^\/([A-Za-z0-9_]+)/);
+      var h = (m && m[1]) || '';
+      if (h && !/^(home|explore|search|i|settings|messages|notifications|compose|login|signup)$/i.test(h)) {
+        return h.toLowerCase();
+      }
+    } catch (e) {}
+    return '';
+  }
+
+  function ownHandleCandidates() {
+    var out = [];
+    function push(v) {
+      var h = String(v == null ? '' : v).replace(/^@/, '').replace(/#guard$/i, '').toLowerCase().trim();
+      if (h && h !== 'unknown' && out.indexOf(h) < 0) out.push(h);
+    }
+    push(navProfileHandle());
+    try { push(localStorage.getItem('matrix_my_handle')); } catch (e0) {}
+    if (!out.length) {
+      try {
+        var ks = Object.keys(localStorage || {});
+        for (var i = 0; i < ks.length; i++) {
+          if (ks[i].indexOf('matrix_stats_') === 0) { push(ks[i].slice('matrix_stats_'.length)); break; }
+        }
+      } catch (e1) {}
+    }
+    return out;
+  }
+
+  // 写「本号已发帖」标记：对每个候选 handle 都写，读取方（面板/阶段检测）用哪个都能命中
+  function markOwnPosted() {
+    var hs = ownHandleCandidates();
+    for (var i = 0; i < hs.length; i++) {
+      try { localStorage.setItem(POSTED_OK_KEY_PREFIX + hs[i], '1'); } catch (e2) {}
+    }
+    return hs;
+  }
+
+  // 是否已标记发帖（任一候选 handle 命中即算）
+  function hasPostedOk() {
+    var hs = ownHandleCandidates();
+    for (var i = 0; i < hs.length; i++) {
+      try { if (localStorage.getItem(POSTED_OK_KEY_PREFIX + hs[i]) === '1') return true; } catch (e3) {}
+    }
+    return false;
+  }
+
+  function getPostedIds() { return loadJson(POSTED_KEY, []); }
+  function isPosted(id) { return !!id && getPostedIds().indexOf(String(id)) >= 0; }
+  function markPosted(id) {
+    if (!id) return;
+    var ids = getPostedIds();
+    id = String(id);
+    if (ids.indexOf(id) < 0) {
+      ids.push(id);
+      if (ids.length > 800) ids = ids.slice(-600);
+      saveJson(POSTED_KEY, ids);
+    }
+    // 4.3.32：按号记录已发过帖（用于新号就绪判定，避免多号串扰）
+    // 4.4.3：不能用 location.pathname（转帖在来源号主页会误写来源号）
+    // 4.6.3：matrix_my_handle 同样会被来源页导航改写，改为「导航栏本号 + matrix_my_handle」双写
+    markOwnPosted();
+  }
+
+  function getSkipIds() { return loadJson(SKIP_KEY, []); }
+  function isSkipped(id) { return !!id && getSkipIds().indexOf(String(id)) >= 0; }
+  function markSkipped(id, reason) {
+    if (!id) return;
+    var ids = getSkipIds();
+    id = String(id);
+    if (ids.indexOf(id) < 0) {
+      ids.push(id);
+      if (ids.length > 400) ids = ids.slice(-300);
+      saveJson(SKIP_KEY, ids);
+    }
+    try { console.log('[转帖] skip', id, reason || ''); } catch (e) {}
+  }
+
+  function getDaily() {
+    var d = loadJson(DAILY_KEY, { date: '', count: 0 }) || { date: '', count: 0 };
+    var today = shanghaiDate();
+    if (d.date !== today) return { date: today, count: 0 };
+    return d;
+  }
+
+  function bumpDaily() {
+    var d = getDaily();
+    d.count = (d.count || 0) + 1;
+    saveJson(DAILY_KEY, d);
+    return d;
+  }
+
+  // 4.6.30：直接写当日计数（反垃圾填满配额用），替代循环 bump 造成的虚高/多次写盘
+  function setDailyCount(n) {
+    var d = getDaily();
+    d.count = Math.max(0, parseInt(n, 10) || 0);
+    saveJson(DAILY_KEY, d);
+    return d;
+  }
+
+  function myHandle() {
+    try {
+      if (typeof EngineUtils !== 'undefined' && EngineUtils.getHandle) {
+        var h = EngineUtils.getHandle();
+        if (h) return String(h).replace(/^@/, '').toLowerCase();
+      }
+    } catch (e0) {}
+    try {
+      var m = (location.pathname || '').match(/^\/([A-Za-z0-9_]+)/);
+      if (m && m[1] && !/^(home|explore|search|i|settings|messages|notifications)$/i.test(m[1])) {
+        return m[1].toLowerCase();
+      }
+    } catch (e1) {}
+    try {
+      var keys = Object.keys(localStorage || {});
+      for (var i = 0; i < keys.length; i++) {
+        if (keys[i].indexOf('matrix_stats_') === 0) {
+          return keys[i].slice('matrix_stats_'.length);
+        }
+      }
+    } catch (e2) {}
+    return '';
+  }
+
+  /** 本号运营日龄（matrix_stats.day_count，至少 1） */
+  function getAccountDayCount() {
+    try {
+      var h = myHandle();
+      if (!h) return 1;
+      var st = JSON.parse(localStorage.getItem('matrix_stats_' + h) || '{}');
+      var d = parseInt(st.day_count, 10);
+      return d > 0 ? d : 1;
+    } catch (e) { return 1; }
+  }
+
+  /**
+   * 业务日限额（4.6.167 起）：自动场固定 0 条/天（不拉夜场独占）。
+   * OPS 配额键与账号 daily_repost_limit 仍下发但不再读取。
+   * 用户手动（面板「启动」）发帖不占此配额，走 isManualNoQuota。
+   */
+  function getDailyQuota() {
+    return 0;
+  }
+
+  /** 当日有效上限：日龄配额与 dailyCap（>0）取更严 */
+  function getEffectiveDailyLimit() {
+    var quota = getDailyQuota();
+    var cap = Number(getConfig().dailyCap) || 0;
+    if (cap > 0) return Math.min(quota, cap);
+    return quota;
+  }
+
+  function remainingDaily() {
+    return Math.max(0, getEffectiveDailyLimit() - (getDaily().count || 0));
+  }
+
+  function dailyExhausted() {
+    return remainingDaily() <= 0;
+  }
+
+  function getCurrent() { return normHandle(localStorage.getItem(CURRENT_KEY) || ''); }
+  function setCurrent(h) {
+    h = normHandle(h);
+    if (h) localStorage.setItem(CURRENT_KEY, h);
+    else localStorage.removeItem(CURRENT_KEY);
+  }
+
+  function getCompletedRound() { return loadJson(COMPLETED_KEY, []); }
+  function markCompletedRound(h) {
+    h = normHandle(h);
+    var list = getCompletedRound();
+    if (h && list.indexOf(h) < 0) {
+      list.push(h);
+      saveJson(COMPLETED_KEY, list);
+    }
+  }
+  function clearCompletedRound() { saveJson(COMPLETED_KEY, []); }
+
+  /** 定时自动：按上海日重置 */
+  function ensureAutoDay() {
+    var today = shanghaiDate();
+    var d = localStorage.getItem(AUTO_DATE_KEY) || '';
+    if (d !== today) {
+      localStorage.setItem(AUTO_DATE_KEY, today);
+      localStorage.setItem(AUTO_STATUS_KEY, 'idle');
+      localStorage.removeItem(AUTO_STARTED_KEY);
+      try { sessionStorage.removeItem('sg_repost_round_boot'); } catch (e) {}
+      try { sessionStorage.removeItem('sg_repost_auto_slot'); } catch (e2) {}
+    }
+    return today;
+  }
+
+  function getAutoStatus() {
+    ensureAutoDay();
+    return localStorage.getItem(AUTO_STATUS_KEY) || 'idle';
+  }
+
+  function isAutoFinishedToday() {
+    var st = getAutoStatus();
+    return st === 'done' || st === 'timeout';
+  }
+
+  function getAutoStartedAt() {
+    ensureAutoDay();
+    return parseInt(localStorage.getItem(AUTO_STARTED_KEY) || '0', 10) || 0;
+  }
+
+  function getMaxMinutes() {
+    var m = Number(getConfig().maxMinutes);
+    return m > 0 ? m : 60;
+  }
+
+  function cfgStartHm() {
+    var cfg = getConfig();
+    return {
+      h: Math.min(23, Math.max(0, parseInt(cfg.startHour, 10) || 6)),
+      m: Math.min(59, Math.max(0, parseInt(cfg.startMin, 10) || 0))
+    };
+  }
+
+  /** 解析开跑 HH:MM；followWorkEnd 时用 workHours.end（test24h / end≥24 回退 startHour） */
+  function getStartHm() {
+    var cfg = getConfig();
+    var follow = cfg.followWorkEnd;
+    if (follow === false || follow === 0 || follow === '0' || follow === 'false') {
+      return cfgStartHm();
+    }
+    try {
+      var test24 = false;
+      try {
+        if (typeof TimeUtil !== 'undefined' && TimeUtil.isTest24h) test24 = !!TimeUtil.isTest24h();
+      } catch (eT) {}
+      if (test24) return cfgStartHm();
+      var p = null;
+      try {
+        if (typeof StageDetector !== 'undefined' && StageDetector.getStagePolicy) {
+          p = StageDetector.getStagePolicy() || null;
+        }
+      } catch (eSd) {}
+      if (!p) {
+        try { p = JSON.parse(localStorage.getItem('sg_stage_policy') || 'null'); } catch (eLs) { p = null; }
+      }
+      if (p && p.workHours && p.workHours.end) {
+        var eh = parseInt(p.workHours.end[0], 10);
+        var em = parseInt(p.workHours.end[1], 10) || 0;
+        // 24:00 / 非法小时：跟班下班点无意义，回退固定开跑（默认 21:00）
+        if (!isFinite(eh) || eh < 0 || eh >= 24) return cfgStartHm();
+        return { h: eh, m: Math.min(59, Math.max(0, em)) };
+      }
+    } catch (e) {}
+    return cfgStartHm();
+  }
+
+  function shanghaiHm() {
+    try {
+      if (typeof TimeUtil !== 'undefined' && TimeUtil.shanghaiParts) {
+        var sp = TimeUtil.shanghaiParts();
+        if (sp) return { h: sp.h, m: sp.m };
+      }
+    } catch (e) {}
+    try {
+      var parts = new Intl.DateTimeFormat('en-GB', {
+        timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hourCycle: 'h23'
+      }).formatToParts(new Date());
+      var hh = 0, mm = 0;
+      for (var i = 0; i < parts.length; i++) {
+        if (parts[i].type === 'hour') hh = parseInt(parts[i].value, 10);
+        if (parts[i].type === 'minute') mm = parseInt(parts[i].value, 10);
+      }
+      if (hh === 24) hh = 0;
+      return { h: hh, m: mm };
+    } catch (e2) {}
+    try {
+      var u = new Date(Date.now() + 8 * 3600 * 1000);
+      return { h: u.getUTCHours(), m: u.getUTCMinutes() };
+    } catch (e3) {
+      return { h: 12, m: 0 };
+    }
+  }
+
+  function hmToMin(h, m) {
+    return (Number(h) || 0) * 60 + (Number(m) || 0);
+  }
+
+  /** @deprecated 兼容旧调用；双窗已废弃 */
+  function getEveEndHm() {
+    var cfg = getConfig();
+    return {
+      h: Math.min(23, Math.max(0, parseInt(cfg.eveEndHour, 10) || 23)),
+      m: Math.min(59, Math.max(0, parseInt(cfg.eveEndMin, 10) || 0))
+    };
+  }
+
+  /** @deprecated 兼容旧调用；双窗已废弃 */
+  function getMornWindow() {
+    var cfg = getConfig();
+    return {
+      start: {
+        h: Math.min(23, Math.max(0, parseInt(cfg.mornStartHour, 10) || 3)),
+        m: Math.min(59, Math.max(0, parseInt(cfg.mornStartMin, 10) || 0))
+      },
+      end: {
+        h: Math.min(23, Math.max(0, parseInt(cfg.mornEndHour, 10) || 5)),
+        m: Math.min(59, Math.max(0, parseInt(cfg.mornEndMin, 10) || 0))
+      }
+    };
+  }
+
+  function workStartHm() {
+    var h = 7;
+    var m = 0;
+    try {
+      var p = null;
+      if (typeof StageDetector !== 'undefined' && StageDetector.getStagePolicy) {
+        p = StageDetector.getStagePolicy();
+      } else {
+        p = JSON.parse(localStorage.getItem('sg_stage_policy') || 'null');
+      }
+      if (p && p.workHours && p.workHours.start) {
+        h = parseInt(p.workHours.start[0], 10);
+        m = parseInt(p.workHours.start[1], 10) || 0;
+        if (!isFinite(h) || h < 0 || h > 23) h = 7;
+      }
+    } catch (e) {}
+    return { h: h, m: Math.min(59, Math.max(0, m)) };
+  }
+
+  function configuredJitterMax() {
+    var n = Number(getConfig().startJitterMaxMin);
+    if (!isFinite(n) || n < 0) n = 240;
+    if (n > 360) n = 360;
+    return Math.floor(n);
+  }
+
+  // 4.6.140/141：转帖硬窗 [20:00, 23:59]——错峰不得超过窗尾，余量按当日配额算（见 windowJitterCap）
+  var WINDOW_END_H = 23;
+  var WINDOW_END_M = 59;
+  var WINDOW_SEND_MARGIN_MIN = 20;   // 发帖本身 + 抓取/导航的安全余量
+  function windowEndMin() { return hmToMin(WINDOW_END_H, WINDOW_END_M); }
+  // 4.6.141：错峰余量按当日配额算——(配额−1)×发帖间隔上限 + 发帖余量，确保配额能在 23:59 前发完
+  function windowJitterCap() {
+    try {
+      var start = getStartHm();
+      var sM = hmToMin(start.h, start.m);
+      var quota = getEffectiveDailyLimit();
+      var gapMax = Number(getConfig().cooldownMax);
+      if (!isFinite(gapMax) || gapMax < 30) gapMax = 90;   // 与 repost-engine 默认（30–90 分）一致
+      var needMin = Math.max(0, quota - 1) * gapMax + WINDOW_SEND_MARGIN_MIN;
+      return Math.max(0, windowEndMin() - sM - needMin);
+    } catch (eWj) { return Math.min(configuredJitterMax(), 60); }   // 读配额/开跑失败时保守回退（勿用满 240 把开跑顶出窗）
+  }
+
+  /** 晚间开跑用满配置上限；凌晨开跑夹紧到上班前，避免抖动吃进工作窗 */
+  function morningJitterCap() {
+    var maxJ = configuredJitterMax();
+    try {
+      var start = getStartHm();
+      var ws = workStartHm();
+      var startM0 = hmToMin(start.h, start.m);
+      var workStartM0 = hmToMin(ws.h, ws.m);
+      if (startM0 < workStartM0) {
+        var gap = workStartM0 - startM0;
+        maxJ = Math.max(0, Math.min(maxJ, Math.max(0, gap - 15)));
+      }
+    } catch (eG) {}
+    return maxJ;
+  }
+
+  function startJitterMin() {
+    var maxJ = morningJitterCap();
+    try { maxJ = Math.min(maxJ, windowJitterCap()); } catch (eWj) {}
+    try {
+      var cachedMax = localStorage.getItem('sg_repost_start_jitter_max_used');
+      var cached = localStorage.getItem('sg_repost_start_jitter_min');
+      if (cached != null && cached !== '' && String(cachedMax) === String(maxJ)) {
+        var n = parseInt(cached, 10);
+        if (isFinite(n) && n >= 0 && n <= maxJ) return n;
+      }
+    } catch (eC) {}
+    var seed = '';
+    try {
+      seed = localStorage.getItem('matrix_bit_id')
+        || localStorage.getItem('matrix_my_handle')
+        || localStorage.getItem('sg_installation_id')
+        || '';
+    } catch (eS) {}
+    if (!seed) seed = 'x';
+    var h = 2166136261;
+    for (var i = 0; i < seed.length; i++) {
+      h ^= seed.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    var j = maxJ <= 0 ? 0 : ((h >>> 0) % (maxJ + 1));
+    try {
+      localStorage.setItem('sg_repost_start_jitter_min', String(j));
+      localStorage.setItem('sg_repost_start_jitter_max_used', String(maxJ));
+    } catch (eW) {}
+    return j;
+  }
+
+  function isPastStartClock() {
+    var now = shanghaiHm();
+    var start = getStartHm();
+    var nowM = hmToMin(now.h, now.m);
+    var startM = hmToMin(start.h, start.m);
+    var ws = workStartHm();
+    var workStartM = hmToMin(ws.h, ws.m);
+    var jitter = startJitterMin();
+    var effectiveStartM = startM + jitter;
+
+    // 凌晨开跑（开跑点 < 上班点，如 05:00/06:00）：仅 [开跑+jitter, 上班) 算已到点
+    // 避免 start=6 时 23:00>=6 为真、又在 S0 里被误拉起
+    if (startM < workStartM) {
+      if (effectiveStartM >= workStartM) effectiveStartM = Math.max(startM, workStartM - 1);
+      return nowM >= effectiveStartM && nowM < workStartM;
+    }
+
+    // 4.6.140：硬窗上界 23:59——过了窗尾一律不算窗内（旧版「过 0 点仍算已到开跑」导致整夜占坑）
+    if (nowM > windowEndMin()) return false;
+    if (nowM >= effectiveStartM) return true;
+    return false;
+  }
+
+  /**
+   * 可开跑窗：已到固定开跑时刻，且本日自动未收工，且不在私信时段。
+   * 4.3.23：转帖可与私信零撞车——私信时段内窗=关；其它时间只要过开跑钟即可。
+   * 收工靠 dailyQuota / maxMinutes / 扫完。
+   */
+  function isChatTimeNowRt() {
+    try {
+      if (typeof StageDetector !== 'undefined' && StageDetector.isChatTime) {
+        try { if (StageDetector.detect) StageDetector.detect(); } catch (eD) {}
+        return !!StageDetector.isChatTime();
+      }
+    } catch (e) {}
+    try {
+      if (typeof TimeUtil !== 'undefined' && TimeUtil.readChatHours && TimeUtil.inRange) {
+        var th = TimeUtil.readChatHours();
+        return !!TimeUtil.inRange(th.startH, th.startM || 0, th.endH, th.endM || 0);
+      }
+    } catch (e2) {}
+    return false;
+  }
+
+  /** 4.6.168：面板手动启动 → 日程/配额/私信钟全旁路 */
+  function isManualOpen() {
+    try {
+      if (sessionStorage.getItem('sg_repost_manual_slot') === '1') return true;
+      if (sessionStorage.getItem('sg_repost_manual_no_quota') === '1') return true;
+    } catch (e) {}
+    return false;
+  }
+
+  function getActiveWindow() {
+    if (isManualOpen()) return { name: 'manual', endH: WINDOW_END_H, endM: WINDOW_END_M };
+    // 硬闸：私信时段绝不转帖
+    if (isChatTimeNowRt()) return null;
+    var st = getAutoStatus();
+    if (st === 'done' || st === 'timeout') return null;
+    // 4.6.140：当日配额已满 → 不再转帖（1/1 满即停）
+    if (dailyExhausted()) return null;
+    // 4.6.140：硬窗 [开跑+jitter, 23:59]——running 也必须在窗内，过 23:59 一律关（不再整夜占坑）
+    if (!isPastStartClock()) return null;
+    if (st === 'running' && getAutoStartedAt() && isAutoTimedOut()) return null;
+    return { name: 'scheduled', endH: WINDOW_END_H, endM: WINDOW_END_M };
+  }
+
+  function isInRepostWindowNow() {
+    return !!getActiveWindow();
+  }
+
+  /** 兼容旧调用：视为「是否在可开跑窗内」 */
+  function isPastStartTime() {
+    return isInRepostWindowNow();
+  }
+
+  function msUntilWindowEnd() {
+    if (!isInRepostWindowNow()) return 0;
+    var started = getAutoStartedAt();
+    if (started) {
+      var left = started + getMaxMinutes() * 60 * 1000 - Date.now();
+      return left > 0 ? left : 0;
+    }
+    var now = shanghaiHm();
+    var leftMin = hmToMin(23, 59) - hmToMin(now.h, now.m);
+    return leftMin > 0 ? leftMin * 60 * 1000 : 0;
+  }
+
+  function isPastWindowEnd() {
+    return !isInRepostWindowNow() && getAutoStatus() === 'running';
+  }
+
+  function isAutoTimedOut() {
+    var started = getAutoStartedAt();
+    if (!started) return false;
+    if (getAutoStatus() !== 'running') return false;
+    // 4.5.2：还没发到日配额就不算超时（当天必须发到），避免熔断冷却/等新帖时被误判超时
+    if (!dailyExhausted()) return false;
+    if (Date.now() - started >= getMaxMinutes() * 60 * 1000) return true;
+    return false;
+  }
+
+  function markAutoRunning() {
+    ensureAutoDay();
+    localStorage.setItem(AUTO_STATUS_KEY, 'running');
+    if (!getAutoStartedAt()) {
+      localStorage.setItem(AUTO_STARTED_KEY, String(Date.now()));
+    }
+    try { sessionStorage.setItem('sg_repost_auto_slot', '1'); } catch (e) {}
+    // 4.6.159：自动场开跑时清掉手动场残旗，防上一轮手动 no_quota 泄漏进自动场
+    try { sessionStorage.removeItem('sg_repost_manual_slot'); } catch (eM) {}
+    try { sessionStorage.removeItem('sg_repost_manual_no_quota'); } catch (eNq) {}
+  }
+
+  function markAutoDone() {
+    ensureAutoDay();
+    localStorage.setItem(AUTO_STATUS_KEY, 'done');
+    try { sessionStorage.removeItem('sg_repost_auto_slot'); } catch (e) {}
+    try { sessionStorage.removeItem('sg_repost_round_boot'); } catch (e2) {}
+  }
+
+  function markAutoTimeout() {
+    ensureAutoDay();
+    localStorage.setItem(AUTO_STATUS_KEY, 'timeout');
+    try { sessionStorage.removeItem('sg_repost_auto_slot'); } catch (e) {}
+    try { sessionStorage.removeItem('sg_repost_round_boot'); } catch (e2) {}
+  }
+
+  /** 0 条假收工：清回 idle，允许 S0 重试 */
+  function resetAutoIdle(why) {
+    ensureAutoDay();
+    localStorage.setItem(AUTO_STATUS_KEY, 'idle');
+    localStorage.removeItem(AUTO_STARTED_KEY);
+    try { sessionStorage.removeItem('sg_repost_auto_slot'); } catch (e) {}
+    try { sessionStorage.removeItem('sg_repost_round_boot'); } catch (e2) {}
+    try {
+      if (typeof Logger !== 'undefined' && Logger.info) {
+        Logger.info('转帖', 'resetAutoIdle why=' + (why || ''));
+      }
+    } catch (eL) {}
+  }
+
+  function isAutoSlot() {
+    try { return sessionStorage.getItem('sg_repost_auto_slot') === '1'; } catch (e) { return false; }
+  }
+
+  function clearAutoSlotFlag() {
+    try { sessionStorage.removeItem('sg_repost_auto_slot'); } catch (e) {}
+  }
+
+  window.RepostTracker = {
+    getConfig: getConfig,
+    setConfig: setConfig,
+    getTargets: getTargets,
+    setTargets: setTargets,
+    hasLocalTargets: hasLocalTargets,
+    isPosted: isPosted,
+    markPosted: markPosted,
+    markOwnPosted: markOwnPosted,
+    hasPostedOk: hasPostedOk,
+    ownHandleCandidates: ownHandleCandidates,
+    getLastOkAt: getLastOkAt,
+    markLastOkAt: markLastOkAt,
+    msUntilNextPostAllowed: msUntilNextPostAllowed,
+    isSkipped: isSkipped,
+    markSkipped: markSkipped,
+    getDaily: getDaily,
+    bumpDaily: bumpDaily,
+    setDailyCount: setDailyCount,
+    getAccountDayCount: getAccountDayCount,
+    getDailyQuota: getDailyQuota,
+    getEffectiveDailyLimit: getEffectiveDailyLimit,
+    remainingDaily: remainingDaily,
+    dailyExhausted: dailyExhausted,
+    getCurrent: getCurrent,
+    setCurrent: setCurrent,
+    getCompletedRound: getCompletedRound,
+    markCompletedRound: markCompletedRound,
+    clearCompletedRound: clearCompletedRound,
+    shanghaiDate: shanghaiDate,
+    ensureAutoDay: ensureAutoDay,
+    getAutoStatus: getAutoStatus,
+    isAutoFinishedToday: isAutoFinishedToday,
+    getAutoStartedAt: getAutoStartedAt,
+    getMaxMinutes: getMaxMinutes,
+    getStartHm: getStartHm,
+    getStartJitterMin: startJitterMin,
+    isPastStartClock: isPastStartClock,
+    getEveEndHm: getEveEndHm,
+    getMornWindow: getMornWindow,
+    isManualOpen: isManualOpen,
+    getActiveWindow: getActiveWindow,
+    isInRepostWindowNow: isInRepostWindowNow,
+    isPastStartTime: isPastStartTime,
+    msUntilWindowEnd: msUntilWindowEnd,
+    isPastWindowEnd: isPastWindowEnd,
+    isAutoTimedOut: isAutoTimedOut,
+    markAutoRunning: markAutoRunning,
+    markAutoDone: markAutoDone,
+    markAutoTimeout: markAutoTimeout,
+    resetAutoIdle: resetAutoIdle,
+    isAutoSlot: isAutoSlot,
+    clearAutoSlotFlag: clearAutoSlotFlag,
+    DEFAULT_CONFIG: DEFAULT_CONFIG
+  };
+})();

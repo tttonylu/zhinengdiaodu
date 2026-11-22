@@ -611,7 +611,8 @@ class BrowserSession:
             self.browser = None
             print(f"  Chrome persistent ({chrome_path or 'bundled'})")
         except Exception as e:
-            print(f"  Chrome persistent failed: {str(e)[:60]}")
+            print(f"  Chrome persistent failed: {e}")
+            # 回退1：系统 Chrome headless
             try:
                 launch_kw = {
                     "headless": True,
@@ -627,12 +628,28 @@ class BrowserSession:
                 self.page = self.ctx.new_page()
                 self.is_persistent = False
                 print(f"  Chrome headless ({chrome_path or 'bundled'})")
-            except Exception:
-                self.browser = self._playwright.firefox.launch(headless=True)
-                self.ctx = None
-                self.page = self.browser.new_page()
-                self.is_persistent = False
-                print("  Firefox headless (fallback)")
+            except Exception as e2:
+                print(f"  Chrome headless failed: {e2}")
+                # 回退2：Playwright 内置 chromium（不指定 executable_path）
+                try:
+                    self.browser = self._playwright.chromium.launch(
+                        headless=True, args=kwargs["args"]
+                    )
+                    self.ctx = self.browser.new_context(
+                        user_agent=kwargs["user_agent"],
+                        viewport=kwargs["viewport"],
+                    )
+                    self.page = self.ctx.new_page()
+                    self.is_persistent = False
+                    print("  Chromium bundled headless (fallback)")
+                except Exception as e3:
+                    print(f"  Chromium bundled failed: {e3}")
+                    # 回退3：Firefox
+                    self.browser = self._playwright.firefox.launch(headless=True)
+                    self.ctx = None
+                    self.page = self.browser.new_page()
+                    self.is_persistent = False
+                    print("  Firefox headless (fallback)")
         self.stealth.apply_stealth_sync(self.page)
         self.apply_imported_cookies(force=True)
 

@@ -11,7 +11,9 @@ test-env/scrm-monitor/.cookie_import_token.txt
 # 调试抓包、一次性脚本
 .tmp*
 _tmp_*
+._tmp_*
 /tmp-*
+/tmp/
 .tmp_hour_monitor/
 dashboard_live.html
 PUSH_BLOGGER_*
@@ -35,9 +37,15 @@ _archive/
 # 数据库与 Docker 数据卷（每次启动自动生成）
 *.sqlite
 *.sqlite3
+*.sqlite-wal
+*.sqlite-shm
 *.db
 *.log
 **/data/
+
+# 测试运行数据与账号导出（含账号、私信、浏览器会话）
+/test-env/ops-test-data/
+xmatrix_followed_bloggers*.txt
 
 # Python 缓存
 __pycache__/
@@ -50,3 +58,5 @@ Thumbs.db
 
 # 插件观测日志，不是源码
 unified-scheduler/obs/*.jsonl
+**/*.jsonl
+**/*.ndjson

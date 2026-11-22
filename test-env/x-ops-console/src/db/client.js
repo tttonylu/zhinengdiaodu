@@ -34,6 +34,8 @@ function createDb(dbPath) {
   const db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
+  db.pragma('busy_timeout = 5000');
+  db.pragma('wal_autocheckpoint = 4000');
   // 确保 SQLite 使用 UTF-8 编码处理文本
   db.pragma("encoding = 'UTF-8'");
 
@@ -42,6 +44,19 @@ function createDb(dbPath) {
     db.function('zhdate', { deterministic: true }, zhDateSql);
   } catch (eFn) {
     // 已注册或版本不支持时忽略
+  }
+
+  // 4.6.171 启动时补齐缺失复合索引（telemetry-alert COUNT 查询 + log_repo.countEvents）
+  // 之前只有单列 (account_id, created_at) 和 (event_id, created_at)，缺三列复合
+  try {
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_log_events_account_event_time
+        ON log_events(account_id, event_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_plugin_telemetry_account_event_time
+        ON plugin_telemetry(account_id, event_id, created_at);
+    `);
+  } catch (eIdx) {
+    // 索引已存在或表不存在时忽略
   }
 
   return db;

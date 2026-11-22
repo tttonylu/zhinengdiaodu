@@ -14,6 +14,13 @@ const fs = require('fs');
 // 在 Node 里模拟 window/document，加载 chat-gates IIFE
 global.window = {};
 global.self = global.window;
+// classic：本文件测旧三轮 kick；两段式默认 on 会让 canSendKickNow 恒 false
+global.localStorage = {
+  _d: { sg_config_thresholds: JSON.stringify({ chat_two_seg_mode: 'classic' }) },
+  getItem(k) { return this._d[k] == null ? null : this._d[k]; },
+  setItem(k, v) { this._d[k] = String(v); },
+  removeItem(k) { delete this._d[k]; }
+};
 
 const code = fs.readFileSync(
   path.join(__dirname, '..', 'chat', 'chat-gates.js'),

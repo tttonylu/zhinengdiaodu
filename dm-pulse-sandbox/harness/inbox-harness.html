@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8" />
+  <title>守箱识别验证</title>
+  <style>
+    body { font: 13px/1.5 system-ui, sans-serif; background: #0d1117; color: #c9d1d9; margin: 16px; }
+    #host { width: 420px; }
+    pre { white-space: pre-wrap; background: #161b22; padding: 12px; border-radius: 6px; }
+  </style>
+</head>
+<body>
+<h3>守箱未读识别验证</h3>
+<div id="host"></div>
+<pre id="out">running…</pre>
+
+<script src="/production-test-copy/chat/inbox-v2-adapter.js"></script>
+<script src="/production-test-copy/chat/inbox-watch.js"></script>
+<script>
+(function () {
+  var MY = '1921556032637345792';
+
+  function build() {
+    var host = document.getElementById('host');
+    var root = host.attachShadow({ mode: 'open' });
+    root.innerHTML = [
+      '<div role="listbox" style="display:block">',
+      // 1) 蓝点在行外（与 <a> 同级）—— 新版 X 常见
+      '  <div class="wrap" style="position:relative;width:420px;height:64px;border-bottom:1px solid #21262d">',
+      '    <a role="option" id="dm-conversation-option-111111111111111111:' + MY + '"',
+      '       href="/i/chat/111111111111111111-' + MY + '"',
+      '       style="display:flex;align-items:center;width:420px;height:64px;text-decoration:none;color:#c9d1d9">',
+      '      <span style="margin-left:8px">れい</span>',
+      '      <span style="margin-left:8px">初めまして…</span>',
+      '      <span style="position:absolute;right:60px;top:8px">5分钟</span>',
+      '    </a>',
+      '    <span class="unread-dot" style="position:absolute;right:16px;top:40px;width:8px;height:8px;border-radius:50%;background:#1d9bf0"></span>',
+      '  </div>',
+      // 2) 行内 icon-circle-fill
+      '  <div class="wrap" style="position:relative;width:420px;height:64px;border-bottom:1px solid #21262d">',
+      '    <a role="option" id="dm-conversation-option-333333333333333333:' + MY + '"',
+      '       href="/i/chat/333333333333333333-' + MY + '"',
+      '       style="display:flex;align-items:center;width:420px;height:64px;text-decoration:none;color:#c9d1d9">',
+      '      <span style="margin-left:8px">れん</span>',
+      '      <span style="margin-left:8px">40です</span>',
+      '      <span data-icon="icon-circle-fill" style="width:8px;height:8px;border-radius:50%;background:#1d9bf0;margin-left:auto;margin-right:16px"></span>',
+      '    </a>',
+      '  </div>',
+      // 3) 已读（无点）
+      '  <div class="wrap" style="position:relative;width:420px;height:64px">',
+      '    <a role="option" id="dm-conversation-option-444444444444444444:' + MY + '"',
+      '       href="/i/chat/444444444444444444-' + MY + '"',
+      '       style="display:flex;align-items:center;width:420px;height:64px;text-decoration:none;color:#c9d1d9">',
+      '      <span style="margin-left:8px">みなみ</span>',
+      '      <span style="margin-left:8px">你: いきなりDMごめんね</span>',
+      '    </a>',
+      '  </div>',
+      '</div>'
+    ].join('\n');
+  }
+
+  function stubHooks() {
+    window.SgInboxWatch.bind({
+      normalizeChatHandle: function (h) { return String(h || '').replace(/^@/, '').toLowerCase(); },
+      getDefaultLinks: function () { return []; },
+      getOwnScriptCorpus: function () { return []; },
+      rebuildOwnScriptCorpus: function () {},
+      getHandleSentScriptTexts: function () { return []; },
+      getDnaCore: function () { return []; },
+      collectPeerDmMessages: function () { return []; },
+      fallbackCollectPeerDmTexts: function () { return []; },
+      getDmConversationRoot: function () { return null; },
+      isSystemDmLine: function () { return false; },
+      isProfileUiLine: function () { return false; },
+      isDmChromeNoise: function () { return false; },
+      findBottomAwakeningTarget: function () { return null; },
+      findDmSendButton: function () { return null; },
+      loadTargetDB: function () { return {}; },
+      saveTargetDB: function () {},
+      ensureChatFreeze: function () { return {}; },
+      getDB: function () { return null; },
+      isChatTargetAllowed: function () { return true; },
+      canProbeInboxTarget: function () { return false; },
+      canSendKickNow: function () { return false; },
+      normalizeDisplayName: function (s) { return String(s || '').replace(/\s+/g, '').toLowerCase(); },
+      getOpsMaxRound: function () { return 0; },
+      reportChatMetric: function () {},
+      getUrlDmPeerId: function () { return ''; },
+      getConversationHeaderHandle: function () { return ''; },
+      assertDmConversationMatchesTarget: function () { return { ok: true }; }
+    });
+  }
+
+  function run() {
+    build();
+    stubHooks();
+    var adapter = window.SgInboxV2Adapter;
+    var rows = adapter.listRows();
+    var result = {
+      rowCount: rows.length,
+      myId: adapter.detectMyId(rows),
+      rows: rows.map(function (r) {
+        var ids = adapter.resolvePeerId(r, MY);
+        var u = window.SgInboxWatch.getInboxRowUnread(r);
+        return {
+          peerId: ids && ids.peerId,
+          order: ids && ids.order,
+          unread: u.unread,
+          precise: u.precise,
+          source: u.source
+        };
+      })
+    };
+    var ok = result.rowCount === 3
+      && result.rows[0].unread === true
+      && result.rows[1].unread === true
+      && result.rows[1].precise === true
+      && result.rows[2].unread === false;
+    result.verdict = ok ? 'PASS' : 'FAIL';
+    document.getElementById('out').textContent = JSON.stringify(result, null, 2);
+  }
+
+  try { run(); } catch (e) {
+    document.getElementById('out').textContent = 'ERROR: ' + (e && e.message || e);
+  }
+})();
+</script>
+</body>
+</html>

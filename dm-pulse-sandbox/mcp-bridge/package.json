@@ -1,0 +1,20 @@
+{
+  "name": "dm-pulse-mcp-bridge",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "description": "Read-only local stdio MCP bridge to the DM Pulse Sandbox extension.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "start": "node server.mjs",
+    "gen:config": "node scripts/generate-bridge-config.mjs",
+    "doctor": "node scripts/doctor.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "ws": "^8.22.2"
+  }
+}

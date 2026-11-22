@@ -19,7 +19,8 @@
     // ================= 诊断日志 =================
     console.log('[ID提取器] id_extractor.js 已加载 (V18.3.0)');
 
-    // 延迟执行，等待页面完全加载
+    // 延迟执行，等待页面完全加载。导航栏未就绪时只重试，不拿地址栏凑数。
+    var _extractTries = 0;
     setTimeout(extractAndStore, 3000);
 
     function extractAndStore() {
@@ -42,8 +43,11 @@
 
             if (!handle) {
                 console.log('[ID提取器] 未能提取到用户ID（未登录？）');
+                _extractTries += 1;
+                if (_extractTries < 4) setTimeout(extractAndStore, 3000);
                 return;
             }
+            _extractTries = 0;
 
             // 过滤无效 handle
             const INVALID_HANDLES = [
@@ -126,27 +130,6 @@
                 if (match) {
                     return match[1].toLowerCase();
                 }
-            }
-        }
-
-        // 方法3: 从页面脚本数据提取 screen_name
-        if (!handle) {
-            const scripts = document.querySelectorAll('script');
-            for (const script of scripts) {
-                const text = script.textContent || '';
-                const match = text.match(/"screen_name":"([^"]+)"/);
-                if (match) {
-                    return match[1].toLowerCase();
-                }
-            }
-        }
-
-        // 方法4: 从 URL 路径提取（如果在个人主页）
-        if (!handle) {
-            const path = window.location.pathname;
-            const match = path.match(/^\/([\w_]+)(?:\/|$)/);
-            if (match && match[1] && !['home', 'explore', 'notifications', 'messages', 'i', 'search'].includes(match[1])) {
-                return match[1].toLowerCase();
             }
         }
 

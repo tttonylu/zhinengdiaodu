@@ -46,7 +46,7 @@
       coolMax: parseInt(iv.chat_cooldown_max_min, 10) || 35,
       debtMin: parseInt(iv.chat_debt_cooldown_min_min, 10) || 8,
       debtMax: parseInt(iv.chat_debt_cooldown_max_min, 10) || 12,
-      adMinWaitMin: parseInt(iv.chat_ad_min_wait_min, 10) || 20,
+      adMinWaitMin: parseInt(iv.chat_ad_min_wait_min, 10) || 60,
       kickMinHours: (function () {
         var n = parseInt(iv.chat_kick_min_hours, 10);
         // 4.1.61：默认 0=按轮次下一窗即可盾牌/催加，不再等 2h；OPS 显式 >0 仍生效
@@ -58,6 +58,29 @@
 
   function getAdMinWaitMs() {
     return getChatIntervalCfg().adMinWaitMin * 60 * 1000;
+  }
+
+  /** 交友两段式模式：第1段后满 wait 或任意回复可发第2段；发 LINE 后禁止踢/追问。job 池默认关。 */
+  function isTwoSegMode() {
+    try {
+      var t = {};
+      try { t = JSON.parse(localStorage.getItem('sg_config_thresholds') || '{}') || {}; } catch (eT) {}
+      var pool = String(t.chat_script_pool || 'dating').toLowerCase().trim();
+      var v = t.chat_two_seg_mode;
+      if (v === undefined || v === null || v === '') {
+        try {
+          var iv = JSON.parse(localStorage.getItem('sg_config_intervals') || '{}') || {};
+          v = iv.chat_two_seg_mode;
+        } catch (eI) {}
+      }
+      var s = (v === undefined || v === null || v === '') ? '' : String(v).toLowerCase().trim();
+      if (s === '0' || s === 'off' || s === 'false' || s === 'classic' || s === 'no') return false;
+      if (s === '1' || s === 'on' || s === 'true' || s === 'yes' || s === 'two_seg') return true;
+      // 未显式配置：dating 默认开，job 默认关
+      return pool !== 'job';
+    } catch (e) {
+      return true;
+    }
   }
 
   function ensureChatDayStats(st) {
@@ -92,12 +115,28 @@
     var nh = callHook('normalizeChatHandle', handle) || String(handle || '');
     var db = callHook('loadTargetDB') || {};
     entry = entry || db[nh] || {};
-    if (!peerTexts || !peerTexts.length) return { ok: false, reason: 'no_peer_texts' };
     var iceAt = entry.iceSentAt || 0;
     if (!iceAt) return { ok: false, reason: 'missing_ice_sent_at' };
-    if (entry.lastInboundAt && entry.lastInboundAt > iceAt) return { ok: true, reason: 'reply_confirmed' };
-    // 4.1.0：会话差集已有对方文本即回复证据（跟进开人，不依赖蓝点先写 lastInboundAt）
-    return { ok: true, reason: 'peer_texts_in_session' };
+    var hasPeer = !!(peerTexts && peerTexts.length);
+    if (entry.lastInboundAt && entry.lastInboundAt > iceAt) {
+      return { ok: true, reason: 'reply_confirmed' };
+    }
+    if (hasPeer) {
+      // 4.1.0：会话差集已有对方文本即回复证据（跟进开人，不依赖蓝点先写 lastInboundAt）
+      return { ok: true, reason: 'peer_texts_in_session' };
+    }
+    // 两段式：无回复时，破冰满 adMinWait（默认 60 分）也可发第 2 段
+    if (isTwoSegMode()) {
+      var waited = Date.now() - iceAt;
+      var need = getAdMinWaitMs();
+      if (waited >= need) return { ok: true, reason: 'two_seg_wait_elapsed' };
+      return {
+        ok: false,
+        reason: 'two_seg_wait',
+        wait_left_ms: Math.max(0, need - waited)
+      };
+    }
+    return { ok: false, reason: 'no_peer_texts' };
   }
 
   /** 4.1.53：AD 后最多两步（盾牌一次 + 催加一次），满 2 次完结 */
@@ -114,6 +153,8 @@
   }
 
   function canSendKickNow(handle, entry) {
+    // 两段式：第 2 段含 LINE 后禁止追问/盾牌/催加
+    if (isTwoSegMode()) return false;
     var nh = callHook('normalizeChatHandle', handle) || String(handle || '');
     var db = callHook('loadTargetDB') || {};
     entry = entry || db[nh] || {};
@@ -177,6 +218,7 @@
     CHAT_OUTBOUND_CAP_SEC: CHAT_OUTBOUND_CAP_SEC,
     getChatIntervalCfg: getChatIntervalCfg,
     getAdMinWaitMs: getAdMinWaitMs,
+    isTwoSegMode: isTwoSegMode,
     ensureChatDayStats: ensureChatDayStats,
     isChatDailyCapReached: isChatDailyCapReached,
     isInboxCapReached: isInboxCapReached,

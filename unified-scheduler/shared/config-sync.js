@@ -50,7 +50,8 @@
     chat_cooldown_max_min: '35',
     chat_debt_cooldown_min_min: '8',
     chat_debt_cooldown_max_min: '12',
-    chat_ad_min_wait_min: '20',
+    chat_ad_min_wait_min: '60',
+    chat_two_seg_mode: 'on',
     chat_inbox_visit_cap_sec: '150',
     chat_script_pool: 'dating',
     stage_stall_cooldown_sec: '180',
@@ -58,6 +59,9 @@
     stage_watchdog_ms: '30000',
     nav_min_interval_ms: '45000',
     media_load_mode: 'off',
+    chat_stagger_slots: '1',
+    chat_stagger_slot_min: '30',
+    fleet_heavy_slots: '8',
     follow_only_japanese: 'false',
     follow_antiban_enabled: 'false'
   };
@@ -67,8 +71,31 @@
   var _retryCount = 0;
   var RETRY_BACKOFFS = [5000, 15000, 30000]; // 失败后快速重试：5s → 15s → 30s → 回归1分钟常态
 
+  /** 导航栏个人资料链接 = 登录本号。来源主页的地址栏不能当 bot_id。 */
+  function readNavLoginHandle() {
+    try {
+      if (typeof document === 'undefined' || !document.querySelector) return '';
+      var a = document.querySelector('a[data-testid="AppTabBar_Profile_Link"]');
+      if (!a) return '';
+      var href = (a.getAttribute && (a.getAttribute('href') || a.href)) || a.href || '';
+      var m = String(href).match(/(?:x\.com|twitter\.com)?\/([A-Za-z0-9_]+)(?:\?|$)/i)
+        || String(href).match(/^\/([A-Za-z0-9_]+)/);
+      if (m && m[1] && !/^(home|explore|search|i|settings|messages|notifications|compose|account)$/i.test(m[1])) {
+        return m[1].toLowerCase();
+      }
+    } catch (eNav) {}
+    return '';
+  }
+
   function getBotId() {
     try {
+      var nav = readNavLoginHandle();
+      if (nav) return '@' + nav + '#guard';
+      var bound = localStorage.getItem('sg_bound_handle');
+      if (bound) {
+        bound = String(bound).replace(/^@/, '').replace(/#guard$/i, '').trim();
+        if (bound && bound.toLowerCase() !== 'unknown') return '@' + bound + '#guard';
+      }
       var h = localStorage.getItem('matrix_my_handle');
       if (h) return h;
       h = sessionStorage.getItem('dan_worker_id');
@@ -123,7 +150,8 @@
       if (!lastDate || lastDate === today) return false;
       stats.follows_today = 0;
       delete stats.daily_limit;
-      try { delete stats.follows_reset_day; } catch (eRd) {}
+      // 4.6.185：打闩，挡同日 OPS runtime 昨日 followed_today 回灌
+      stats.follows_reset_day = today;
       stats.date = today;
       localStorage.setItem(key, JSON.stringify(stats));
       try {
@@ -142,9 +170,10 @@
   /**
    * OPS day_count → 本地 matrix_stats。
    * 跨日必须清零 follows_today（旧逻辑只改 date 不清配额，会残留昨天的 20/50）。
-   * followsToday 若传入（OPS 今日真实关注数），以服务端为准纠正本地。
+   * followsToday/followsTodayDate 若传入（OPS 今日真实关注数及上海日历日），
+   * 只接受“日期=今日”的服务端读数纠正本地；无日期的昨日残值仍由跨日闩挡住。
    */
-  function applyRemoteDayCount(dayCount, handleHint, followsToday) {
+  function applyRemoteDayCount(dayCount, handleHint, followsToday, followsTodayDate) {
     var dc = parseInt(dayCount, 10);
     if (!dc || dc < 1) return false;
     var h = normalizeHandleKey(handleHint || getBotId());
@@ -159,23 +188,21 @@
       if (rolled) {
         stats.follows_today = 0;
         delete stats.daily_limit; // 跨日重抽 DayN 随机配额
-        try { delete stats.follows_reset_day; } catch (eClrRd) {}
+        // 4.6.185：保留/写入跨日闩（旧逻辑删闩 → 下一拍 OPS 昨日数又抬满）
+        stats.follows_reset_day = today;
       } else if (stats.follows_today == null) {
         stats.follows_today = 0;
       }
-      var localFollows = stats.follows_today || 0;
+      var localFollows = parseInt(stats.follows_today, 10) || 0;
       var ft = null;
       if (followsToday != null && followsToday !== '') {
         var parsedFt = parseInt(followsToday, 10);
         if (!isNaN(parsedFt) && parsedFt >= 0) ft = parsedFt;
       }
-      // 同日刚远程重锁清零：禁止 OPS today_follow_count 把本地又抬满
-      var resetDay = toShanghaiDayKey(stats.follows_reset_day);
-      var skipOpsBoost = !!(resetDay && resetDay === today && !rolled);
-      // 跨日：本地从 0 起；OPS runtime 可能仍是昨日满额，禁止灌回
-      if (rolled) {
-        try { delete stats.follows_reset_day; } catch (eDelR) {}
-      } else if (ft != null && ft > localFollows && !skipOpsBoost) {
+      var opsDay = toShanghaiDayKey(followsTodayDate);
+      var opsToday = !!(opsDay && opsDay === today);
+      // 只认 OPS 明确标注为上海今日的读数；无日期/昨日日期一律视为残值。
+      if (opsToday && ft != null && ft > localFollows) {
         stats.follows_today = ft;
       }
       stats.date = today;
@@ -392,9 +419,12 @@
         appendLink: String(thresholds.repost_append_link || '')
       };
 
-      // 有来源 → 写入。空列表仅当「已识别到账号」时才清空（避免 bot_id 错配吃到全局空数组刷掉本机）
-      var accountBound = !!(meta && meta.account && (meta.account.x_handle || meta.account.day_count != null));
-      var shouldWriteTargets = list.length > 0 || accountBound;
+      // 只接受「本次 bot_id 与返回账号一致」的名单。来源号不在账号表时 account 为空，
+      // 全局 repost_targets 不得盖掉本机（否则面板绑定和 OPS 该号来源会分叉）。
+      var asked = normalizeHandleKey(getBotId());
+      var got = normalizeHandleKey(meta && meta.account && meta.account.x_handle);
+      var identityOk = !!(asked && got && asked === got);
+      var shouldWriteTargets = identityOk;
       if (typeof RepostTracker !== 'undefined') {
         if (shouldWriteTargets && RepostTracker.setTargets) {
           RepostTracker.setTargets(list, { skipPush: true });
@@ -413,7 +443,9 @@
       } catch (e2) {}
       try {
         console.log('[ConfigSync] 转帖来源', {
-          accountBound: accountBound,
+          identityOk: identityOk,
+          asked: asked,
+          got: got,
           n: list.length,
           list: list,
           keptLocal: !shouldWriteTargets
@@ -481,15 +513,20 @@
       followIntervalMinSec: pi(thresholds.follow_interval_min_sec, 2),
       followIntervalMaxSec: pi(thresholds.follow_interval_max_sec, 4),
       followRetryDelaySec: pi(thresholds.follow_retry_delay_sec, 300),
-      nurtureActionGapMinSec: pi(thresholds.nurture_action_gap_min_sec, 10),
-      nurtureActionGapMaxSec: pi(thresholds.nurture_action_gap_max_sec, 20),
-      nurtureLikeCooldownMin: pi(thresholds.nurture_like_cooldown_min, 3),
+      nurtureActionGapMinSec: pi(thresholds.nurture_action_gap_min_sec, 45),
+      nurtureActionGapMaxSec: pi(thresholds.nurture_action_gap_max_sec, 90),
+      nurtureLikeCooldownMin: pi(thresholds.nurture_like_cooldown_min, 8),
       // 私信会话冷却（分钟）；不再用每日会话次数作闸门
       chat_cooldown_min_min: pi(thresholds.chat_cooldown_min_min, 25),
       chat_cooldown_max_min: pi(thresholds.chat_cooldown_max_min, 35),
       chat_debt_cooldown_min_min: pi(thresholds.chat_debt_cooldown_min_min, 8),
       chat_debt_cooldown_max_min: pi(thresholds.chat_debt_cooldown_max_min, 12),
-      chat_ad_min_wait_min: pi(thresholds.chat_ad_min_wait_min, 20),
+      chat_ad_min_wait_min: pi(thresholds.chat_ad_min_wait_min, 60),
+      chat_two_seg_mode: (function () {
+        var raw = thresholds.chat_two_seg_mode;
+        if (raw === undefined || raw === null || raw === '') return 'on';
+        return String(raw);
+      })(),
       chat_inbox_visit_cap_sec: pi(thresholds.chat_inbox_visit_cap_sec, 150),
       chat_kick_min_hours: pi(thresholds.chat_kick_min_hours, 0),
       telemetry_upload_min_level: String(thresholds.telemetry_upload_min_level || 'info'),
@@ -532,12 +569,31 @@
 
     // OPS 号池地址优先：远程配置下发后覆盖面板本地设置，实现后台统一切换号池
     var remotePoolServer = String(thresholds.pool_server || '').trim();
+
+    // 4.6.194 K3 页面瘦身接线：将 OPS page_slim_mode / page_slim_handles 写入 sg_page_slim
+    // off → '0'；on → '1'；gray → 按逗号分隔 handle 清单匹配当前账号
+    var _slimOn = '0';
+    try {
+      var _slimMode = String(thresholds.page_slim_mode || 'off').toLowerCase();
+      if (_slimMode === 'on') {
+        _slimOn = '1';
+      } else if (_slimMode === 'gray') {
+        var _slimHandles = String(thresholds.page_slim_handles || '').split(',')
+          .map(function (h) { return h.replace(/^@/, '').trim().toLowerCase(); })
+          .filter(Boolean);
+        // 优先用 OPS 返回的账号 handle；bot_id 在启动早期可能还没就绪
+        var _myHandle = normalizeHandleKey((res.account && res.account.x_handle) || getBotId());
+        if (_myHandle && _slimHandles.indexOf(_myHandle) >= 0) _slimOn = '1';
+      }
+    } catch (eSlim) {}
+
     var storageSet = {
       matrix_config_overrides: cfg,
       sg_stage_policy: JSON.stringify(stagePolicy),
       sg_module_switches: JSON.stringify(modules),
       sg_nurture_remote_cfg: nurtureRemote,
-      sg_media_load_mode: mediaMode
+      sg_media_load_mode: mediaMode,
+      sg_page_slim: _slimOn
     };
     if (remotePoolServer) storageSet.pool_server = remotePoolServer;
     chrome.storage.local.set(storageSet);
@@ -552,6 +608,11 @@
       localStorage.setItem('sg_config_intervals', JSON.stringify(intervals));
       localStorage.setItem('sg_nurture_remote_cfg', JSON.stringify(nurtureRemote));
       localStorage.setItem('sg_chat_rounds_per_day', String(pi(thresholds.chat_rounds_per_day, 3)));
+      // 4.6.194 页面瘦身：同步写 localStorage（MAIN world 和 follow 引擎读此键）
+      try {
+        localStorage.setItem('sg_page_slim', _slimOn);
+        window.dispatchEvent(new CustomEvent('sg-page-slim-changed', { detail: { on: _slimOn === '1' } }));
+      } catch (eSlimLs) {}
       // OPS 阶段策略优先：远程关 test24h 时清掉面板本地 24h，避免永远吃全天窗
       try {
         if (stagePolicy && (stagePolicy.test24h === false || stagePolicy.test24h === 0 || stagePolicy.test24h === 'false')) {
@@ -568,7 +629,8 @@
           applyRemoteDayCount(
             res.account.day_count,
             res.account.x_handle || getBotId(),
-            res.account.today_follow_count
+            res.account.today_follow_count,
+            res.account.today_follow_count_date
           );
         }
       }
@@ -650,8 +712,25 @@
     console.log('[ConfigSync] 拉取失败，' + Math.round(delay / 1000) + 's 后重试 (第' + _retryCount + '次重试)');
   }
 
+  // 4.6.160/4.6.194：隐藏页首次仍拉一次，之后 5 分钟内跳过、满 5 分钟补拉；
+  // 否则 BitBrowser 后台页永远拿不到 stage_tick_interval_ms，coTick 会一直按 10s 跑。
+  var HIDDEN_FETCH_WINDOW_MS = 5 * 60 * 1000;
+  var _hiddenFetchAt = 0;
+
   function fetchRemote() {
-    if (document.hidden) return;
+    if (document.hidden) {
+      var _nowHidden = Date.now();
+      if (_hiddenFetchAt && _nowHidden - _hiddenFetchAt < HIDDEN_FETCH_WINDOW_MS) return;
+      _hiddenFetchAt = _nowHidden;
+    }
+    // 4.6.173：深度 park 时配置同步最多 5 分钟一次
+    try {
+      if (sessionStorage.getItem('sg_idle_park') === '1') {
+        var lastParkCfg = parseInt(sessionStorage.getItem('sg_idle_park_cfg_at') || '0', 10) || 0;
+        if (Date.now() - lastParkCfg < 5 * 60 * 1000) return;
+        sessionStorage.setItem('sg_idle_park_cfg_at', String(Date.now()));
+      }
+    } catch (eParkCfg) {}
     var botId = getBotId();
     try {
       chrome.runtime.sendMessage({ action: 'fetch_remote_config', bot_id: botId }, function (res) {
@@ -699,6 +778,12 @@
         fetchRemote();
       });
     } catch (eHr) {}
+    // 4.6.160/4.6.194：切回前台立刻拉，不受隐藏页 5 分钟窗限制
+    try {
+      document.addEventListener('visibilitychange', function () {
+        if (!document.hidden) fetchRemote();
+      });
+    } catch (eVis) {}
   }
 
   try {

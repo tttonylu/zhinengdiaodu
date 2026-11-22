@@ -5,7 +5,9 @@ const { extractAgentIds } = require('../../services/scrm-links-sync');
 async function scriptsPageRoutes(app) {
   app.get('/scripts', async (request, reply) => {
     const repo = createScriptsRepo(app.db);
-    const sets = repo.listFullSets();
+    const pool = request.query.pool === 'dating' ? 'dating' : 'job';
+    const sets = repo.listFullSets(pool);
+    const poolVersion = repo.getPoolVersion(pool);
     const shuffleMode = repo.getSetting('shuffle_mode') || 'random';
     const linksRow = app.db.prepare("SELECT value FROM script_settings WHERE key = 'promo_links'").get();
     let promoLinks = [];
@@ -24,6 +26,8 @@ async function scriptsPageRoutes(app) {
     if (!syncedAgentIds.length) syncedAgentIds = expectedAgentIds;
     return reply.view('scripts.njk', {
       title: '话术中心 & 链接管理',
+      pool,
+      poolVersion,
       sets,
       shuffleMode,
       promoLinks,
@@ -37,6 +41,7 @@ async function scriptsPageRoutes(app) {
         { key: 'icebreaker', label: '❄️ 破冰消息' },
         { key: 'ad_template', label: '🎣 广告消息（含 {LINK}）' },
         { key: 'kick_message', label: '🛡️ 盾牌消息' },
+        { key: 'final_kick_message', label: '🔚 最后一踢' },
         { key: 'reject_message', label: '⛔ 低龄婉拒' },
         { key: 'foreigner_reject', label: '🌍 外国人婉拒' },
       ],
@@ -54,18 +59,66 @@ async function scriptsPageRoutes(app) {
         app.db.exec(fs.readFileSync(migFile, 'utf8'));
       }
     } catch (_) {}
+    try {
+      const fs = require('node:fs');
+      const path = require('node:path');
+      const migFile = path.join(__dirname, '..', '..', 'db', 'migrations', '072_scripts_pool_dim.sql');
+      if (fs.existsSync(migFile)) {
+        app.db.exec(fs.readFileSync(migFile, 'utf8'));
+      }
+    } catch (_) {}
     const repo = createScriptsRepo(app.db);
-    if (repo.listSets().length === 0) {
+    if (repo.listSets('dating').length === 0) {
       const defaults = getDefaultScripts();
       for (const [setId, data] of Object.entries(defaults.scripts)) {
-        repo.upsertSet(setId, { name: data.name, description: data.description, enabled: true });
+        repo.upsertSet(setId, { name: data.name, description: data.description, enabled: true, pool: 'dating' });
         for (const type of ['icebreaker', 'ad_template', 'kick_message', 'reject_message', 'foreigner_reject']) {
           if (data[type]) repo.upsertTemplate(setId, type, data[type]);
         }
       }
       repo.setSetting('shuffle_mode', defaults.shuffle_mode || 'random');
     }
+    if (repo.listSets('job').length === 0) {
+      const jobDefaults = getJobScripts();
+      for (const [key, data] of Object.entries(jobDefaults.scripts)) {
+        const setId = `job_${key}`;
+        repo.upsertSet(setId, { name: data.name, description: data.description, enabled: true, pool: 'job' });
+        for (const type of ['icebreaker', 'ad_template', 'kick_message', 'final_kick_message', 'reject_message', 'foreigner_reject']) {
+          if (data[type]) repo.upsertTemplate(setId, type, data[type]);
+        }
+      }
+    }
   });
+}
+
+function getJobScripts() {
+  try {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const candidates = [
+      path.join(__dirname, '..', '..', '..', '..', '..', 'unified-scheduler', 'chat_scripts_job.json'),
+      path.join(__dirname, '..', '..', '..', '..', 'unified-scheduler', 'chat_scripts_job.json'),
+    ];
+    const jsonPath = candidates.find((p) => fs.existsSync(p));
+    if (jsonPath) {
+      const json = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+      const scripts = {};
+      for (const [key, data] of Object.entries(json.scripts || {})) {
+        scripts[key] = {
+          name: data.name || key,
+          description: data.description || '',
+          icebreaker: data.icebreaker || '',
+          ad_template: data.ad_template || '',
+          kick_message: data.kick_message || '',
+          final_kick_message: data.final_kick_message || '',
+          reject_message: data.reject_message || '',
+          foreigner_reject: data.foreigner_reject || '',
+        };
+      }
+      return { scripts };
+    }
+  } catch (_) {}
+  return { scripts: {} };
 }
 
 function getDefaultScripts() {

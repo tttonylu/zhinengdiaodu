@@ -329,6 +329,7 @@
         if (!sameShanghaiDay(stats.date, today)) {
             stats.date = today; stats.follows_today = 0;
             delete stats.daily_limit; // 跨日重抽配额
+            stats.follows_reset_day = today; // 4.6.185 挡 OPS 昨日回灌
             if (!hasManualDayOverride()) {
                 // 空本地/换插件：day_count=0 时不要 +1 冒充 Day1，等 OPS 同步
                 if (hadDay) {
@@ -573,6 +574,18 @@
 
         return 'NONE';
     }
+
+    // 同一轮扫描会连打多次；整页 textContent 走路很贵，800ms 内复用。点后等待超过这个窗口，确认仍是新读。
+    var _limitCache = { at: 0, v: '' };
+    var __checkLimitsNow = checkLimits;
+    checkLimits = function () {
+        var now = Date.now();
+        if (_limitCache.v && (now - _limitCache.at) < 800) return _limitCache.v;
+        var v = __checkLimitsNow();
+        _limitCache.at = now;
+        _limitCache.v = v || 'NONE';
+        return v;
+    };
 
     /** 关注时检测到账号冻结：停全模块 + Push 通知 */
     function handleAccountFrozen(source) {
@@ -3464,7 +3477,7 @@
             try {
                 var r = btn.getBoundingClientRect();
                 if (r.top < 0 || r.bottom > window.innerHeight || r.width < 2) {
-                    btn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    btn.scrollIntoView({ block: 'center' });
                     await sleep(280);
                 }
             } catch (eSv) {}
@@ -3768,8 +3781,16 @@
         }
 
         // 第一层：拟人键盘事件链（与 nurture/repost 对齐，走 Lexical 正规输入通道）
+        // K3 页面瘦身·第四针：slim 开启时跳过逐键输入（每键一串事件+重渲染），直入 paste 链
+        var slimSkipHuman = false;
         try {
-            if (typeof EngineUtils !== 'undefined' && EngineUtils.typeTextHumanLike) {
+            var fSlim = localStorage.getItem('sg_page_slim_force');
+            if (fSlim === '1') slimSkipHuman = true;
+            else if (fSlim === '0') slimSkipHuman = false;
+            else slimSkipHuman = localStorage.getItem('sg_page_slim') === '1';
+        } catch (eSlim) {}
+        try {
+            if (!slimSkipHuman && typeof EngineUtils !== 'undefined' && EngineUtils.typeTextHumanLike) {
                 var humanOk = await EngineUtils.typeTextHumanLike(editor, want);
                 if (humanOk && looksOk(read())) return true;
             }
@@ -4093,10 +4114,12 @@
             }
         }));
 
-        // 防老外提取（语言门已关，仅保留结构）
+        // 语言门关闭时不扫简介。innerText 会强制排版，只跑关注时每一行都在烧 CPU。
+        const onlyJapanese = isOnlyJapaneseEnabled();
         let displayName = '';
         let bioText = '';
         let cellExtra = '';
+        if (onlyJapanese) {
         const rawBtnText = followBtn.innerText ? followBtn.innerText.trim() : '';
         try {
             const nameRoot = cell.querySelector('[data-testid="UserName"]');
@@ -4173,8 +4196,8 @@
                 if (nonAt.length > 1) bioText = nonAt.slice(1).join(' | ');
             }
         } catch (eFb) {}
+        }
 
-        const onlyJapanese = isOnlyJapaneseEnabled();
         const jaGate = decideFollowTargetJa(displayName, bioText, onlyJapanese, cellExtra);
         if (!jaGate.pass) {
             followToast('⏭ 语言门过滤 @' + handle + '—未点击');
@@ -4186,7 +4209,7 @@
         const followInterval = getFollowInterval();
         const totalInterval = randomInt(followInterval.min, followInterval.max);
         const readIntroWait = __FOLLOW_CLASSIC ? randomInt(300, 700) : randomInt(600, 1400);
-        { const _r = cell.getBoundingClientRect(); if (_r.bottom > window.innerHeight) window.scrollBy({ top: _r.bottom - window.innerHeight + 50, behavior: 'smooth' }); }
+        { const _r = cell.getBoundingClientRect(); if (_r.bottom > window.innerHeight) scanNudge(_r.bottom - window.innerHeight + 50); }
         await sleep(150);
         updateStats(`准备关注 @${handle}...`);
         await sleep(readIntroWait);
@@ -4367,6 +4390,17 @@
         }
     }
 
+    /**
+     * 扫描推进用瞬时滚动。
+     * behavior:'smooth' 会让 X 粉丝虚拟列表按帧重绘；多开时只跑关注也会把 CPU 打满。
+     * 位移节奏仍由 sleep 控制，不靠动画。
+     */
+    function scanNudge(px) {
+        var n = Math.round(Number(px) || 0);
+        if (!n) return;
+        try { window.scrollBy(0, n); } catch (eNudge) {}
+    }
+
     // ================= 【扫描页面（DeepSeek 简单逻辑）】 =================
     async function scanPage() {
         if (!isRunning) return;
@@ -4409,9 +4443,8 @@
                     var _hh = _hl ? String(_hl.getAttribute('href') || '').split('/').filter(Boolean)[0] : '';
                     _hh = String(_hh || '').replace(/^@/, '').toLowerCase();
                     if (_hh && __followIsDone(_hh)) {
+                        // 已处理行不逐行平滑滚动：本轮快照扫完后统一瞬时下移
                         __scanStats.already++;
-                        window.scrollBy({ top: randomInt(35, 75), behavior: 'smooth' });
-                        await sleep(randomInt(400, 800));
                         continue;
                     }
                 } catch (eHSkip) {}
@@ -4436,8 +4469,6 @@
 
                 if (result === 'already_followed') {
                     __scanStats.already++;
-                    window.scrollBy({ top: randomInt(35, 75), behavior: 'smooth' });
-                    await sleep(randomInt(700, 1200));
                     continue;
                 }
 
@@ -4450,8 +4481,6 @@
 
                 if (result === 'filtered') {
                     __scanStats.filtered++;
-                    window.scrollBy({ top: randomInt(35, 75), behavior: 'smooth' });
-                    await sleep(randomInt(700, 1200));
                     continue;
                 }
 
@@ -4462,7 +4491,7 @@
                         sourceUrl: location.href,
                         blogger_handle: String(localStorage.getItem('matrix_current_creator') || '').replace(/^@/, '').toLowerCase()
                     });
-                    window.scrollBy({ top: randomInt(50, 80), behavior: 'smooth' });
+                    scanNudge(randomInt(50, 80));
                     await sleep(randomInt(1000, 1500));
                     continue;
                 }
@@ -4484,8 +4513,6 @@
                         return;
                     }
                     __scanStats.error++;
-                    window.scrollBy({ top: randomInt(35, 75), behavior: 'smooth' });
-                    await sleep(randomInt(800, 1400));
                     continue;
                 }
 
@@ -4513,8 +4540,6 @@
                 if (result === 'no_follow_btn' || result === 'no_user_link' || result === 'no_href' || result === 'no_handle') {
                     if (result === 'no_follow_btn') __scanStats.no_btn++;
                     else __scanStats.retry++;
-                    window.scrollBy({ top: randomInt(35, 75), behavior: 'smooth' });
-                    await sleep(randomInt(500, 900));
                     continue;
                 }
 
@@ -4556,8 +4581,9 @@
                 document.dispatchEvent(new CustomEvent('matrix-diagnostic', {
                     detail: { text: '⬇️ 本轮0关注但不换博主: already=' + __scanStats.already + ' filtered=' + __scanStats.filtered + ' skipped=' + __scanStats.skipped }
                 }));
-                window.scrollBy({ top: randomInt(250, 400), behavior: 'smooth' });
-                await sleep(randomInt(2000, 3500));
+                scanNudge(randomInt(250, 400));
+                // 本屏没有新关注时拉长静止。2–3.5s 一挪，多开会让虚拟列表一直重画。
+                await sleep(randomInt(8000, 12000));
                 return;
             }
         } else {
@@ -4574,7 +4600,7 @@
             let foundNewContent = false;
             while (scrollAttempts < 3 && !foundNewContent) {
                 let beforeScroll = window.scrollY;
-                window.scrollBy({ top: randomInt(250, 400), behavior: 'smooth' });
+                scanNudge(randomInt(250, 400));
                 await sleep(randomInt(2500, 4000));
                 let afterScroll = window.scrollY;
                 if (Math.abs(afterScroll - beforeScroll) >= 10) {
@@ -4612,7 +4638,7 @@
                     handOffFollowRoundNoSoft('list_refresh_stuck');
                     return;
                 }
-                window.scrollBy({ top: randomInt(80, 180), behavior: 'smooth' });
+                scanNudge(randomInt(80, 180));
                 await sleep(randomInt(4000, 7000));
                 return;
             }

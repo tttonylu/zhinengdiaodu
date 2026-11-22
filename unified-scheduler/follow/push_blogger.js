@@ -445,8 +445,26 @@
         }, 800);
     }
 
+    // 关注引擎在跑时粉丝列表本身就在高频改 DOM。此时再注入推送按钮会放大重绘。
+    function followEngineBusy() {
+        try {
+            if (localStorage.getItem('matrix_follow_running') === 'true') return true;
+            if (sessionStorage.getItem('matrix_tab_running') === 'true') return true;
+        } catch (eBusy) {}
+        return false;
+    }
+
+    function releasePushObserver() {
+        if (!_pushObserver) return;
+        try { _pushObserver.disconnect(); } catch (eDisc) {}
+        _pushObserver = null;
+    }
+
     function onMutation(mutations) {
-        if (document.hidden) return;
+        if (document.hidden || followEngineBusy()) {
+            if (followEngineBusy()) releasePushObserver();
+            return;
+        }
         for (const mutation of mutations) {
             for (const node of mutation.addedNodes) {
                 if (isRelevantNode(node)) {
@@ -468,7 +486,11 @@
 
     // ==================== 主循环 ====================
     function main() {
-        if (document.hidden) return;
+        if (document.hidden || followEngineBusy()) {
+            if (followEngineBusy()) releasePushObserver();
+            return;
+        }
+        startPushObserver();
         injectButtonsToTweets();
         if (window.location.pathname.match(/^\/[a-zA-Z0-9_]+$/)) {
             injectButtonToProfile();

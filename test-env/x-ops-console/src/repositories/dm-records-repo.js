@@ -191,11 +191,12 @@ function createDmRecordsRepo(db) {
         GROUP BY round_number
       `).all({ bot: botHandle, ...p });
 
-      const stats = { icebreaker_sent: 0, ad_sent: 0, kick_sent: 0, completed: 0 };
+      const stats = { icebreaker_sent: 0, ad_sent: 0, kick_sent: 0, final_kick_sent: 0, completed: 0 };
       rows.forEach((r) => {
         if (r.round_number === 1) stats.icebreaker_sent = r.cnt;
         if (r.round_number === 2) stats.ad_sent = r.cnt;
         if (r.round_number === 3) stats.kick_sent = r.cnt;
+        if (r.round_number === 4) stats.final_kick_sent = r.cnt;
       });
 
       const completed = db.prepare(`

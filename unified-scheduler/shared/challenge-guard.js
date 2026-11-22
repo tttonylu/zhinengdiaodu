@@ -37,6 +37,12 @@
     return parts.join('\n');
   }
 
+  // X 官方人机句：有主壳也必须命中（与下方 CF 文案门控分离）
+  function isXHumanChallengeText(txt) {
+    if (!txt) return false;
+    return /let'?s confirm you are a human|confirm you are a human|confirm you'?re (a )?human/i.test(String(txt));
+  }
+
   function detect() {
     var signals = [];
     var kind = '';
@@ -67,6 +73,13 @@
     var txt = '';
     try { txt = pageTextSample(); } catch (eT) { txt = ''; }
     var lower = txt.toLowerCase();
+
+    // X 自家人机（常叠在主壳上）——无视 hasXShell
+    if (isXHumanChallengeText(txt)) {
+      signals.push('x-human-text');
+      kind = kind || 'x-human';
+    }
+
     if (/just a moment|checking your browser|attention required|enable javascript and cookies|云flare|正在验证|请完成安全验证|请确认您是真人|verify you are human|security check/i.test(txt) ||
         lower.indexOf('cf-browser-verification') >= 0) {
       // 有 X 主壳则不当成 CF（避免误伤正常页文案）
@@ -190,6 +203,7 @@
 
   window.ChallengeGuard = {
     detect: detect,
+    isXHumanChallengeText: isXHumanChallengeText,
     isFused: isFused,
     noteHit: noteHit,
     clearHit: clearHit,
